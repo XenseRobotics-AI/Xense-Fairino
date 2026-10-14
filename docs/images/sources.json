@@ -1,0 +1,10 @@
+{
+  "product_image": {
+    "source": "https://www.sdkeli.com/static/upload/image/20260226/1772091537714377.jpg",
+    "page": "https://www.sdkeli.com/cpzx/jgld/825.html",
+    "credit": "济宁科力光电 LS3 系列产品示意图，非本机安装现场照片"
+  },
+  "scan_image": "项目 2026-10-08 实测，两台雷达各自传感器坐标系",
+  "alignment_image": "项目 2026-10-08 相对扫描配准；旧 URDF 为机器人 .3 的 B 版软件内模型",
+  "cad_image": "20260731 本地模型 base_link.STL 外壳圆环拟合；非扫描 TF 标定"
+}

@@ -1,0 +1,43 @@
+............................
+----------------------------------------------------------------------
+Ran 28 tests in 0.105s
+
+OK
+.........................................
+----------------------------------------------------------------------
+Ran 41 tests in 0.284s
+
+OK
+....................
+----------------------------------------------------------------------
+Ran 20 tests in 0.541s
+
+OK
+.............................................
+----------------------------------------------------------------------
+Ran 45 tests in 13.584s
+
+OK
+.......................................................................................
+----------------------------------------------------------------------
+Ran 87 tests in 2.231s
+
+OK
+singular exit! SW 5316.062706 flag1 600.000000 
+singular exit! SW 5316.062706 flag1 600.000000 
+[10/14/26 22:23:01.018] [BiPico4] [info] Connecting to Pico4 VR (bimanual)...
+[10/14/26 22:23:01.022] [BiPico4] [info] XenseVR SDK already pre-initialized, skipping init.
+[10/14/26 22:23:01.022] [BiPico4] [info] BiPico4 connected (mode=first_person, controller mapping=left->left, right->right).
+[10/14/26 22:23:01.027] [BiPico4] [info] Closing XenseVR SDK...
+[10/14/26 22:23:01.027] [BiPico4] [info] BiPico4 disconnected.
+..[10/14/26 22:23:01.027] [BiPico4] [info] Connecting to Pico4 VR (bimanual)...
+[10/14/26 22:23:01.027] [BiPico4] [info] XenseVR SDK already pre-initialized, skipping init.
+[10/14/26 22:23:01.027] [BiPico4] [info] BiPico4 connected (mode=first_person, controller mapping=left->left, right->right).
+[10/14/26 22:23:01.028] [Pico4Teleop/bi_pico4_right] [warning] [RATE_LIMIT] Position velocity 45.00 m/s exceeds limit 0.05 m/s, clamping.
+[10/14/26 22:23:01.028] [BiPico4] [info] Closing XenseVR SDK...
+[10/14/26 22:23:01.028] [BiPico4] [info] BiPico4 disconnected.
+..
+----------------------------------------------------------------------
+Ran 4 tests in 0.062s
+
+OK

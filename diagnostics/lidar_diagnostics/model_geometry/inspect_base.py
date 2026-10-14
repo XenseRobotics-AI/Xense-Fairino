@@ -1,5 +1,5 @@
 from pathlib import Path
-import zipfile,struct,json
+import struct,json
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -7,10 +7,9 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.collections import PolyCollection
 from matplotlib.font_manager import FontProperties
-root=Path('/home/lim/Documents/法奥/lidar_diagnostics/model_geometry')
-archive=Path('/home/lim/Documents/法奥/轮足机器人URDF模型外发-v1.0-20260731.zip')
-with zipfile.ZipFile(archive) as z:
- name='fairino_wheel_legged_robot_description/meshes/base_link.STL';data=z.read(name)
+root=Path(__file__).resolve().parent
+mesh=Path(__file__).resolve().parents[3]/'models/meshes/base_link.STL'
+data=mesh.read_bytes()
 num=struct.unpack_from('<I',data,80)[0];assert len(data)==84+50*num
 records=np.frombuffer(data,offset=84,dtype=np.dtype([('normal','<f4',(3,)),('vertices','<f4',(3,3)),('attr','<u2')]))
 v=records['vertices'].astype(float);n=records['normal'].astype(float)
@@ -19,7 +18,7 @@ verts=np.unique(v.reshape(-1,3),axis=0)
 lo=verts.min(0);hi=verts.max(0)
 zvals,zcnt=np.unique(np.round(verts[:,2],5),return_counts=True)
 print(json.dumps({'triangles':num,'unique_vertices':len(verts),'bounds_m':[lo.tolist(),hi.tolist()],'frequent_z_m':[[float(zvals[i]),int(zcnt[i])] for i in np.argsort(zcnt)[-20:][::-1]]}))
-font=FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc');plt.rcParams.update({'font.family':font.get_name(),'axes.unicode_minus':False})
+font=(FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc') if Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc').exists() else FontProperties(family='DejaVu Sans'));plt.rcParams.update({'font.family':font.get_name(),'axes.unicode_minus':False})
 fig=plt.figure(figsize=(13,7));ax=fig.add_subplot(121,projection='3d')
 light=np.array([.4,-.5,.8]);light/=np.linalg.norm(light);shade=.55+.4*np.abs(n@light);colors=np.c_[shade*.88,shade*.92,shade*.96,np.ones(num)]
 col=Poly3DCollection(v,facecolors=colors,edgecolor=(.1,.15,.2,.25),linewidth=.08)

@@ -19,7 +19,7 @@ for label in ('A', 'B'):
     centers[label] = np.median([r['center_xy_m'] for r in good], axis=0)
 distance = float(np.linalg.norm(centers['B'] - centers['A']))
 summary = {
-    'source_archive': '/home/lim/Documents/法奥/轮足机器人URDF模型外发-v1.0-20260731.zip',
+    'source_model': 'models/whole_body_20260731.urdf',
     'urdf_member': 'fairino_wheel_legged_robot_description/urdf/fairino_wheel_legged_robot_description.urdf',
     'mesh_member': 'fairino_wheel_legged_robot_description/meshes/base_link.STL',
     'coordinate_frame': 'base_link of the 20260731 local model',
@@ -38,8 +38,10 @@ summary = {
 }
 (root / 'lidar-centers.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
 
-triangles = np.load(root / 'base_mesh.npz')['triangles']
-font = FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
+mesh = Path(__file__).resolve().parents[3] / 'models/meshes/base_link.STL'
+dtype = np.dtype([('normal', '<f4', (3,)), ('vertices', '<f4', (3, 3)), ('attr', '<u2')])
+triangles = np.frombuffer(mesh.read_bytes(), offset=84, dtype=dtype)['vertices'].astype(float)
+font = (FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc') if Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc').exists() else FontProperties(family='DejaVu Sans'))
 plt.rcParams.update({'font.family': font.get_name(), 'axes.unicode_minus': False})
 fig, ax = plt.subplots(figsize=(9, 10))
 height = triangles[:, :, 2].mean(axis=1)

@@ -1,0 +1,23 @@
+{
+  "local_time": "2026-10-10T17:20:07.412699",
+  "host": "192.168.58.1",
+  "command": "reseterror()",
+  "sent": true,
+  "accepted": true,
+  "action_status": 4,
+  "command_result": "0xC000",
+  "cleared_and_disabled": true,
+  "before": {
+    "error_hex": "0x0E10FF01",
+    "joint_errors": {
+      "j15": 30
+    },
+    "enabled_count": 0
+  },
+  "after": {
+    "error_hex": "0x00000000",
+    "joint_errors": {},
+    "enabled_count": 0
+  },
+  "purpose": "Historical startup fault example; not current live robot status."
+}

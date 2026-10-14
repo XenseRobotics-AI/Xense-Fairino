@@ -1,0 +1,34 @@
+{
+  "files": [
+    {
+      "path": "models/left_arm.urdf",
+      "bytes": 10593,
+      "sha256": "1c10e05ef6bcb3163dbe37334aa932e8d4c67c51a8aadb034759341ac1b85b65"
+    },
+    {
+      "path": "models/meshes/base_link.STL",
+      "bytes": 2125384,
+      "sha256": "89f3b8d6d31dc3546e7dd4d8dc35371cf4507007829217b2431a46974f6608b8"
+    },
+    {
+      "path": "models/meshes/wrist1_Link.STL",
+      "bytes": 58384,
+      "sha256": "1952250e7948c6e0d9aab9ee42de94d18ab323b99fd76582be0b51978f767159"
+    },
+    {
+      "path": "models/meshes/wrist2_Link.STL",
+      "bytes": 594984,
+      "sha256": "1d5a162de153ed6c850452ccbf013eeb6fd661d5a32055bc7aa96c8c2bf4c2df"
+    },
+    {
+      "path": "models/right_arm.urdf",
+      "bytes": 10545,
+      "sha256": "a121fefa035107207b70dd6cfabf6314c648657e27b723b28e682465be9347c1"
+    },
+    {
+      "path": "models/whole_body_20260731.urdf",
+      "bytes": 45380,
+      "sha256": "d64b19f6fc825ecdd2c97dbeb26514f844cba2ce28fa010864c0eed11e190cbe"
+    }
+  ]
+}

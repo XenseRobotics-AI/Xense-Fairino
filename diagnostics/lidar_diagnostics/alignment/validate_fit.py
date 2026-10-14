@@ -7,7 +7,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 ROOT=Path(__file__).resolve().parent
-D=json.loads(gzip.open(sorted(ROOT.glob('scans-*.json.gz'))[-1],'rt').read())
+D=json.loads(gzip.open((Path(__file__).resolve().parents[3]/'data/lidar/scans-sample.json.gz'),'rt').read())
 fit=json.loads((ROOT/'relative-fit.json').read_text())['candidates'][0]
 # Reuse function definitions only; do not rerun the global search.
 code=(ROOT/'fit_relative.py').read_text().split("f=voxel(D['front'],.12)")[0]
@@ -60,7 +60,7 @@ oldA=F.T@B;oldt=F.T@(np.array([-.359225,-.259325])-np.array([.359225,.259325]))
 old=metrics(f,b@oldA.T+oldt)
 report={'relative_fit':main,'three_time_segments':segments,'fit_first_half_evaluate_second_half':heldout,'urdf_baseline_m':float(np.linalg.norm(oldt)),'urdf_metrics_same_points':old,'absolute_chassis_pose_verified':False,'common_roll_flip_identifiable':False}
 (ROOT/'validation.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
-font=FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc');plt.rcParams.update({'font.family':font.get_name(),'axes.unicode_minus':False})
+font=(FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc') if Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc').exists() else FontProperties(family='DejaVu Sans'));plt.rcParams.update({'font.family':font.get_name(),'axes.unicode_minus':False})
 fig,axs=plt.subplots(1,3,figsize=(17,6))
 oldb=b@oldA.T+oldt;newb=b@A.T+t
 for ax,title,bb,trans in [(axs[0],'套用现有 URDF 参数',oldb,oldt),(axs[1],'只按实测数据拟合相对位置',newb,t),(axs[2],'共同轮廓局部放大',newb,t)]:

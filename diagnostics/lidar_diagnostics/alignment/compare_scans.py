@@ -7,9 +7,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 ROOT=Path(__file__).resolve().parent
-INPUT=Path(sys.argv[1]) if len(sys.argv)>1 else sorted(ROOT.glob('scans-*.json.gz'))[-1]
+INPUT=Path(sys.argv[1]) if len(sys.argv)>1 else (Path(__file__).resolve().parents[3]/'data/lidar/scans-sample.json.gz')
 D=json.loads(gzip.open(INPUT,'rt').read())
-FONT=FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
+FONT=(FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc') if Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc').exists() else FontProperties(family='DejaVu Sans'))
 plt.rcParams.update({'font.family':FONT.get_name(),'axes.unicode_minus':False})
 
 def rot(deg):
