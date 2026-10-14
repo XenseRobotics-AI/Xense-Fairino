@@ -11,9 +11,8 @@
   },
   "source_directory": ".",
   "python_syntax_files": 278,
-  "shell_syntax_files": 12,
+  "shell_syntax_files": 11,
   "robot_accessed": false,
-  "full_fresh_install_tested": false,
   "source_only_install_changes": "Installer cache is optional; PICO official assets and Google ADB are downloaded if absent.",
   "credential_scan": "No known login values or token/private-key patterns in tracked text.",
   "project_setup_all_verified": true,
@@ -27,5 +26,27 @@
     "lidar",
     "wrist"
   ],
-  "project_doc_links_verified": true
+  "project_doc_links_verified": true,
+  "clean_clone_verified": {
+    "setup_all": true,
+    "offline_tests": 225,
+    "diagnostics": [
+      "geometry",
+      "lidar",
+      "wrist"
+    ],
+    "entrypoint_help": [
+      "base",
+      "joints",
+      "body",
+      "tcp",
+      "lidar",
+      "errors"
+    ],
+    "project_source": "src/lerobot/__init__.py",
+    "compiled_sdk": ".local/pico4/env/lib/python3.12/site-packages/xensevr_pc_service_sdk.cpython-312-x86_64-linux-gnu.so",
+    "native_sdk_from_same_clone": true,
+    "installer_cache_sha256_rechecked": true
+  },
+  "blank_operating_system_tested": false
 }
