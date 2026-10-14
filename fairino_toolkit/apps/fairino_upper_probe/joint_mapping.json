@@ -1,0 +1,86 @@
+{
+  "robot": "192.168.58.1",
+  "saved_at": "2026-10-12 16:07:32",
+  "joints": {
+    "J15": {
+      "observation": "头部，变大往左",
+      "last_angle_deg": 0.0008702042079207921
+    },
+    "J16": {
+      "observation": "腰部的转动，变大是往左边，",
+      "last_angle_deg": 0.0
+    },
+    "J17": {
+      "observation": "整个身体的左右倾斜，变小是往左边倾斜",
+      "last_angle_deg": 0.0
+    },
+    "J18": {
+      "observation": "整个身体的前后，变小是往后",
+      "last_angle_deg": -69.99987913830445
+    },
+    "J19": {
+      "observation": "变小往后",
+      "last_angle_deg": 145.00016920637376
+    },
+    "J20": {
+      "observation": "变小往后",
+      "last_angle_deg": -69.99966158725248
+    },
+    "J1": {
+      "observation": "",
+      "last_angle_deg": 45.038724087252476
+    },
+    "J2": {
+      "observation": "",
+      "last_angle_deg": 75.03161741955446
+    },
+    "J3": {
+      "observation": "",
+      "last_angle_deg": -99.95797149405993
+    },
+    "J4": {
+      "observation": "",
+      "last_angle_deg": 84.96154280733471
+    },
+    "J5": {
+      "observation": "",
+      "last_angle_deg": 85.00154702970298
+    },
+    "J6": {
+      "observation": "",
+      "last_angle_deg": 0.0021755105198019804
+    },
+    "J7": {
+      "observation": "",
+      "last_angle_deg": 0.01305306311881188
+    },
+    "J8": {
+      "observation": "",
+      "last_angle_deg": -45.028934289913366
+    },
+    "J9": {
+      "observation": "",
+      "last_angle_deg": 75.01704149907178
+    },
+    "J10": {
+      "observation": "",
+      "last_angle_deg": 99.98393917871901
+    },
+    "J11": {
+      "observation": "",
+      "last_angle_deg": 84.98188113378099
+    },
+    "J12": {
+      "observation": "",
+      "last_angle_deg": -84.99589070235149
+    },
+    "J13": {
+      "observation": "",
+      "last_angle_deg": -0.00021755105198019802
+    },
+    "J14": {
+      "observation": "",
+      "last_angle_deg": 0.003915918935643564
+    }
+  }
+}

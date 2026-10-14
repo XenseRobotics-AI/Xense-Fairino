@@ -1,0 +1,27 @@
+{
+  "lower_link_mm": 360.0,
+  "upper_link_mm": 380.0,
+  "low_joint_deg": [
+    -80.0,
+    130.0,
+    -55.0
+  ],
+  "high_knee_deg": 15.0,
+  "upright_joint_sum_deg": -4.977568069306926,
+  "upright_confirmed": true,
+  "max_forward_deg": 45.0,
+  "max_roll_deg": 15.0,
+  "max_yaw_deg": 90.0,
+  "roll_min_height_percent": 90.0,
+  "roll_max_forward_deg": 5.0,
+  "default_speed_deg_s": 5.0,
+  "upright_reference_joint_deg": [
+    -0.00043510210396039605,
+    -0.00326326577970297,
+    -79.99939569152228,
+    130.01177192914605,
+    -54.989944306930695
+  ],
+  "upright_source": "用户运行 --calibrate-upright，将当前胸部姿态声明为竖直",
+  "upright_saved_at": "2026-10-12 18:01:33"
+}

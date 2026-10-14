@@ -1,0 +1,12 @@
+# VR input/mapping plus SSH for the local FAIRINO bridge; recording is separate.
+pexpect==4.9.0
+numpy>=1.26,<3
+draccus==0.10.0
+spdlog==2.0.6
+pyserial==3.5
+deepdiff>=7,<9
+tqdm>=4.66
+huggingface-hub>=1,<2
+pybind11>=2.12,<4
+setuptools>=71,<81
+wheel

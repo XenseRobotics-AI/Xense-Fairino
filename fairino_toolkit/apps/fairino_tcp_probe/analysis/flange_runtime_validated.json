@@ -1,0 +1,326 @@
+[
+  {
+    "pose": "initial",
+    "arm": "left",
+    "axis": 3,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.006181364641843038,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "left",
+    "axis": 3,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.005032159498078702,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "left",
+    "axis": 4,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.03661835211522113,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "left",
+    "axis": 4,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.03662887213618109,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "left",
+    "axis": 5,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.07150927279141493,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "left",
+    "axis": 5,
+    "direction": 1,
+    "simulated_seconds": 9.58,
+    "max_flange_drift_mm": 0.07159720903070536,
+    "stop_reason": "已接近模型关节限位，停止并保持；请换方向"
+  },
+  {
+    "pose": "initial",
+    "arm": "right",
+    "axis": 3,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.0078173729966118,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "right",
+    "axis": 3,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.007841995850750792,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "right",
+    "axis": 4,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.0309498552695269,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "right",
+    "axis": 4,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.030962511065233005,
+    "stop_reason": null
+  },
+  {
+    "pose": "initial",
+    "arm": "right",
+    "axis": 5,
+    "direction": -1,
+    "simulated_seconds": 8.74,
+    "max_flange_drift_mm": 0.0715982153292951,
+    "stop_reason": "已接近模型关节限位，停止并保持；请换方向"
+  },
+  {
+    "pose": "initial",
+    "arm": "right",
+    "axis": 5,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.07150828004889863,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "left",
+    "axis": 3,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.005469645883621782,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "left",
+    "axis": 3,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.005386366608582125,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "left",
+    "axis": 4,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.04937163802582282,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "left",
+    "axis": 4,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.04978985522983698,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "left",
+    "axis": 5,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.05463840050953304,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "left",
+    "axis": 5,
+    "direction": 1,
+    "simulated_seconds": 8.040000000000001,
+    "max_flange_drift_mm": 0.05493303673648984,
+    "stop_reason": "已接近模型关节限位，停止并保持；请换方向"
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "right",
+    "axis": 3,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.007817319786636485,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "right",
+    "axis": 3,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.00784197565938958,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "right",
+    "axis": 4,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.030949920036091483,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "right",
+    "axis": 4,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.03096259204877976,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "right",
+    "axis": 5,
+    "direction": -1,
+    "simulated_seconds": 8.74,
+    "max_flange_drift_mm": 0.07159810437593439,
+    "stop_reason": "已接近模型关节限位，停止并保持；请换方向"
+  },
+  {
+    "pose": "20261006-165908.jsonl",
+    "arm": "right",
+    "axis": 5,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.07150818107278388,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "left",
+    "axis": 3,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.010728024517030452,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "left",
+    "axis": 3,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.011973557818106903,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "left",
+    "axis": 4,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.019018168031504898,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "left",
+    "axis": 4,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.017522337902151217,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "left",
+    "axis": 5,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.018019738061099154,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "left",
+    "axis": 5,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.016759178083221905,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "right",
+    "axis": 3,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.007815650408065455,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "right",
+    "axis": 3,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.007840184554157923,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "right",
+    "axis": 4,
+    "direction": -1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.03095477799499522,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "right",
+    "axis": 4,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.030967373889346814,
+    "stop_reason": null
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "right",
+    "axis": 5,
+    "direction": -1,
+    "simulated_seconds": 8.76,
+    "max_flange_drift_mm": 0.0715979468059329,
+    "stop_reason": "已接近模型关节限位，停止并保持；请换方向"
+  },
+  {
+    "pose": "20261006-170553.jsonl",
+    "arm": "right",
+    "axis": 5,
+    "direction": 1,
+    "simulated_seconds": 19.98,
+    "max_flange_drift_mm": 0.07150805010147766,
+    "stop_reason": null
+  }
+]

@@ -1,0 +1,1433 @@
+{
+  "date": "2026-10-14",
+  "source_package": "/home/lim/Documents/法奥/法奥机器人功能包_20261014",
+  "notes": [
+    "Current functional code and required SDK libraries. Installer download fallback enabled. Login values removed from uploaded documentation. Full local distribution retained."
+  ],
+  "files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "5ad59afa549ac152979684b3539d7128e2fb53342333ba8e31af152c312d5685"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "65dd63f9f1a8044c38bd44bbf82fee3e7d91d97efca20470ac97957b08c49318"
+    },
+    {
+      "path": "README.md",
+      "sha256": "53c5dd293d583349891fbad4acd5917c5c82d91584b7ef3e9fdbfa8aba4b7803"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/bounded_bms_sweep.py",
+      "sha256": "a4b46a57b35be375be1ed2c6677de8cd91712b2971e113878dd581c6432fbb99"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/document_115200_addr2_probe_20261012.py",
+      "sha256": "64fa146eb131fa317c3774c1035f7cb2d7ec247fcf32a359d7e82880608a3461"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/documented_read_probe.py",
+      "sha256": "5ba92710053e88685b0557b5e71aa717d53eb6f5d1bf5672456ce0819b428019"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/rs485_direction_probe.py",
+      "sha256": "b53a1d9caa4f6aeb0495630bd6d0ac296ed20c599fa45a9442157c9253a28f00"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/run_bounded_sweep.py",
+      "sha256": "b08955ed532b19a57e03350a46e241b1794f63f8eadee54b46c57802c40c08d1"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/serial_readonly_probe.py",
+      "sha256": "d9d0ec244b68c1d3d063dfd032d55e2717000eb7089ef05b86768223e33e494b"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/supplement_serial_probe_20261013.py",
+      "sha256": "dde858258e562943926b5f5743278b2f9ab7c3d6cb4f7b3bbb290e762d404e9e"
+    },
+    {
+      "path": "diagnostics/battery_diagnostics/topic_monitor_check.py",
+      "sha256": "dbf228e16c91b681680bde3b597bf7ae6c4d9ddea822e73a1c1174a1fe863b13"
+    },
+    {
+      "path": "diagnostics/lidar_diagnostics/alignment/compare_scans.py",
+      "sha256": "ebb7ce4bf547c23461aa026ba23238b817cf63279a47feda7de2131b33fffc93"
+    },
+    {
+      "path": "diagnostics/lidar_diagnostics/alignment/fit_relative.py",
+      "sha256": "66cab675ad8c8b95333bcf3ffc718f6aefdf08b78a1adeca73cc528da7c257a0"
+    },
+    {
+      "path": "diagnostics/lidar_diagnostics/alignment/validate_fit.py",
+      "sha256": "bb0bcfe1a4d6d34cc951d175469f047a7ae2497306e62f41c28628ce1b1f3700"
+    },
+    {
+      "path": "diagnostics/lidar_diagnostics/integrate_front_back_20261008.py",
+      "sha256": "bafbcfd1197c987296e4d8f4d83828b768c427ae2ff8c7c519659b0e556922df"
+    },
+    {
+      "path": "diagnostics/lidar_diagnostics/ls3_network_config_audit.py",
+      "sha256": "b66c10e34fcb6c06629ce1f0156ee2ca5656ffc0741e5ac50425f46c1d4d8d7a"
+    },
+    {
+      "path": "diagnostics/lidar_diagnostics/model_geometry/inspect_base.py",
+      "sha256": "5dd7dc4870063bd9a03a7b00ab72bf487a6ee6b72a23684c145ab7b6d67cda90"
+    },
+    {
+      "path": "diagnostics/lidar_diagnostics/model_geometry/plot_lidar_centers.py",
+      "sha256": "16b8ac20af50270904ae068dae6283ea69cad2775a368256b5d555d31eb0bc6c"
+    },
+    {
+      "path": "fairino_toolkit/README.md",
+      "sha256": "95a5f10cfffa1a01fef13dcc6460680e681b551ebd60e6923d4e4eeced2b071c"
+    },
+    {
+      "path": "fairino_toolkit/THIRD_PARTY_NOTICES.md",
+      "sha256": "597da70153cdf52aabf967c54ab2042bd332275a6452684908c91f5d87a9825f"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/README.md",
+      "sha256": "fd9d888fb22e162337689b0835fb1c409b257c70a661ccca622e68199d05edb4"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/control_core.py",
+      "sha256": "50bd0be73f96fdfacf746def272525011df9964a48940fa52e3f47921165b007"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/diagnostics/20261008-feedback/upper_estop_relay.before.py",
+      "sha256": "67792241ecc8c2ebd30557243912829fc7266a919621ce82af37934abe71cff1"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/diagnostics/20261008-feedback/upper_estop_relay.py",
+      "sha256": "04051dc82e66dcb677fd7b9c716fbb68c6e00e74e28046aff7fc3658f6c600b3"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/keyboard_control.py",
+      "sha256": "2a96deed3c3a3371e5843a985609da91770da5d926e3a616cc64e40301298050"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/robot_worker.py",
+      "sha256": "e52a06a06941e1d8bedf7a96993284043abc17224b18d7b86c6a37932b135071"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/start.sh",
+      "sha256": "ee31d688bc82730bbae242b4751877984c6b36f6da5d7450e4ba025c3eab11c3"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/test_control.py",
+      "sha256": "50cc07d38a695b2decd1df7d72c4866e9f645f7130684b7899607e7d7102ca3c"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/test_feedback_startup.py",
+      "sha256": "25fa2a2914f606d7183c26851238c1f2316f2175393f8ca8ab75531eac291bb7"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/test_speed.py",
+      "sha256": "6a1478ec9d724178135fe0847e8c7f830af1f6c9d06a12074ed0e59544bec4b0"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_keyboard/test_startup.py",
+      "sha256": "0965417c7a713c009477d33f4f829dde402cbcd7a93cf02af17bd46f278a4c67"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/README.md",
+      "sha256": "ae489561e400ce9df61b9f3901ec799de542310788e1759f4a9dcc0c7a2e3ca1"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/README.md",
+      "sha256": "90fccbff725b8dd83e2570c0b5d8dd99dbf71c46a07d395a404fe27c7e06bb45"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/flange_check.json",
+      "sha256": "5bec780101aa31e3dee73f258e5e7d6dddac0500678fcdf761fc05f10011f36e"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/flange_check.py",
+      "sha256": "31ca61b4e836a10ffe72a731bfa1891ca1febde3ca39b3f51597db95dfbffd8b"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/flange_runtime_initial.json",
+      "sha256": "b9f000842c547e9fcd28a2bf765160412d6ff871cba3502fd3374c03405f3a12"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/flange_runtime_poses.json",
+      "sha256": "5cd843909ec48aa7ce3164630545a926bacec4d23c355d7ac923c5edb542fd3b"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/flange_runtime_validated.json",
+      "sha256": "e5db097b95c125009a99180a49954c136519cc35934b60dffedf08750c8c1d3f"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/model_audit.json",
+      "sha256": "f692b857b5044643fc0fb735bc466de5d865b1140f28a5551215a3493c8c29ba"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/model_audit.py",
+      "sha256": "ae2c6ad8489f1ad94b1bd75b1f2295ec2445060f118badd3f696d897854c6962"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/plot_audit.py",
+      "sha256": "590f32d249cc3f034a216e236dfc03f96ca4c624480b4fbb29fe9404f1a7d34a"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/plot_wrist.py",
+      "sha256": "1bb64c21eb4bb13b866885b7de4ed5e03405b1a5173f0b79ed1af0c59e527d65"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/tcp_audit.png",
+      "sha256": "a5956d8e709381b2c1064dcd04235976b18a25a2cc3eca973a86aeb3784861bb"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/analysis/wrist_geometry.png",
+      "sha256": "f26e354bc67d5c89d7565776fa77388a3502fb2e1c73b10aaf0e2b5e9861740f"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/start.sh",
+      "sha256": "c2a60df860bd1880ef7bf57c24d845b74a53ddb95d8be369fa833e1a30fdc0ff"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/tcp_core.py",
+      "sha256": "8d8c1f27afd7d31576cc466a1b8eb7e2cf3d2dc9e949bb5f5363062c4f338c41"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/tcp_frames.py",
+      "sha256": "635006cd3967480ac3ed43aa98225dde888da63bbd3d9a5bbdeb0bdbc549611f"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/tcp_jog.py",
+      "sha256": "dc0b9a4a655a14a3c92dad6ee6c3fdedcfae252d2196dab17271d6acbbed7fbf"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/tcp_keyboard.py",
+      "sha256": "63bd89f4b426b566206f209d443304d8a9143b5dca58880872b6fc6c59a4387a"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/tcp_robot.py",
+      "sha256": "58230a09f3411f47e6b546953dd0eb1ab61327ad3ce9d770f84e0768d9e31464"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/test_flange.py",
+      "sha256": "afe2405d84e5d3a93f8cd572051ca0bbc61a698fc0c4180ef88c97ebc043565d"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/test_frames.py",
+      "sha256": "d0b40fee945c7c0a063078b10bb2ec180d9c8ccad960c2360256093246c57a6e"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/test_jog.py",
+      "sha256": "b15da437878306bd16946a3392cb803613ae0ee2bc82aeaab95384ed7bd03317"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/test_tcp.py",
+      "sha256": "a60a306b8d305242d88d7380894d9537a5c536c97448b5dece5e7c94b9e8917c"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_tcp_probe/vendor_kinematics.py",
+      "sha256": "0987577e80cb4e1e449e7e92f6caa3670f4174f69704de67c52d554c83f4ad92"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/README.md",
+      "sha256": "e25915b9a687f2a855a8438bef1167d80927dcc8ccce28e5e485ec77604f78c1"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/README.md",
+      "sha256": "54f8a7082b011fad800da4777f7e290563a1a156a5cba8d5aa24090f0df33053"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/body_config-before-upright-20261012-180133.json",
+      "sha256": "d7b69a1425eeaad83b28168f9499ac04686113f58eb2695e17bd06ba448adc84"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/body_config.json",
+      "sha256": "5184fbb5a097656f2a202197f6275bffb8b8744c96378b956deeedc54bbb5432"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/body_core.py",
+      "sha256": "567e3b6da05091663eaa4f7953dfd199ed949885df8d7c8151e8d6f6b97065a9"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/body_keyboard.py",
+      "sha256": "2b1b11fa8a98bc99849a3b70f41882d0a7d00274b1fdf2350deb9fa29aaca1bb"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/body_robot.py",
+      "sha256": "2abce66a59a09b68a9c42f8c26202376fe7a2384be88b6b4d2a5d63fe76c4afc"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/test_body.py",
+      "sha256": "e09178697a19281da87b8c3baf13771f5487f2fc3239eb20baefee2485903133"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/body_control/test_body_gui.py",
+      "sha256": "c528cd7c9e520d0ce1ca8657273334f56a41ef061be35805d586f9ebe74de9f6"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/joint_mapping.json",
+      "sha256": "87b73b48da92560996e8d1d5e472332d5888fc6d202d691528e37e83441cd42e"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/probe_core.py",
+      "sha256": "54560e6d47dcdbc473f49195dba99d04f0315568323a025a6fcea4bd4567c649"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/robot_probe.py",
+      "sha256": "840e3c5aca22f6de04b8a03fcb34a1b45452bafdf08312bfc7785b8b81d65de6"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/snapshots/before-arm-jog-20261006-153808.json",
+      "sha256": "6d6f64ee44f1d65eeb7034600d0c29c5e1f7451ce29c08131e22a2888be86492"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/start.sh",
+      "sha256": "b49d7b63bd7f2511a0d1eb1b853478a58dff3946d9e81e9a8728c92e969f462a"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/start_body.sh",
+      "sha256": "e1a8dbb0f66dd290cbb3a92bab890d701ff959f5c7d51cb7da2002ea877317ee"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/test_gui.py",
+      "sha256": "b3e6924f7c06840e295512a04b5904393acbc24ad46bfdb2eea92c1bbf49e2b6"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/test_probe.py",
+      "sha256": "6ab64b37e6ca28fe0a9002adacabafe2d8be5819588f8ddb234e46eb95ecc54b"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/test_target.py",
+      "sha256": "d8a3739686271908e45e7812d5ea2ad4dae3be21b9c62828093b0f989fb256ab"
+    },
+    {
+      "path": "fairino_toolkit/apps/fairino_upper_probe/upper_keyboard.py",
+      "sha256": "63da4dd0d7dd22a810f7d4459248b8fd6cbfd0ed5dc3796a12de0ef37b530375"
+    },
+    {
+      "path": "fairino_toolkit/apps/lidar_viewer/remote_stream.py",
+      "sha256": "c807f063d5561a74c85314697fedcf2b3a14adfb3c6ef44081aa1500fabf54d4"
+    },
+    {
+      "path": "fairino_toolkit/apps/lidar_viewer/requirements.txt",
+      "sha256": "31d13077bf79ba766298a87360eb2145a304d9979e552b13e4f092cefab90d00"
+    },
+    {
+      "path": "fairino_toolkit/apps/lidar_viewer/start.sh",
+      "sha256": "fdb89c502c242ce245a3d7465c215aaf1b764d5ce8693eabf95832463bb25266"
+    },
+    {
+      "path": "fairino_toolkit/apps/lidar_viewer/viewer-console.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "fairino_toolkit/apps/lidar_viewer/viewer-latest.jsonl",
+      "sha256": "fb6c1863f5219d5c023a1efd18d6b46a9ac3e9886ccfcd7872a2af12ec6a5c3d"
+    },
+    {
+      "path": "fairino_toolkit/apps/lidar_viewer/viewer.pid",
+      "sha256": "6ac51bbae8037748767752edaa896b9191bf6bd5d7a16ec8821b56c7db951b77"
+    },
+    {
+      "path": "fairino_toolkit/apps/lidar_viewer/viewer.py",
+      "sha256": "cefc9e8e0e75ecfffece9a4bf39b2eb36790c3e35abbae63842f49c29dbab8ee"
+    },
+    {
+      "path": "fairino_toolkit/models/left_arm.urdf",
+      "sha256": "1c10e05ef6bcb3163dbe37334aa932e8d4c67c51a8aadb034759341ac1b85b65"
+    },
+    {
+      "path": "fairino_toolkit/models/right_arm.urdf",
+      "sha256": "a121fefa035107207b70dd6cfabf6314c648657e27b723b28e682465be9347c1"
+    },
+    {
+      "path": "fairino_toolkit/models/whole_body_20260731.urdf",
+      "sha256": "d64b19f6fc825ecdd2c97dbeb26514f844cba2ce28fa010864c0eed11e190cbe"
+    },
+    {
+      "path": "fairino_toolkit/run.sh",
+      "sha256": "aeb95bd61fc3a2fa23d42329e0222954297beac80a3dacd29d73ffe904d86154"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/README.md",
+      "sha256": "da17be20bc75c68da597c94cb08c36138d5075380b3243e0ddba82436febbfc2"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/assets.json",
+      "sha256": "fef45a296415276e044e3e5073ee496114a30285fbeaa0111b6177c60c2fd50a"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/audit_mounts.py",
+      "sha256": "e010c5d2b7b961cd646ac70e96e3cadda5d9e64a43c1ffb27f5f0d346b237568"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/clear_errors.py",
+      "sha256": "15d81b7440ec312a98f63a5c507ee4832e4aaf9b4f82fd86454b2a4b1ca15025"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/fault_reset_remote.py",
+      "sha256": "857026232944b0152c20065a249f5af9dc23221255c63fd625aafe8d5756f0ad"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/home_pose.json",
+      "sha256": "12451a2553b46887dfac98466afea95d53dab19690d705f55ca7ed1dccf0c82e"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/models/README.md",
+      "sha256": "1ac665c3077bc29d56686e69b0cf2ff112344eff68b00b8363ef48fe89df1e43"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/models/fairino_wheel_legged_robot_description.urdf",
+      "sha256": "d64b19f6fc825ecdd2c97dbeb26514f844cba2ce28fa010864c0eed11e190cbe"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/mounts.py",
+      "sha256": "c51e654a2e11d6fc53d08fd1606a94f24d1432e12a1b2dc3f7d7855cc7c6e8ae"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/paths.py",
+      "sha256": "cf5ce6472c744cab1a0f68ef273f00dcacd9b4c5d8cee140c87d8b996da6d645"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/pico_latency.py",
+      "sha256": "77d9868890ef5faf82581e115ab96160a1d320736aa38cc05e998b92cb59e9e2"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/test_fault_reset.py",
+      "sha256": "8e10e8830e86cd85c755daef1d11ea2567382cba4f1042bf9626189f4d0f7505"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/test_mounts.py",
+      "sha256": "50d15f4014e3d632308926eb61ba2a95f957eca8ab2b3ae134f98421abceffbb"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/test_vr.py",
+      "sha256": "e16c767709f4666d459dae60f193f5aaa6b89631005e29232ffa2bb0c6a0edff"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/test_vr_cartesian.py",
+      "sha256": "1ce14c896342fbafad0e9562cb31d28405214e057cadbf13058622f4ad1be4c4"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/test_vr_controls.py",
+      "sha256": "1118f2056ba928f7d28884ea1efa1221f3efb9f06b44498ac8fe62d2d9baff94"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/test_vr_home.py",
+      "sha256": "264a759b4d1c9d00f9c1da17814c7e5d97d93dd96abbe05ec60f7c604b4ec708"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/test_vr_timing.py",
+      "sha256": "1cea1ac56dd1d3b2b2af2fd5455f6f0e2e4790dc8358743456b4b6f30139fea3"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_cartesian.py",
+      "sha256": "6d14ea3da51afc759c458e4d74c9f4c04a3dc304a36a6f68d7d1a72ff31009b5"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_client.py",
+      "sha256": "cfe8a6a412abb995f722e0b37c26d7be1073edf5ad7d167b89a39b08b081d07e"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_controls.py",
+      "sha256": "d28f180bf8e050ef2c7a22f4536f5c692f33ec7ba575fc38d6e85b0b051c592c"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_core.py",
+      "sha256": "7f169f77d84c948e245955c38e2b0f5e6e485fa0e797e7c7e1d40f6758d4702b"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_home.py",
+      "sha256": "c4159a9170a4f87dfa94133527015f5a1e9a27530ab91ba94770aa576ccd28bf"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_input.py",
+      "sha256": "dd73c6a48caaf3ea4d5e508eb958216b190d47ab1c33f6b7f84517e8cc1984ef"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_link_check.py",
+      "sha256": "b33be58dcbae9b56cdead3583631d8a86037c1a16c7fdabbdd23ba8edd25fdae"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_plan.py",
+      "sha256": "94a91d56221cccac27851cbe5b4e282a8f763c5b0e3fe6c2d80a120273c2c856"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_robot.py",
+      "sha256": "c0a6d2e715e1fbb2ba654fb12b00ed3c223c9de29ee08ee2db8c9c1295ea3194"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fairino/vr_timing.py",
+      "sha256": "bff7b17ccc6bf8fe3aa0059e23052026a401d46e5cb76b95d3200d0da4efa6f6"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/fetch_assets.py",
+      "sha256": "018bb89ff57a533dd32659ddf78bb00a351c5e3fd4f7fe9184966db00e3a4c5d"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/pico.py",
+      "sha256": "f6659e4f650a7c83f2a2aed5aa022ad9d6f0fbf6afad07a7ae24e9ccbc4d0c32"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/requirements.txt",
+      "sha256": "10ea72020ff39ebfe2a9288c0f8021f4bccddc95077266d598586a0e477fcd19"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/run.sh",
+      "sha256": "3452271bb3bab119327a41b429e7156f59aae441ea46dd65948297516117995a"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/setup.sh",
+      "sha256": "c196c319bd40f11adeff374772188d41025b9b1965afcdcf8e222efd96a1e4ae"
+    },
+    {
+      "path": "fairino_toolkit/scripts/pico4/test_pico.py",
+      "sha256": "9c1930e99ff6f8efe154b0bd49853d94a6e910ce2535d7b803d8e3754dd0f10a"
+    },
+    {
+      "path": "fairino_toolkit/setup.sh",
+      "sha256": "0415363661e66c920c832d322d03d64c7d2edbe02611ceadaf35be6f11226197"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/__init__.py",
+      "sha256": "4b876dcc93b4877f0c2aaf641843960fa18d9c7cea267089e9cc5affca8dfa1b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/__version__.py",
+      "sha256": "beb2aa5d785c7e7ccbcb910ec4688e2868423458e2a1aac7fd76c1e1a182a470"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/__init__.py",
+      "sha256": "8a5747f51f94725107cb973050188dc05780ac6bbb53919779be960553c1be93"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/camera.py",
+      "sha256": "75e10b3203bcaef522a1c4e4ba479daf5e78c3d7503e96691396215a16c2a718"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/configs.py",
+      "sha256": "0d6b155f6edf76cef332898e6c815c225c855dfb24db8c7afc48201329ba8acb"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/opencv/__init__.py",
+      "sha256": "bcd30663067446f6c72beea9a9c7fdfda0c26889ba9476f10c0e77855bdfc64a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/opencv/camera_opencv.py",
+      "sha256": "7d5975b7c7127e857149e33909274ede5e0960ca52f54a6a538eb5503c070f17"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/opencv/configuration_opencv.py",
+      "sha256": "06e73b17908ea870285321171ba3685b081b7e2ff2bab241efa3a7e0ca2a8d8c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/reachy2_camera/__init__.py",
+      "sha256": "988265045944851cc9c043eaef551281cfc515234459f0c09a698369293a4df2"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/reachy2_camera/configuration_reachy2_camera.py",
+      "sha256": "f92ef6f67bc20e8de7a39d8ee34206af684060ba484925f861d24417d519eb22"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/reachy2_camera/reachy2_camera.py",
+      "sha256": "74a22b931384cf26490b02016434283d8723ccab6abc5fe7fa6d6a6e10f0c2b0"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/realsense/__init__.py",
+      "sha256": "24932dc9ddb774eb3d1ced5a700275a7d3e2e554d68364ce82267a1d30efb432"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/realsense/camera_realsense.py",
+      "sha256": "7a5aeb609aa451a72a35033ee366a70535c4d56f1f580cca6ce6fcf88ebc41e7"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/realsense/configuration_realsense.py",
+      "sha256": "115489fc4ee4a9f7def4e6cf07da6b8387659e1ad1af187c4cd5552c924c9429"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/utils.py",
+      "sha256": "f3918b33757f3708709beb651a77e855291d7f20b6a9be425addb076cf2491f8"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/README.md",
+      "sha256": "1722f43af3cc392c4c9a5158782ee861f8024727d46e5c516f980b52740f7fe6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/__init__.py",
+      "sha256": "f3c604ef9c02a20641e35a87361d6361a8dca6f3acda701f0e65c5cb6802f6a5"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/camera_xense.py",
+      "sha256": "87e6df49bb1dd945326d6ade201d92471a0d89bf9769bef81d46f1a0ca2fc919"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/config_cache.py",
+      "sha256": "6dd4d7f59b27f7da4820fdfc1faf70326bc148287a7c9273b2c16e5a8f0e3e86"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/configuration_xense.py",
+      "sha256": "6976a829af458394016a401de054848d29baec91f8430cebb3ed247d9c2af7a3"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/example1.py",
+      "sha256": "478e20d57c579321d48f81ab6e19dc700aa21819d49193d0a4e86b1b410072d1"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/example2.py",
+      "sha256": "9d89507392b8d06d2247efa6adc9f657ba1132f1e6f48d41a4902b041e62b133"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/example_all_function.py",
+      "sha256": "904ff22463a835ad7a93b857f59c1c324e16dddd94062d99c06232e124ac13ea"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/xense/example_remote.py",
+      "sha256": "67bf4dfdc21dddd5e3801576857ea461c32c29bf4a0676c611b2cbce027ee42a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/zmq/__init__.py",
+      "sha256": "1b42f41bac5fb6bb1b7a3a2894b1aac785aac33bc4810ca3766cadafb68a81a6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/zmq/camera_zmq.py",
+      "sha256": "0888d11982807c028cd0f16f1d1a213273d36f4db972d0e7d1a60bc24586bd61"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/zmq/configuration_zmq.py",
+      "sha256": "616e85ae8f9ebd001afe2f640c47721cbbb44713755bb8fbf97e1e93b9c87cd6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/cameras/zmq/image_server.py",
+      "sha256": "07dcc8f811277d73700368321d7611c53a92972ed22a891bd060d3298722bc83"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/configs/default.py",
+      "sha256": "529e46f5dfb926eed17c128f9fac739598f677bdbda51138f11389d71073f236"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/configs/parser.py",
+      "sha256": "883716eeac54af1bd6d49d932f0df23a51e7dcfc545001b224596a3a7f4c3b6b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/configs/types.py",
+      "sha256": "1354e7d24b19d5d4970064104f76d8c85570c204bf2d09e2b4402f93a994ad99"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/aggregate.py",
+      "sha256": "104a17cf725637d8737d2328032444cb32704624a5d534d08a4ec5114c470923"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/backward_compatibility.py",
+      "sha256": "e6fc804f37f7968b1a7bf8d01a21360c59b89ee8de8ac38415deb8bf339d8caa"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/card_template.md",
+      "sha256": "5b4b6c6834e4236b992b3b43fef820e1b6d2d11cac11cf97e55e4e67f6fe4ea4"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/compute_stats.py",
+      "sha256": "941dd3c6d0f14704e95123c9a9c49270b2b5ea589f712b734adb4ee03b8736b2"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/dataset_tools.py",
+      "sha256": "04f6cee06f834af52705ffd28bb50101d21046af0680127e1a84549d92685cd5"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/factory.py",
+      "sha256": "adc786de92b9d79f84f1b950e141fce7ad28d48c885be3b66176a3f6d36c63ef"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/image_writer.py",
+      "sha256": "2e39a940baa54fef5e09957b1151ebe31bfc74184fe631c74a25bcd2589f43f8"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/lerobot_dataset.py",
+      "sha256": "12446878100521979989e46d646ffd6d4d9141f5d54879f7a50cf22a7b70f1d8"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/online_buffer.py",
+      "sha256": "f60e138d014767e373b16d2c5fe837aee21bd6248bd2f69898064e0313403991"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/push_dataset_to_hub/utils.py",
+      "sha256": "c46e3ba71f434966a79d723f5a696497c057b655fab5bdc47bf4b6100554fb5a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/sampler.py",
+      "sha256": "0202ce63101050dc8b28f00cf68b9c28bf66d9c5c2f9e05d1e7c9e24d4905d19"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/streaming_dataset.py",
+      "sha256": "7005cb579faabd91473033c5ed5728761f084e49f1d08d42fbb75a1b8d93ec19"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/transforms.py",
+      "sha256": "d5a5dc50ea5a8736d20e5311fd760a69cce2d91b0f45a52309dfc9c69ec7ce78"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/utils.py",
+      "sha256": "84f5262a8c2fdc1f5c96b569d052fc285e0b431efa3aac2a34a0d4c8ee8d3b8e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/v30/augment_dataset_quantile_stats.py",
+      "sha256": "60dc1a50d7cb525e18a05716bc538e1464fed72e72207d4f4bf4213586ee312f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/v30/convert_dataset_v21_to_v30.py",
+      "sha256": "df0972e15d801094eef045d14647f584ce4f58c0df9de51345bfddcadb66f7ed"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/datasets/video_utils.py",
+      "sha256": "526a952fd7a43182d22c1d5b00660a4aa95db64508d7e3d4ab7e8b680eda39e4"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/__init__.py",
+      "sha256": "7c08c186384a43761faadc63d20b9fd0e634ce577697b8cabde77d040c627aaf"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/calibration_gui.py",
+      "sha256": "ab3ec60f69fce544ca7adc8c71b77039d30f48153f1c72a4abe0918f6201cb0b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/damiao/__init__.py",
+      "sha256": "f135c5d1bd661d8bea9356ea637f3c333742e6473635cf3a0edfe4f95f80453b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/damiao/damiao.py",
+      "sha256": "92b919f1bb47e9615df90e7872c58f415a59d66b54fe9a0c54e20da6cd1b6f2b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/damiao/tables.py",
+      "sha256": "3c2be95b29fe25e2bb4c28384271ecd595e6aa1f15197ea4a1aa97568461089b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/dynamixel/__init__.py",
+      "sha256": "080d8b76d52d7674bf7528b0232777b330d0d88d444be95fb1d318b7c19fedd0"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/dynamixel/dynamixel.py",
+      "sha256": "ce21afe214194acf6d68a73a611637175a94635a214b436c132e7c99af3c7e51"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/dynamixel/tables.py",
+      "sha256": "65dfec2f2974411ed71b62dd28baa7ab4d4c1e5d94c60f2d56df4946e81734c1"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/encoding_utils.py",
+      "sha256": "5285eb2b3f62399e95a2fa4b2fcab631bcad547124e8cc9b6a61525148bc924a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/feetech/__init__.py",
+      "sha256": "17b9e22b45fd71e4e04db7a072f8d32fa0a01de91e906b8b9746a1c83e7bbe8c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/feetech/feetech.py",
+      "sha256": "1dd81201ebd03ad39a6d46a034d99f21583dcefa81e9f099d3dc0a184dce56a8"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/feetech/tables.py",
+      "sha256": "71f7f7beb17169781bd26a33b165ed4c5c3df7b9c477d36860f9d6011eb00428"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/motors_bus.py",
+      "sha256": "63185847018c92dc917858e01b402d13467f69d3970d9357dfe2d7d200a37e1d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/robstride/__init__.py",
+      "sha256": "24ce4fd9afb1775c811fd4c0c4178fcb9ec8b361bc9bd10b0e402a4dbfe4341d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/robstride/robstride.py",
+      "sha256": "1bb894e0d3762d20255dc67e186df20e28b95ece32d4f8d136a0dff5a5ab0a36"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/motors/robstride/tables.py",
+      "sha256": "cae6df57ae3516044ed083b0e81b6402fee4c676cc50c9e02552f55b5b47fbb8"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/__init__.py",
+      "sha256": "809dfb9fa15249bf33fa3d400d1e776450e59300829c9b1841a841ccf31fbc17"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/arx5_follower/__init__.py",
+      "sha256": "693f681464ba3948e1f6562d516b39d69a595a16651f16e81a3d6e9e6a88049d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/arx5_follower/arx5_follower.py",
+      "sha256": "15c1c210b54cf432497d3ac6a17c06548a58a51869002abb794d7e4fcbff2228"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/arx5_follower/config_arx5_follower.py",
+      "sha256": "027c1277caa783ede8e07a1bb920fc051881b5d8928c15dc30a7185506eb654c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_arx5/__init__.py",
+      "sha256": "0fd9a4f924a035bbfe8946559e17516ea5666e29e5636e4f8579814590fc2868"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_arx5/bi_arx5.py",
+      "sha256": "dd04e0fa19842df6a79019658583a4b439cef3da6661a08456af66bf30e2ce75"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_arx5/config_bi_arx5.py",
+      "sha256": "c5a34f8316a07535614871f257efc9cbe6e8b7eb54389c44dac9545db43c69e1"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_arx5/lerobot-ARX5.md",
+      "sha256": "7bd3b562b8177707e0fe6e50a45a8cc3a867ec238869c427aa73d15a16dc9c1c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_elite_cs66_rt/__init__.py",
+      "sha256": "a16f5098932fc55707b08d0629d038971aa5ed4c991451249e9f8d4946c847cc"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_elite_cs66_rt/bi_elite_cs66_rt.py",
+      "sha256": "43aa1193e750842dd41778a128d19617a8000dac87362473633d50320454aca5"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_elite_cs66_rt/config_bi_elite_cs66_rt.py",
+      "sha256": "b591c1a41f3cfa8563908a0c2fe48a3985a71a58de0d10ad6b4baa632cae516f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_flexiv_rizon4_rt/__init__.py",
+      "sha256": "737cf795e35a3c3e27837f2a5df54809bf57eaba25b12c1585049236849360a1"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_flexiv_rizon4_rt/bi_flexiv_rizon4_rt.py",
+      "sha256": "c85c3354be38019fcfd0cf9d0a02c394bd4ee44a332d06f3f11d0727761e9c54"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_flexiv_rizon4_rt/config_bi_flexiv_rizon4_rt.py",
+      "sha256": "322f8f9a1cdf4695216bea59e6db796bcea246d437650ea036f2e680e4f9a711"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_taccap_gripper/README.md",
+      "sha256": "803242fb7af6a66aacf9078ecd19801aab8593b0e7c0670e09ad153977940ad4"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_taccap_gripper/__init__.py",
+      "sha256": "38de30982e129b68cc759e84443d6b34467fcfba12b8c8f43c9a5209c56071af"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_taccap_gripper/bi_taccap_gripper.py",
+      "sha256": "a827af0313af6c915af6992b6e9dbb9d19feffcf8d0329ed1a6b113dcc443892"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/bi_taccap_gripper/config_bi_taccap_gripper.py",
+      "sha256": "8a5e239b87e274750e680f58176ccc36e154f20fb6a39a4f1531e545d8552bbf"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/config.py",
+      "sha256": "65f420e72414df8717d4d2d0788d7e3584d7420f616e39b0d07af2098a877094"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/elite_cs66_rt/__init__.py",
+      "sha256": "6b79ec33563369235fc6120fe777cab500a54cf5274619ced6679593065a5c0e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/elite_cs66_rt/config_elite_cs66_rt.py",
+      "sha256": "01197e106414bbb847daff67cfebab41cc9b5b0bd19e57482c26ea34f178a4cd"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/elite_cs66_rt/elite_cs66_rt.py",
+      "sha256": "067863871d44aa49aba7837b48e5b1b61a9e29edafe07e691342ad9ff9c909d6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/elite_cs66_rt/manipulability.py",
+      "sha256": "7fb9207ca0462c4ac20599d8cd3f83f148ece48a396bbaf25742c4b4c2a30a66"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/elite_cs66_rt/resource/input_recipe.txt",
+      "sha256": "ace96940a3076b976a4700aae5d699ad4bebbdf0b2eb6e220f4c00ca952e6e93"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/elite_cs66_rt/resource/output_recipe.txt",
+      "sha256": "43168f6406bfdcfae4719eb70252a710eab224820ef66bfc2a9fb847dfbe64a8"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/flexiv_rizon4_rt/__init__.py",
+      "sha256": "e6a8263d3fdfad8c11f514df56767f98dec2183ce587761d2abb5f0b58377ea1"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/flexiv_rizon4_rt/config_flare_gripper.py",
+      "sha256": "e10e0457271b051b8921cda8852c04cc55fecd94de1a93123d3d7afdb94e89b1"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/flexiv_rizon4_rt/config_flexiv_rizon4_rt.py",
+      "sha256": "36133aa3873e926236d8e693107a81e48f4007885d395b3cafdde93ac4b7dcb6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/flexiv_rizon4_rt/flare_gripper.py",
+      "sha256": "8ed9efa99e0eeee8bb4781e500c757be4e54a5460f901e6d763eea0b0491f063"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/flexiv_rizon4_rt/flexiv_rizon4_rt.py",
+      "sha256": "4d9a6daded2725e7a342f71605210f36ecca967c7786d6a01820b9749c009706"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/grippers/__init__.py",
+      "sha256": "368fdd07efb0d2575cd2bee43be6a8e15dd92b01ea383bdbeda7dc3d89283a57"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/grippers/config_serial_gripper.py",
+      "sha256": "c53781089647320d046c236a8cd5c7544391a53c9957aaf81b9fc00c667c980e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/grippers/config_xense_gripper.py",
+      "sha256": "7e8593722cfadf5f66535d2561affe76c975627052f5138b5cfff5617d835e0f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/grippers/serial_gripper.py",
+      "sha256": "1731c2554c3a02dfc2967a77880347d21ba351668fcc5122dd87a2790b45e356"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/grippers/xense_gripper.py",
+      "sha256": "17ac1f053dfb3dacf7b9574a17f5124b64ceec69b76d41bd01cbbe3c4eb50ac3"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/mock_robot.py",
+      "sha256": "baa10b68ae37fe4da190de537a5950468971dd096e83c539e8dfe50b2cf6130f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/pylibfranka_research3/__init__.py",
+      "sha256": "8f7ce1f7124cb341a148c3c5157c6dd5682bd310e04d8d64e4cd50536148f78a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/pylibfranka_research3/config_franka_gripper.py",
+      "sha256": "c54bab5f73399ad6459d3054a4e22fd0a264095efdcb5a89e793c8a92fd2bb64"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/pylibfranka_research3/config_pylibfranka_research3.py",
+      "sha256": "ba5aff5b36482a5a40c8dc9dbc902767d943066bd9d13492e97f2f3bb782febb"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/pylibfranka_research3/franka_gripper.py",
+      "sha256": "e19c28428054daf4a5bd93f1d1419e7d3b8e61b441306cc9245fe11f98a2f75a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/pylibfranka_research3/pylibfranka_research3.py",
+      "sha256": "a894a3016e56ff68254393e7f8d1f2d5a05dde08b0dd81eb1554c295497365e3"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/pylibfranka_research3/ws_teleop_client.py",
+      "sha256": "3aeb75ccff1271e65cc1aaec8359c0e1f6c0e1b19ef8b2ed0a80f6e02cfa1bf8"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/pylibfranka_research3/ws_teleop_server.py",
+      "sha256": "8e5dc438f76467fe2f1cad05ac75aec4ba18d26c1084d1f2f3fa8106a0e319a3"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/robot.py",
+      "sha256": "e37f7598e2a54338cea28981369142ac928e2f4755ced6545251eab12c130e55"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/taccap_gripper/README.md",
+      "sha256": "759969612b24578a4ded5106c4f38bcbfc9f665d702d413f8f9d6a7d4c611362"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/taccap_gripper/__init__.py",
+      "sha256": "fc6851381305cfe31b773a0297f1e3bd50abeadba52db2f65d094accfd64fd2c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/taccap_gripper/calibrate_tracker.py",
+      "sha256": "631585ca446ce82739a4e02b4b3abbfb3e9d9ada72672bc284e9411d277b4c80"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/taccap_gripper/config_taccap_gripper.py",
+      "sha256": "6f5fd2f5001054c7ecca2098e0ec226d8b642ad02c41f83354bc6444e0d9b3f2"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/taccap_gripper/taccap_gripper.py",
+      "sha256": "54794cffa2014e761c9730a575c80276ca04adf5c4268cc87d40529a15965c5f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/taccap_gripper/taccap_gripper_example.py",
+      "sha256": "373ba25f31c7aa9d789b20f76d239ed953a6257a3a8638fe20fbf2eaff0b3c74"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/robots/utils.py",
+      "sha256": "fbc95a2e98e9dd7f0810ebe19bc972e4c3435e7ece9df28b26220362c252477e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/client_commands.md",
+      "sha256": "dfcef49653ed50d34f8d9107b7d6e00953b473e3281f7f03ad174a33733b78e1"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_annotate_reward.py",
+      "sha256": "ed99acd8f600a3e046a960a40caa3a6f51753afa2108dd74e53f821800b817d3"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_calibrate.py",
+      "sha256": "8288b2bad3d3e765e85cdd5b171b99fd70bfca38c8bacb1af5df1cf940ebc91e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_check_dataset.py",
+      "sha256": "d4507c30550c77565f6b5d95543f37b7d3495276e5abf1012116f2a296fb4767"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_dataset_viz.py",
+      "sha256": "b0e22f25c38139a4f606c4db1ccd95864514008f30cfc801b70b79b6ee409491"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_edit_dataset.py",
+      "sha256": "cc6880c2ce4ccd589ed5b73bca5cbb997d4443efdc7e7a1239c623f4d9ac7ab9"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_find_cameras.py",
+      "sha256": "4ccc8faa1473784b9834f2ef22d78c3f524bd6f35f6e1bd9de36e1258adf813f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_find_port.py",
+      "sha256": "a64de40270cdb6e48847af7898016a84f970914b3d1eb220854ff13b4349c907"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_imgtransform_viz.py",
+      "sha256": "1ef746c7853dba94ff8a871397c376506c3ed49f0eb9fb884ae73354677785b7"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_info.py",
+      "sha256": "0c2750f6d98bfadd23a9200f138461285f91e4f27a305754159d1e9517552b6d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_record.py",
+      "sha256": "c2c108dd2f61e19465a5921b65899e9cbef6d041c2a146401d3eafa12f9ce458"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_record_bi_pose.py",
+      "sha256": "a0ce587f798c004a04beaf78f74d481321df91b8348b857de3b2bbe2c3758b93"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_replay.py",
+      "sha256": "ac3e4fb8c30767248df18d9c824420850c93501a191523407dbc4f8b43e2a8e2"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_setup_can.py",
+      "sha256": "3106ab86df6525c9256fa5aff0fd269b257ca13915049fad7c0b67edf0949231"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_setup_motors.py",
+      "sha256": "9dc1a712485e821c3c8bded92a84e71a4b6fda435a24058f237adfb499850bbc"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/lerobot_teleoperate.py",
+      "sha256": "8ba2fece9186aa3be55162c86dd240c583a8a5899ff151121c7fae055089417a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/scripts/push_dataset_to_hub.py",
+      "sha256": "210ba6c961b6b1b5c9a578bfbdd03adc6d5a1a53e08f1414cc83549d031e2481"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/__init__.py",
+      "sha256": "afac9c00a8fdbd2b9152e350f75fd508d0c22196020ad6df491e4b769fc11d48"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/bi_pico4/__init__.py",
+      "sha256": "ccc4c62069ed7bb9591896e151f3e69aa2deca0a1289114e4a137ff245abe243"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/bi_pico4/bi_pico4.py",
+      "sha256": "dce8a41cdc8ce61d96e3d33cd7e354ca77acc55816a5cc16dcc6eef54805b092"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/bi_pico4/config_bi_pico4.py",
+      "sha256": "024bc191ef82d9ccd7608f43650a81a0b0cd3f0704acdf938873afb0c2a7066c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/bi_trlc/__init__.py",
+      "sha256": "ef20574533cf89223717594eebca94e4330b2e5f949a86af9b8a36ea59ecd49f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/bi_trlc/bi_trlc.py",
+      "sha256": "2d1dd08a27fc536fdd66160fca86d8995ce29f8d34371c0faa3867304bd7898f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/bi_trlc/configuration_bi_trlc.py",
+      "sha256": "ba30afeff06acbccb45e569c6e2f0281077d151d606a05c6ed155645807ef967"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/btgamepad/__init__.py",
+      "sha256": "ed23a2c2be881c2a0ae559f9ee2980f420ba1ca8842c90b4b5292a915fa33c7c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/btgamepad/btgamepad_utils.py",
+      "sha256": "83f76b38a5045063f5df334ce75a08293b44767567a16a880f3ce7e87d28f50b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/btgamepad/configuration_btgamepad.py",
+      "sha256": "5b0eecf8e2c949ebdf5968f6bf367168ea701f5ce0b7b01c851d5cc8eea9ed56"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/btgamepad/teleop_btgamepad.py",
+      "sha256": "fac6ba12caaf930da5bffcff4ab599e1da7581cbb3d523ee5b355de9e8aec2e9"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/config.py",
+      "sha256": "cc9bacc17230e4c0d1532ee4c998a9d2aa4d6ec374f4606e7f447f1e3c94ba28"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/gamepad/__init__.py",
+      "sha256": "500e9c84a0cc28a9920d01270cb3378f12c4667b99056e8bb1261dbf1d0f4c7f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/gamepad/configuration_gamepad.py",
+      "sha256": "a7d9b9faa048e816ddbffb83cd79507eb19008de95949a7b1134b42fe7dd6655"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/gamepad/gamepad_utils.py",
+      "sha256": "38a121a67ff423ea5f0b9ec3d13a1ac3fb38fa1c7207daced807fd83d5e4220c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/gamepad/teleop_gamepad.py",
+      "sha256": "b946cc86623b07e63ef62092966983473e37e78a3de47a8819d1de06b377ab2d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/mock_teleop/__init__.py",
+      "sha256": "f6b087620438be547ce79edda32f57301222801258a46d1dbbec4f30155f3ea9"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/mock_teleop/config_mock_teleop.py",
+      "sha256": "c2f223e443fbe9693c1735d9512eb6ca804a9330989017ed898b54838eca5754"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/mock_teleop/teleop_mock.py",
+      "sha256": "5d6f276c0b4f327f8fa0b64fbf3ac94c86f31d37c424f9273348166a94da9d76"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/README.md",
+      "sha256": "08f9c0a3f0360a0103e09af3c5922d37262c6d8cd7ced1ee9b65004d5187d89c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/__init__.py",
+      "sha256": "da8541790bd2768773ec2cee93cd84b1741b9229eabbe9f401c9dcdfc81d7e44"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/config_pico4.py",
+      "sha256": "872f4ecb59ffdf97887cdc17d5d1a5d01b500856c67bce499f4e0dac45fd408d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/examples/pico4_controllers.py",
+      "sha256": "d80b1a81bd08d4c877da98cf2ad1caf435b0259fbe438adb7ca5298ebe954ab3"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/teleop_pico4.py",
+      "sha256": "3c90678e232fa1ee7c7cf3c9d2828f6fb016a81f13bb3241a69e3572c2f0fcbb"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/tracker.py",
+      "sha256": "730c05a710e0bb43b15c598d10839427f250a297d0d112a4fd23357bf326770e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/xensevr-pc-service-pybind/CMakeLists.txt",
+      "sha256": "5800910167765fac5ffb273ce349c4de46e40d3c86de5337192bb2a485fa8d03"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/xensevr-pc-service-pybind/bindings/py_bindings.cpp",
+      "sha256": "6e6e0b2449b7e67330ce19aff818bddab525d2dee22945a8f191ab7ea575a1e2"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/xensevr-pc-service-pybind/include/PXREARobotSDK.h",
+      "sha256": "4665952f6505d721fadff1c442fbed7fb3d0cc97637f3f18bdb75dac838f3dae"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/xensevr-pc-service-pybind/include/nlohmann/json.hpp",
+      "sha256": "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/xensevr-pc-service-pybind/include/nlohmann/json_fwd.hpp",
+      "sha256": "5cefbba751baf5243033fd894c70be9b37103d64b3d3a959e4173197d71137b9"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/xensevr-pc-service-pybind/lib/libPXREARobotSDK.so",
+      "sha256": "660bac68669e6a1489450cc350e0be956265ee819966a7a8c04df9124f3844e6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/pico4/xensevr-pc-service-pybind/setup.py",
+      "sha256": "bb7476a0d0dda305118744fb43105bf10f76db52b136731c759790c6693d72ba"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/README.md",
+      "sha256": "83172ee4d42aa97cc979eb8303b5ad45e3ee337330fd882de15e86181c114ef6"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/__init__.py",
+      "sha256": "c0c42437921429429617c5bde56dce7c90ae8d721b37a8ae7df7d7fd82819bd5"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/config_spacemouse.py",
+      "sha256": "86d1002020dc441087f36359eda93e50e84a6fa55f74364b1e96625fa4ff9047"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/01_basic.py",
+      "sha256": "abb2c62fb00716ae991c6c398008b649d0e7737ef6e034dce0fc7307c7690b3b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/02_callbacks.py",
+      "sha256": "6dc057a718e1d1e6931068f79fcf85bf534330d35d7a0334e80a690f4a96ca7f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/03_multi_device.py",
+      "sha256": "f68d2c209e9e70bc8bbb6a82ecc482acdc42380fef621193903fb26bcc1280b5"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/04_open_by_path.py",
+      "sha256": "b659283e31b464a9efc7f9e2ac2590bd63412fa2975daf38bbc1939857317a20"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/05_discovery.py",
+      "sha256": "4d4c01f86c051250839e586a869c13060791736fd52cc9a82b9b605511fe703e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/06_axis_callbacks.py",
+      "sha256": "4ad240cea89d23f2da104a9bb4614ed7163372558346449174fc0c9a1bf24c14"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/07_led.py",
+      "sha256": "7319203bb35ed11fb430be688627924ee1adeb0594575fd03f9f9b9ecdb0c491"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/08_buttons.py",
+      "sha256": "b528bb41e0aab4a74a58536a36f58926a42c0220be7e69cb81378cc1d3c9a6ad"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/examples/09_custom_config.py",
+      "sha256": "ab5e66f3e8ce2cf57d147ba81dc076a6cceb7481d9a8bdc33836554749728cf0"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/peripherals/__init__.py",
+      "sha256": "017527221d1645f42c4ced1b19d61a5a068476bcd25613f26b8b558cff8ec8cd"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/peripherals/spacemouse.py",
+      "sha256": "2449866bcc98e06feac7e01e1db73f712792629e44c932193611e3224fb41cca"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/shared_memory/__init__.py",
+      "sha256": "d390d6bb5b0e6bb58446fefa5188326388114ed4e5a11462776414fc95424b2b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/shared_memory/shared_memory_queue.py",
+      "sha256": "d24da77c99dd862015f9c70f3b1e77c4651ccccd4ade9e4d971eee19eb4fb247"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/shared_memory/shared_memory_ring_buffer.py",
+      "sha256": "d986ea82f4f58b1c542e38654e86afab4451f9a23cf37ddb6f89c31182b02817"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/shared_memory/shared_memory_util.py",
+      "sha256": "0fec50e26fd90c78b976304a92dc5fdbaa8f5e6a474c16cc6569092f33b5ce2b"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/shared_memory/shared_ndarray.py",
+      "sha256": "9b14382c3e5037d60c1d877727509f4d4ba4ab27764832abb0391c3bbba9b7d0"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/spacemouse/teleop_spacemouse.py",
+      "sha256": "e0edbbb56fe03a4629ffc33a25cb3fcb252a7ab002650e5620aefa5d0438adb9"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/teleoperator.py",
+      "sha256": "d419bd3c91f95190065b662ad67b79807977cc97064dc131d5498c8126f77680"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/trlc_leader/__init__.py",
+      "sha256": "52f965fc7e67a7b9632d533bdb2c541cd1650cf6272247653a2aab4cb26007fd"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/trlc_leader/configuration_trlc_leader.py",
+      "sha256": "d938a938302d8338a5194c5635a1ad3c36cb095fa031a40906579581bf5d478f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/trlc_leader/examples/trlc_test.py",
+      "sha256": "31c9e0a233abc988d413e2b8ba4890f568360f5a8f7c111b134a12489d424c39"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/trlc_leader/trlc_leader.py",
+      "sha256": "cb2dce02d2f315479f4576be25629b6cd0a71020356d8ddb11f16c0f126aa8d2"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/utils.py",
+      "sha256": "c9dba739143bfbaad91bfb71c2848e41d5dcd7d8c9a353ecba07168a705fd52c"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/vive_tracker/__init__.py",
+      "sha256": "3b70ab736c7f5384865266c1e3d34916f4faffb054b965687296f38b5d5bb3b9"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/vive_tracker/calibrate_vive.py",
+      "sha256": "40e2ebe9f98c0e25f41eaa09d49d77a38c040ed35c904d4fb9d77adf40ad423e"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/vive_tracker/config_vive_tracker.py",
+      "sha256": "ed7a05cd9bff4a757144a656981e6899348d93dfef42d416ab233b98d635d847"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/vive_tracker/constants.py",
+      "sha256": "5653c4c924d371e9630444de4dddd73ad31de0a1d161ebf61594fcbe99a2c5fe"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/vive_tracker/teleop_vive_tracker.py",
+      "sha256": "52b9e6fc3c67b37d726b90cb0e1eb667f5a6fefa2b417525be3fb2071693b542"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/teleoperators/vive_tracker/vive_test.py",
+      "sha256": "c85def31664611b521fc46b8ef1be362a0e9dd5d52782860a118f080ec5642f0"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/templates/lerobot_modelcard_template.md",
+      "sha256": "75166fb078b80394e70ce03099769d4a19186a1ceac238fff874ec477958640f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/constants.py",
+      "sha256": "a9dba3dc6f7db6e77b10c8bbf250ed670111425b9468f43bb51a5d0270d99458"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/control_utils.py",
+      "sha256": "e588abdad7338bd6e3a884c606ca44f48570a22c03f4decc3ec26d25c29851cc"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/decorators.py",
+      "sha256": "4f92457a9a9e87d84b935b0b072869e92cde6be1c372f82ce485a07e7a853de2"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/errors.py",
+      "sha256": "5bab3b68cbbc88a764daaa103c488a08dcf2d61ef5274931fa3d6013d2a2ec4a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/hub.py",
+      "sha256": "1981583e520bc73e221491459694d58ad1c1370537bf280968493b31c8e2c51f"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/import_utils.py",
+      "sha256": "687ee228e5be6a12697719c8f921121f779c9b63dd81a9177abfa1a2fa474d3d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/io_utils.py",
+      "sha256": "ff20af22e98148d4a89d9c2789f0bdedaf759e45eb7d94ae04a0d647d43bab82"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/logging_utils.py",
+      "sha256": "809716075fbbffb4f528c38665c51b4b0308ba9cfaaed42f21a4da7d440e5e29"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/rabc.py",
+      "sha256": "29a3ad1364e6cf16995934ed9136571f79f564b85e7aa1e4eac477e50087301a"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/random_utils.py",
+      "sha256": "3f3b373ad8ae7dd240c13eddc10c226836e31bd68bf0cd1765132599e482a17d"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/robot_utils.py",
+      "sha256": "7a2f436052215f056924a06fe3f8f04774ec8706c4bab31fe03066408b53cf35"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/rotation.py",
+      "sha256": "1b4c52538ec4ec06060145e5ff750ab3cf0d102291a982eeae2f927656bc14cd"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/transition.py",
+      "sha256": "6b17122c4244ba2a91ab49c6fa0f73c36270c5c84940dd9bd7517ae95ba345cb"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/utils.py",
+      "sha256": "682c06f4b3524c37c2e5b3aa35e13cd1d7f331bc0d0dc6c7c489bcfd322c18ae"
+    },
+    {
+      "path": "fairino_toolkit/src/lerobot/utils/visualization_utils.py",
+      "sha256": "507bf8c42f80903349c726cdd6f813b574d384520f7f352eb581c06c756fe88c"
+    },
+    {
+      "path": "fairino_toolkit/tests/run_tests.sh",
+      "sha256": "b6d47e5b271f5c0af13420fb8fd09738f5773459a7815c2ab3bdda0dc8476571"
+    },
+    {
+      "path": "fairino_toolkit/tests/离线测试记录.txt",
+      "sha256": "1a5b652dd1a99e9fa84b7f484f6429194210ec75c0995fe3be7136aad4ef81b3"
+    },
+    {
+      "path": "fairino_toolkit/tools/inspect_robot.py",
+      "sha256": "c3c63cedee7c0b84382ac52877aeed89fe22ee0e0706318c89fe19dcb1980043"
+    },
+    {
+      "path": "fairino_toolkit/tools/network_check.py",
+      "sha256": "f312ed73a7070c5d5b03f861cfbbb78491fd4ce46edc26347f58b06cdd61fe4a"
+    },
+    {
+      "path": "fairino_toolkit/tools/reset_upper_once.py",
+      "sha256": "23bfb33ac95425506aad4fef12092abf73347ebcf4b21f7a8953b5c6ed047494"
+    },
+    {
+      "path": "fairino_toolkit/tools/ros_observer.py",
+      "sha256": "55bfb1831cbf919de6becf70b6aca658e7dc6df3a3161267e98132dcd03af6cb"
+    },
+    {
+      "path": "fairino_toolkit/tools/ssh_read.py",
+      "sha256": "f321b745f40193cb7c65d065aa913f92d7f85d0b073051c7ca3a6d93b448eebc"
+    },
+    {
+      "path": "fairino_toolkit/tools/upper_reset_remote.py",
+      "sha256": "bcd0816610bd0879effc212e0e75e71935ae06cfd6d9fbd4578baed555796b24"
+    },
+    {
+      "path": "fairino_toolkit/vendor/assets/README.md",
+      "sha256": "6d1a31cae903714c28fcfac3840d5523f0edb0f2106e279f651988a5a591304a"
+    },
+    {
+      "path": "fairino_toolkit/vendor/fairino/include/data_define.h",
+      "sha256": "9a5a089227d27463ddffdb5a6051a12e9b5e3ecb2e70f816ced8a41d1c848822"
+    },
+    {
+      "path": "fairino_toolkit/vendor/fairino/include/humanorid_sdk.h",
+      "sha256": "2c3d4ff7c2239555992538ba83257e812a136ad52f7cdc5c1227074caf82fe9c"
+    },
+    {
+      "path": "fairino_toolkit/vendor/fairino/libkine_FR_7Axis.so",
+      "sha256": "f6c847773659827651d6433c86c1c57f769272a17f7ad054e1919d1c1c855fb6"
+    },
+    {
+      "path": "fairino_toolkit/vendor/lerobot_source/AI_POLICY.md",
+      "sha256": "87d384fca42a50ada93b392ac4037667b2586153a2c46e6927d946fc23e38d1d"
+    },
+    {
+      "path": "fairino_toolkit/vendor/lerobot_source/LICENSE",
+      "sha256": "0583375a0ec642ec79c447781f34322b0cfa66baff31258214d040f1f6d86d7c"
+    },
+    {
+      "path": "fairino_toolkit/vendor/lerobot_source/pyproject.toml",
+      "sha256": "ceb42c5f60a8dece0a943a41fbef5b37a6e0861604ef96a4a8f7896fafbd2a30"
+    },
+    {
+      "path": "fairino_toolkit/vendor/pico-requirements-installed.txt",
+      "sha256": "d2a5135339feb8564801e689968d53bba63e89fc1f40ac167d298f2a59d822f3"
+    },
+    {
+      "path": "fairino_toolkit/vendor/pico-requirements-validated-20261009.txt",
+      "sha256": "eb4c9cd22b5e76adea1d1f57afc046972c8b720793c6fdc69c18d3cf77543837"
+    },
+    {
+      "path": "fairino_toolkit/vendor/pico-requirements-validated-20261014.txt",
+      "sha256": "1f60bc3920f0a7e5a4edfa57da12d8040e4a9761a29b19c23e9bc985b0a079f2"
+    },
+    {
+      "path": "run.sh",
+      "sha256": "1ea80a1401228a0ad4fcf7318deb9f88f43e2aa11479a3fe1dc26ae04f885328"
+    },
+    {
+      "path": "setup.sh",
+      "sha256": "0a197baf7de1d17ee85b3166d06605473b915d1fc2fe31d9300c56bc2c495c8d"
+    },
+    {
+      "path": "文档/PICO遥操有线方案与延迟说明.md",
+      "sha256": "ae19b6f8582e80d1b81155ff31f3ca3fede2859a366557af54357ef1f1740794"
+    },
+    {
+      "path": "文档/功能汇总.md",
+      "sha256": "71b6a6e6d0493c1fea6b64eaacb2a9f581bad9c52086e020c9aa15d155e76c23"
+    },
+    {
+      "path": "文档/机器人网络配置与连接说明.md",
+      "sha256": "ec4998084b1f4f078ac91bc6ae940968b9ab76c56a0addf70390bf4fe5fab13d"
+    },
+    {
+      "path": "验证结果.json",
+      "sha256": "0d8ee6165bcc539c15da8609801ecc5d5b28e12734581d3fd2c2c6ce77582ba9"
+    }
+  ]
+}

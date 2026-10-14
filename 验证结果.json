@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-14",
+  "offline_tests": 225,
+  "suite_counts": {
+    "base": 28,
+    "joints": 41,
+    "body": 20,
+    "tcp": 45,
+    "vr_and_errors": 87,
+    "pico_preview": 4
+  },
+  "source_directory": "/home/lim/fairino-robot-toolkit",
+  "python_syntax_files": 278,
+  "shell_syntax_files": 12,
+  "robot_accessed": false,
+  "full_fresh_install_tested": false,
+  "source_only_install_changes": "Installer cache is optional; PICO official assets and Google ADB are downloaded if absent.",
+  "credential_scan": "No known login values or token/private-key patterns in tracked text."
+}

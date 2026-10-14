@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "model": "ART7-R7-20260615-flange-x-106mm-v2",
+  "name": "symmetric_bent_elbows_20261009",
+  "description": "双臂在身体两侧对称屈肘，前臂向前，腕部接近中立。基于 2026-10-09 15:27 读取姿态选择，仅移动 J1–J14。",
+  "joint_degrees": {
+    "left": [45.0, 75.0, -100.0, 85.0, 85.0, 0.0, 0.0],
+    "right": [-45.0, 75.0, 100.0, 85.0, -85.0, 0.0, 0.0]
+  },
+  "max_joint_speed_deg_s": 8.0,
+  "minimum_duration_s": 4.0,
+  "validation": "厂家 FK/IK 与模型关节限位离线校验；不是机械零位；尚未真机试动，不含环境障碍物或夹爪碰撞验证。"
+}
