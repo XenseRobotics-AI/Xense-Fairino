@@ -15,7 +15,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "53c5dd293d583349891fbad4acd5917c5c82d91584b7ef3e9fdbfa8aba4b7803"
+      "sha256": "37d9f696599563ba5fe348e2141591e02214d95ca93dc5e528a6975909c3ac4d"
     },
     {
       "path": "diagnostics/battery_diagnostics/bounded_bms_sweep.py",
@@ -347,7 +347,7 @@
     },
     {
       "path": "fairino_toolkit/scripts/pico4/README.md",
-      "sha256": "da17be20bc75c68da597c94cb08c36138d5075380b3243e0ddba82436febbfc2"
+      "sha256": "d1416329abb586f90ec4d76d94dae6c5b8138489d5721e1e8e666f0ab3e8a0e2"
     },
     {
       "path": "fairino_toolkit/scripts/pico4/assets.json",
@@ -1419,7 +1419,7 @@
     },
     {
       "path": "文档/功能汇总.md",
-      "sha256": "71b6a6e6d0493c1fea6b64eaacb2a9f581bad9c52086e020c9aa15d155e76c23"
+      "sha256": "2ff92913e960e71729b2dd0797d87daae6f5c82d2ee07571c3454a41b3ae8051"
     },
     {
       "path": "文档/机器人网络配置与连接说明.md",
