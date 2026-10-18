@@ -70,6 +70,10 @@ def decode_packet(raw):
         grip = controller.get("grip")
         if type(grip) not in (int, float) or not math.isfinite(grip) or not 0 <= grip <= 1:
             raise ValueError(f"{side} Grip 无效")
+        trigger = controller.get('trigger')
+        if trigger is not None and (type(trigger) not in (int, float) or not math.isfinite(trigger)
+                                    or not 0 <= trigger <= 1):
+            raise ValueError(f'{side} Trigger 无效')
         axes = [controller.get(k, 0.) for k in ("axisX", "axisY")]
         if any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 1.001 for v in axes):
             raise ValueError(f"{side} 摇杆数据无效")
@@ -77,6 +81,7 @@ def decode_packet(raw):
         if type(click) is not bool:
             raise ValueError(f"{side} 摇杆按压数据无效")
         result[side] = {"pose": pose, "grip": grip,
+            "trigger": trigger, "trigger_available": trigger is not None,
             "primary": bool(controller.get("primaryButton", False)),
             "secondary": bool(controller.get("secondaryButton", False)),
             "axis_x": float(axes[0]), "axis_y": float(axes[1]), "axis_click": click,

@@ -250,8 +250,9 @@ class Worker:
                 device.close()
             except Exception as exc:
                 errors[side] = str(exc)
-        emit(disabled_confirmed=not errors, cleanup_errors=errors)
-        return not errors
+        confirmed = not errors and all(not d.last.get('enabled') for d in self.devices.values())
+        emit(disabled_confirmed=confirmed, cleanup_errors=errors)
+        return confirmed
 
 
 def main():

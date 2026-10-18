@@ -22,6 +22,7 @@ class TeleopPanel(Gtk.Box):
         self.process = self.service = None
         self.events = queue.Queue()
         self.closed = False
+        self.gripper_lease = False
         self.pack_start(Gtk.Label(label='PICO 双臂遥操', xalign=0), False, False, 0)
         text = ('右手柄 → 左臂，左手柄 → 右臂；握 Grip 跟随，松开保持。\n'
                 'A/X 冻结旋转，B/Y 冻结位移；450 Hz 控制由独立进程执行。\n'
@@ -32,6 +33,23 @@ class TeleopPanel(Gtk.Box):
         self.home = Gtk.CheckButton(label='启动后先回双臂 Home（会运动）；不勾选则保持当前姿态')
         self.home.set_active(True)
         self.pack_start(self.home, False, False, 0)
+        self.grippers = Gtk.CheckButton(label='同时使能 TacCap 夹爪遥操 · Trigger 连续控制开度')
+        self.grippers.set_active(False)
+        self.pack_start(self.grippers, False, False, 0)
+        gripper_row = Gtk.Box(spacing=8)
+        self.gripper_serials = {}
+        for side, title in [('left', '左爪 SN'), ('right', '右爪 SN')]:
+            gripper_row.pack_start(Gtk.Label(label=title), False, False, 0)
+            entry = Gtk.Entry()
+            entry.set_placeholder_text('留空按 SDK 左右识别')
+            entry.set_width_chars(23)
+            self.gripper_serials[side] = entry
+            gripper_row.pack_start(entry, False, False, 0)
+        self.pack_start(gripper_row, False, False, 0)
+        gripper_help = Gtk.Label(label='控制某臂的手柄 Trigger → 对应夹爪；松开张开、压到底闭合，中间线性映射。\n'
+            '首次启动与暂停后先保持，松开 Trigger 再按压开始；Grip 仍用于手臂跟随。', xalign=0)
+        gripper_help.set_line_wrap(True)
+        self.pack_start(gripper_help, False, False, 0)
         row = Gtk.Box(spacing=8)
         self.stop_button = None
         for title, callback in [('启动 PICO 接收服务', self.start_service), ('启动遥操 · 使能上半身', self.start),
@@ -55,6 +73,9 @@ class TeleopPanel(Gtk.Box):
         self.status = Gtk.Label(label='遥操未启动', xalign=0)
         self.status.set_line_wrap(True)
         self.pack_start(self.status, False, False, 0)
+        self.gripper_status = Gtk.Label(label='夹爪遥操未启用', xalign=0)
+        self.gripper_status.set_line_wrap(True)
+        self.pack_start(self.gripper_status, False, False, 0)
         scroll = Gtk.ScrolledWindow()
         self.log = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         scroll.add(self.log)
@@ -99,11 +120,20 @@ class TeleopPanel(Gtk.Box):
         credentials = self.credentials('upper')
         if credentials is None or not self.acquire('upper', '遥操'):
             return
+        if self.grippers.get_active():
+            if not self.acquire('gripper', '遥操'):
+                self.release('upper', '遥操')
+                return
+            self.gripper_lease = True
         host, user, password = credentials
         try:
             argv = ['bash', str(ROOT/'run.sh'), 'vr', '--gui-stdio', '--host', host, '--user', user]
             if not self.home.get_active():
                 argv.append('--no-auto-home')
+            if self.grippers.get_active():
+                argv.append('--grippers')
+                for side in ('left', 'right'):
+                    argv.extend([f'--{side}-gripper-sn', self.gripper_serials[side].get_text().strip()])
             self.process = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
             self.process.stdin.write(json.dumps({'password': password}) + '\n')
@@ -115,6 +145,9 @@ class TeleopPanel(Gtk.Box):
             if self.process and self.process.poll() is None:
                 self.process.terminate()
             self.release('upper', '遥操')
+            if self.gripper_lease:
+                self.release('gripper', '遥操')
+                self.gripper_lease = False
             self.append(str(exc))
 
     def command(self, command):
@@ -133,6 +166,9 @@ class TeleopPanel(Gtk.Box):
             name, data = self.events.get_nowait()
             if name == 'vr_exit':
                 self.release('upper', '遥操')
+                if self.gripper_lease:
+                    self.release('gripper', '遥操')
+                    self.gripper_lease = False
                 self.home.set_sensitive(True)
                 self.status.set_text(f'遥操已退出，返回码 {data}；下使能结果见下方日志')
                 if self.process:
@@ -144,11 +180,24 @@ class TeleopPanel(Gtk.Box):
                     self.status.set_text(f'{state["phase"]} · {state["sides"]} · 灵敏度 {state["sensitivity"]:g}\n'
                         f'Grip 左 {grips.get("left", 0):.2f} / 右 {grips.get("right", 0):.2f} · '
                         f'使能 {state["enabled"]}/20 · 下发 {state["send_hz"]:.0f} / 接收 {state["accepted_hz"]:.0f} Hz')
+                    grippers = state.get('grippers')
+                    if grippers:
+                        units = grippers.get('devices', {})
+                        values = []
+                        for side, label in [('left', '左爪'), ('right', '右爪')]:
+                            unit = units.get(side)
+                            values.append(f'{label} {unit["position"]*100:.1f}% / {unit["state"]}' if unit else f'{label}未连接')
+                        self.gripper_status.set_text(grippers.get('message', '')+'\n'+' · '.join(values))
+                    else:
+                        self.gripper_status.set_text('夹爪遥操未启用')
                 except (ValueError, KeyError, TypeError):
                     self.append('遥操状态格式异常')
             else:
                 self.append(f'[{name}] {data}')
         running = self.process is not None and self.process.poll() is None
+        self.grippers.set_sensitive(not running and not self.closed)
+        for entry in self.gripper_serials.values():
+            entry.set_sensitive(not running and not self.closed)
         self.stop_button.set_sensitive(running)
         for button in self.command_buttons:
             button.set_sensitive(running)

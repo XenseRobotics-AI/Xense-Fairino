@@ -3,6 +3,7 @@
 import argparse
 import base64
 import contextlib
+import getpass
 import json
 import math
 import queue
@@ -78,15 +79,17 @@ def key():
     return ""
 
 
-def wait_for_input(stream, duration=30.):
+def wait_for_input(stream, duration=30., require_triggers=False):
     deadline = time.monotonic()+duration
     previous = None
     while time.monotonic() < deadline:
         try:
             frame = stream.read()
-            if all(frame[s]["grip"] <= .3 for s in ARMS):
+            triggers_ready = not require_triggers or all(frame[s].get('trigger_available')
+                                                       and frame[s]['trigger'] <= .02 for s in ARMS)
+            if all(frame[s]["grip"] <= .3 for s in ARMS) and triggers_ready:
                 return frame
-            message = "启动前请松开左右 Grip。"
+            message = "启动前请松开左右 Grip" + (' 和 Trigger，确认扳机数据可用。' if require_triggers else '。')
         except ValueError as exc:
             message = str(exc)
         if message != previous:
@@ -126,6 +129,7 @@ def operate(args, kin, stream, connection):
     stream_bad_since = None
     checked = False
     startup = time.monotonic()
+    grippers = getattr(args, 'gripper_control', None)
     action_path = connection.log_path.with_suffix(".actions.jsonl")
     print("日志：", connection.log_path, flush=True)
     if args.execute:
@@ -324,6 +328,9 @@ def operate(args, kin, stream, connection):
                 paused = True
                 outgoing = None
                 cartesian.reset()
+            if grippers is not None:
+                grippers.update(frame, hands, bool(frame and status.get('ready') and not paused
+                                and not home_pending and home_motion is None and not stop_reason))
             connection.send(request=outgoing, kinematics=proof if frame else None)
             if now-last_display > 1.:
                 sides = "/".join(last_sides) if outgoing else "保持"
@@ -344,6 +351,8 @@ def operate(args, kin, stream, connection):
                     from vr_gui_ipc import status as gui_status
                     gui_status(phase=phase, sensitivity=sensitivity, sides=sides,
                         grips={s: frame[s]["grip"] for s in ARMS} if frame else {},
+                        triggers={s: frame[s].get('trigger') for s in ARMS} if frame else {},
+                        grippers=grippers.snapshot() if grippers is not None else None,
                         enabled=sum(hw.get("enabled", [])), **rate_data)
                 last_display = now
             # Both target generation and heartbeat follow one absolute cadence.
@@ -381,6 +390,10 @@ def main(argv=None):
                         help="A/X 按住冻结旋转，B/Y 按住冻结位移；灵敏度用左摇杆或 +/-，暂停用左摇杆按压或空格")
     parser.add_argument("--home-file", type=Path, default=DEFAULT_HOME, help="双臂 Home 七轴配置文件")
     parser.add_argument("--no-auto-home", action="store_true", help="本次启动保持姿态，不自动回 Home；右摇杆回 Home 仍可用")
+    parser.add_argument('--grippers', action=argparse.BooleanOptionalAction, default=False,
+                        help='显式使能 TacCap 夹爪遥操；控制某臂的 Trigger 连续控制对应夹爪，Grip 仍控制双臂跟随')
+    parser.add_argument('--left-gripper-sn', default='', help='可选：机器人左爪固件 SN；留空按 SDK Left')
+    parser.add_argument('--right-gripper-sn', default='', help='可选：机器人右爪固件 SN；留空按 SDK Right')
     parser.add_argument("--gui-stdio", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.observe_ros and not args.link_check:
@@ -389,7 +402,7 @@ def main(argv=None):
         Timing.from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
-    stream = connection = None
+    stream = connection = grippers = None
     code = 0
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
@@ -402,10 +415,16 @@ def main(argv=None):
         if args.execute:
             stream = Stream()
             stream.open()
-            wait_for_input(stream)
+            wait_for_input(stream, require_triggers=args.grippers)
+        if args.grippers and args.execute and password is None:
+            password = getpass.getpass(f'SSH 密码（{args.user}@{args.host}）：')
         logs = ROOT/".local/pico4/fairino-logs"
         logs.mkdir(parents=True, exist_ok=True)
         connection = Connection(args, worker_command=remote_command(args), log_directory=logs, password=password)
+        if args.execute and args.grippers:
+            from vr_grippers import GripperTeleop
+            grippers = GripperTeleop(args, password).start()
+            args.gripper_control = grippers
         password = None
         if args.link_check:
             from vr_link_check import run_client
@@ -418,6 +437,8 @@ def main(argv=None):
         print("停止："+str(exc), file=sys.stderr, flush=True)
         code = 1
     finally:
+        if grippers is not None:
+            grippers.close()
         if connection is not None:
             connection.finish()
             if args.execute:
@@ -426,6 +447,12 @@ def main(argv=None):
                 else:
                     print("未收到全部下使能确认，请现场检查。", file=sys.stderr, flush=True)
                     code = 1
+        if grippers is not None:
+            if not grippers.finish():
+                print('夹爪退出或下使能未确认，请查看夹爪状态与 logs/gripper。', file=sys.stderr, flush=True)
+                code = 1
+            else:
+                print('已确认本会话夹爪下使能。', flush=True)
         if stream is not None:
             stream.close()
     return code

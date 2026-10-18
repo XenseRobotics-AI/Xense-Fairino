@@ -2,6 +2,17 @@
 
 模块位于 `scripts/pico4/`。全部命令从仓库根目录运行。
 
+夹爪遥操在工作台「PICO 遥操」页显式勾选「同时使能 TacCap 夹爪遥操」后生效。
+命令行使用 `bash run.sh vr --grippers`，原 `bash run.sh vr` 仍只启用上半身。
+Grip 保持双臂跟随；食指 Trigger 按压量线性映射为夹爪闭合程度，
+`开度 = 1 - Trigger`。与手臂保持同一手柄对应关系：默认镜像配置中右手柄控制左臂/左爪。
+左右 SN 留空按 SDK Left/Right 识别，也可分别指定固件 SN；缺少一侧不复用另一侧设备。
+
+启动、Home、暂停和失去有效输入期间夹爪保持；启动与恢复时先松开 Trigger，再按压开始。
+按压后松开对应全开。暂停取消当前夹爪行程但保持使能，退出请求夹爪下使能。
+夹爪网络与串口控制在独立线程/进程运行，不阻塞双臂高频控制。
+调试页和遥操共用 [夹爪接口](../../apps/gripper_control/README.md)。
+
 ```bash
 bash setup.sh all
 bash run.sh pico check
