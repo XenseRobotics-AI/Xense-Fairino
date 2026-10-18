@@ -20,9 +20,10 @@ from pathlib import Path
 from paths import ROOT, TCP, SHARED
 from upper_keyboard import Connection
 from tcp_keyboard import verify_both
-from tcp_core import ARMS
+from tcp_core import ARMS, MODEL_ID
 from vendor_kinematics import VendorKinematics
-from vr_core import validate
+from vr_core import validate, KIND
+from vr_lift import LiftInput
 from vr_input import Clutch, Stream, MAPPING_ID, POSE_FRAMES, controller_sides, rotation_mapping
 from vr_controls import JoystickControls, sensitivity_step
 from vr_home import DEFAULT_HOME, load_home, HomeMotion
@@ -38,6 +39,8 @@ def remote_command(args):
     bundle = {name: (SHARED/(name+".py")).read_text() for name in ("probe_core", "robot_probe")}
     bundle.update({name: (TCP/(name+".py")).read_text() for name in ("tcp_core", "tcp_frames", "tcp_jog", "tcp_robot")})
     bundle.update({name: (HERE/(name+".py")).read_text() for name in ("vr_timing", "vr_core", "vr_link_check", "vr_robot")})
+    bundle['body_core'] = (SHARED/'body_control/body_core.py').read_text()
+    bundle['vr_lift'] = (HERE/'vr_lift.py').read_text()
     encoded = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
     argv = ["vr_robot.py", *Timing.from_args(args).argv()]
     if getattr(args, "link_check", False):
@@ -46,9 +49,13 @@ def remote_command(args):
             argv.append("--observe-ros")
     elif not args.execute:
         argv.append("--prepare-check" if args.prepare_check else "--check")
+    if getattr(args, 'body_lift', False):
+        config = json.loads((SHARED/'body_control/body_config.json').read_text())
+        argv.extend(['--body-lift', '--body-config-json', json.dumps(config),
+                     '--lift-speed-mm-s', str(getattr(args, 'lift_speed_mm_s', 15.))])
     loader = ("import base64,zlib,json,sys,types;"
         f"bundle=json.loads(zlib.decompress(base64.b64decode({encoded!r})));\n"
-        "for name in ('probe_core','robot_probe','tcp_core','tcp_frames','tcp_jog','tcp_robot','vr_timing','vr_core','vr_link_check'):\n"
+        "for name in ('probe_core','robot_probe','tcp_core','tcp_frames','tcp_jog','tcp_robot','body_core','vr_lift','vr_timing','vr_core','vr_link_check'):\n"
         " m=types.ModuleType(name);sys.modules[name]=m;exec(compile(bundle[name],name+'.py','exec'),m.__dict__)\n"
         f"sys.argv={argv!r}\n"
         "exec(compile(bundle['vr_robot'],'vr_robot.py','exec'),{'__name__':'__main__'})")
@@ -79,7 +86,7 @@ def key():
     return ""
 
 
-def wait_for_input(stream, duration=30., require_triggers=False):
+def wait_for_input(stream, duration=30., require_triggers=False, require_lift=False):
     deadline = time.monotonic()+duration
     previous = None
     while time.monotonic() < deadline:
@@ -87,9 +94,13 @@ def wait_for_input(stream, duration=30., require_triggers=False):
             frame = stream.read()
             triggers_ready = not require_triggers or all(frame[s].get('trigger_available')
                                                        and frame[s]['trigger'] <= .02 for s in ARMS)
-            if all(frame[s]["grip"] <= .3 for s in ARMS) and triggers_ready:
+            lift_ready = not require_lift or (frame['right'].get('joystick_available')
+                         and abs(frame['right']['axis_y']) <= .2 and not frame['right']['axis_click'])
+            if all(frame[s]["grip"] <= .3 for s in ARMS) and triggers_ready and lift_ready:
                 return frame
             message = "启动前请松开左右 Grip" + (' 和 Trigger，确认扳机数据可用。' if require_triggers else '。')
+            if require_lift:
+                message += '右摇杆需回中并松开按压。'
         except ValueError as exc:
             message = str(exc)
         if message != previous:
@@ -130,11 +141,18 @@ def operate(args, kin, stream, connection):
     checked = False
     startup = time.monotonic()
     grippers = getattr(args, 'gripper_control', None)
+    lift_input = LiftInput() if getattr(args, 'body_lift', False) else None
+    lift_value = 0.
+    last_lift_value, last_lift_log = 0., 0.
     action_path = connection.log_path.with_suffix(".actions.jsonl")
     print("日志：", connection.log_path, flush=True)
     if args.execute:
         print("即将使能 J1–J20；" + ("先自动回双臂 Home，完成后握 Grip 遥操。" if home_pending else "保持当前姿态，握 Grip 遥操。"), flush=True)
         print("左摇杆上/下：灵敏度增/减一档；右摇杆按压：回 Home（再按中止）；左摇杆按压：暂停。", flush=True)
+        if lift_input:
+            print(f'右摇杆上/下：身体竖直升降，回中保持；最高 {args.lift_speed_mm_s:g} mm/s，沿用身体高低标定。', flush=True)
+        if grippers:
+            print('夹爪遥操已显式启用：控制某臂的 Trigger 连续控制同侧夹爪；Grip 仍控制手臂跟随。', flush=True)
         print("Home 仅移动双臂；请松开两侧 Grip，途中握任一 Grip 或按空格可中止。", flush=True)
         if freeze_buttons:
             print("按住 A/X 冻结旋转（只平移）；按住 B/Y 冻结位移（只旋转）；同时按住冻结两者。", flush=True)
@@ -328,9 +346,25 @@ def operate(args, kin, stream, connection):
                 paused = True
                 outgoing = None
                 cartesian.reset()
+            auxiliary_active = bool(frame and status.get('ready') and not paused
+                                    and not home_pending and home_motion is None and not stop_reason)
+            if lift_input is not None:
+                lift_value = lift_input.value(frame, auxiliary_active)
+                if lift_value:
+                    if outgoing is None:
+                        sequence += 1
+                        outgoing = dict(kind=KIND, model=MODEL_ID, id=sequence, created=status['stamp'], arms={})
+                        targets_rate.mark(now)
+                    outgoing = {**outgoing, 'lift': lift_value}
+                if ((lift_value and now-last_lift_log >= .1)
+                        or bool(lift_value) != bool(last_lift_value)):
+                    log.write(json.dumps({'local_time': time.time(), 'event': 'body_lift_input',
+                        'axis': lift_value, 'request_id': outgoing.get('id') if outgoing else None,
+                        'body': status.get('body')}, allow_nan=False)+'\n')
+                    last_lift_log = now
+                last_lift_value = lift_value
             if grippers is not None:
-                grippers.update(frame, hands, bool(frame and status.get('ready') and not paused
-                                and not home_pending and home_motion is None and not stop_reason))
+                grippers.update(frame, hands, auxiliary_active)
             connection.send(request=outgoing, kinematics=proof if frame else None)
             if now-last_display > 1.:
                 sides = "/".join(last_sides) if outgoing else "保持"
@@ -347,12 +381,21 @@ def operate(args, kin, stream, connection):
                       + f" | 下发 {rate_data['send_hz']:.1f} / 接收 {rate_data['accepted_hz']:.1f} / 回传 {rate_data['feedback_hz']:.1f} Hz"
                       + f" / 硬件反馈 {rate_data['hardware_observed_hz']:.1f} Hz"
                       + (f" | 冻结 {frozen}" if frozen else ""), flush=True)
+                if lift_input and status.get('body'):
+                    body = status['body']
+                    print(f'身体 {body["height"]:.1f}% / 相对低位 {body["height_mm"]:.1f} mm · 右摇杆 {lift_value:+.2f}', flush=True)
+                if grippers:
+                    gs = grippers.snapshot()
+                    units = ' / '.join(f'{s}: {u["position"]*100:.1f}%' for s,u in gs['devices'].items())
+                    print(f'夹爪：{gs["message"]}'+(' · '+units if units else ''), flush=True)
                 if getattr(args, "gui_input", None):
                     from vr_gui_ipc import status as gui_status
                     gui_status(phase=phase, sensitivity=sensitivity, sides=sides,
                         grips={s: frame[s]["grip"] for s in ARMS} if frame else {},
                         triggers={s: frame[s].get('trigger') for s in ARMS} if frame else {},
                         grippers=grippers.snapshot() if grippers is not None else None,
+                        body=status.get('body'), lift_axis=lift_value,
+                        body_lift_enabled=bool(lift_input),
                         enabled=sum(hw.get("enabled", [])), **rate_data)
                 last_display = now
             # Both target generation and heartbeat follow one absolute cadence.
@@ -394,6 +437,9 @@ def main(argv=None):
                         help='显式使能 TacCap 夹爪遥操；控制某臂的 Trigger 连续控制对应夹爪，Grip 仍控制双臂跟随')
     parser.add_argument('--left-gripper-sn', default='', help='可选：机器人左爪固件 SN；留空按 SDK Left')
     parser.add_argument('--right-gripper-sn', default='', help='可选：机器人右爪固件 SN；留空按 SDK Right')
+    parser.add_argument('--body-lift', action=argparse.BooleanOptionalAction, default=False,
+                        help='显式启用右摇杆上下控制身体竖直升降，回中保持')
+    parser.add_argument('--lift-speed-mm-s', type=positive, default=15., help='身体竖直速度；关节速度沿用身体配置的默认值')
     parser.add_argument("--gui-stdio", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.observe_ros and not args.link_check:
@@ -415,7 +461,7 @@ def main(argv=None):
         if args.execute:
             stream = Stream()
             stream.open()
-            wait_for_input(stream, require_triggers=args.grippers)
+            wait_for_input(stream, require_triggers=args.grippers, require_lift=args.body_lift)
         if args.grippers and args.execute and password is None:
             password = getpass.getpass(f'SSH 密码（{args.user}@{args.host}）：')
         logs = ROOT/".local/pico4/fairino-logs"

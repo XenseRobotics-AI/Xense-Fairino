@@ -2,8 +2,9 @@
 import math
 from tcp_core import MODEL_ID, ARMS, check_arm_limits, finite_vector, tcp_forward_matrix, pose_error
 from tcp_jog import LEASE
+from vr_lift import lift_axis
 
-KIND = "fairino_pico_cartesian_v3"
+KIND = "fairino_pico_cartesian_v4"
 
 
 def direct_positions(current, targets, held):
@@ -41,7 +42,8 @@ def validate(hw, request, now):
     if type(created) not in (int, float) or not math.isfinite(created) or not 0 <= now-created <= LEASE:
         raise ValueError("PICO 目标超过 0.25 秒未更新")
     arms = request.get("arms")
-    if not isinstance(arms, dict) or not arms or not set(arms) <= set(ARMS):
+    lift = lift_axis(request)
+    if not isinstance(arms, dict) or (not arms and abs(lift) <= .2) or not set(arms) <= set(ARMS):
         raise ValueError("无效的双臂目标")
     targets = {}
     for side, entry in arms.items():

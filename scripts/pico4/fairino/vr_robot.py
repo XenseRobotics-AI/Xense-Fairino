@@ -11,6 +11,7 @@ import robot_probe as rp
 from tcp_robot import TCPProbe, load_ros
 from tcp_jog import LEASE
 from vr_core import validate, direct_positions, KIND
+from vr_lift import LiftPlanner, lift_axis, DEADBAND
 from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
 
 
@@ -24,6 +25,9 @@ class VRProbe(TCPProbe):
 
     def __init__(self, args):
         self.input_event = threading.Event()
+        self.lift = LiftPlanner(json.loads(args.body_config_json), args.lift_speed_mm_s) if getattr(args, 'body_lift', False) else None
+        self.lift_axis_active = False
+        self.lift_stop_deadline = None
         super().__init__(args)
 
     def read_input(self):
@@ -60,6 +64,13 @@ class VRProbe(TCPProbe):
 
     def guard(self, link=True, cancel=True):
         rp.Probe.guard(self, link, cancel)
+        deadline = getattr(self, 'lift_stop_deadline', None)
+        if deadline is not None:
+            if max(abs(v) for v in self.hw['velocity'][17:20]) < .005:
+                self.lift_stop_deadline = None
+                self.moving_joints = list(range(1, 15)) if self.path is not None else None
+            elif time.monotonic() > deadline:
+                raise RuntimeError('身体摇杆回中后未确认停止')
 
     def on_hw(self, msg):
         super().on_hw(msg)
@@ -90,7 +101,9 @@ class VRProbe(TCPProbe):
                 target_rate_hz=rate.hz(now) if rate else 0.,
                 hardware_observed_hz=self.hardware_rate.hz(now) if hasattr(self, "hardware_rate") else 0.,
                 command_trace=getattr(self, "command_trace", None),
-                last_target_age_ms=getattr(self, "last_target_age_ms", None), **extra)
+                last_target_age_ms=getattr(self, "last_target_age_ms", None),
+                body=self.lift.model.state(self.hw['position']) if getattr(self, 'lift', None) and self.hw else None,
+                body_lift_enabled=bool(getattr(self, 'lift', None)), **extra)
 
     def publish_positions(self, points, now):
         msg = rp.JointTrajectory()
@@ -117,19 +130,26 @@ class VRProbe(TCPProbe):
         if self.path is not None:
             now = time.monotonic()
             current = self.path[-1][1][:]
+            if getattr(self, 'lift', None):
+                self.hold_positions[17:20] = current[17:20]
             hold = direct_positions(current, {}, self.hold_positions)
             self.publish_positions(hold, now)
             self.pump(.05)
             deadline = time.monotonic()+3.
             while max(abs(v) for v in self.hw["velocity"]) > .005:
                 if time.monotonic() > deadline:
-                    raise RuntimeError("松开 Grip 后未确认停止")
+                    raise RuntimeError("释放输入后未确认停止")
                 self.pump()
             if max(abs(a-b) for a, b in zip(self.hw["command_position"], hold[-1][1])) > 1e-5:
                 raise RuntimeError("控制器未确认停止保持目标")
             self.hold_positions[:14] = self.hw["command_position"][:14]
+            if getattr(self, 'lift', None):
+                self.hold_positions[17:20] = self.hw['command_position'][17:20]
+                self.lift.reset()
         self.path = None
         self.moving_joints = None
+        self.lift_axis_active = False
+        self.lift_stop_deadline = None
         self.stationary_enabled()
         self.phase = reason+"；全部关节保持位置"
         self.ready = True
@@ -151,7 +171,8 @@ class VRProbe(TCPProbe):
             if time.monotonic() > deadline:
                 raise RuntimeError("双臂轨迹接口未就绪")
             self.pump()
-        self.phase = "双臂就绪；各自握住 Grip 移动，松开停止；J15–J20 保持"
+        self.phase = ('双臂就绪；Grip 跟随，右摇杆上下升降，回中保持' if getattr(self, 'lift', None)
+                      else '双臂就绪；各自握住 Grip 移动，松开停止；J15–J20 保持')
         self.report(True)
         accepted = None
         blocked = False
@@ -163,7 +184,8 @@ class VRProbe(TCPProbe):
             now = time.monotonic()
             if request is None:
                 if self.path is not None:
-                    self.stop_stream("Grip 已松开或输入暂停")
+                    self.stop_stream('Grip / 升降摇杆已释放或输入暂停' if getattr(self, 'lift', None)
+                                     else 'Grip 已松开或输入暂停')
                 accepted = None
                 blocked = False
                 continue
@@ -184,6 +206,20 @@ class VRProbe(TCPProbe):
                         self.moving_joints = list(range(1, 15))
                     current = self.hold_positions[:] if self.path is None else self.path[-1][1][:]
                     points = direct_positions(current, targets, self.hold_positions)
+                    axis = lift_axis(request)
+                    lift = getattr(self, 'lift', None)
+                    if abs(axis) > DEADBAND and lift is None:
+                        raise ValueError('本次遥操未启用身体升降')
+                    if lift is not None:
+                        points[-1][1][17:20] = lift.sample(axis, points[-1][1], now)[17:20]
+                        active = abs(axis) > DEADBAND
+                        if active:
+                            self.lift_stop_deadline = None
+                            self.moving_joints = list(range(1, 15))+[18, 19, 20]
+                        elif getattr(self, 'lift_axis_active', False):
+                            self.lift_stop_deadline = now+1.
+                        self.lift_axis_active = active
+                        self.hold_positions[17:20] = points[-1][1][17:20]
                     self.publish_positions(points, now)
                     self.command_trace = {"id": request["id"],
                         "client_send": packet.get("client_send_monotonic"),
@@ -197,7 +233,8 @@ class VRProbe(TCPProbe):
                     self.last_request = request["id"]
                 if now-accepted["created"] > LEASE:
                     raise ValueError("PICO 目标超过 0.25 秒未更新")
-                self.phase = "双臂 PICO 位置控制中；松开对应 Grip 停止并保持"
+                self.phase = ('PICO 双臂 / 身体升降；右摇杆回中保持' if getattr(self, 'lift_axis_active', False)
+                              else '双臂 PICO 位置控制中；松开对应 Grip 停止并保持')
                 self.ready = True
             except ValueError as exc:
                 self.emit(jog_rejected=str(exc))
@@ -214,6 +251,9 @@ def main():
     mode.add_argument("--link-check", action="store_true")
     parser.add_argument("--duration", type=float, default=10.)
     parser.add_argument("--observe-ros", action="store_true")
+    parser.add_argument('--body-lift', action='store_true')
+    parser.add_argument('--body-config-json')
+    parser.add_argument('--lift-speed-mm-s', type=float, default=15.)
     add_timing_arguments(parser)
     args = parser.parse_args()
     try:

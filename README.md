@@ -22,6 +22,10 @@ bash run.sh console --demo        # 不连接机器人的界面演示
 
 独立 `base / joints / body / tcp / map / vr / errors` 入口保留。工作台嵌入原有控制界面，地图窗口使用同一个 `MapPanel`，清错调用同一份远端实现，因此修改功能模块会同时影响集成与独立运行。
 
+新增「夹爪调试」页，也可单独运行 `bash run.sh gripper`：按固件 SN 识别左右 TacCap / XTac，从只读连接开始，分别使能、调节连续开度、闭合、保持和下使能。与 PICO 共用同一 SDK 接口。
+
+PICO 页显式勾选夹爪和身体升降后再启动：食指 Trigger 线性控制对应夹爪（松开张开、压到底闭合），Grip 继续控制手臂跟随；右摇杆上下控制标定范围内的竖直升降，回中保持。身体升降复用身体程序的模型和标定，与双臂共用一个二十轴控制实例。命令行对应 `bash run.sh vr --grippers --body-lift`，选项默认关闭，开窗口不会使能。详见 [PICO 说明](scripts/pico4/README.md) 与 [夹爪说明](apps/gripper_control/README.md)。
+
 ## 统一底盘与里程计配置
 
 新底盘程序只使用 `eight_dof_chassis_controller`，原始里程计固定为 `/eight_dof_chassis_controller/odom`。第一次使用前需要迁移机器人配置；默认命令仅预览，`--execute` 才写入，均不重启驱动、不使能：

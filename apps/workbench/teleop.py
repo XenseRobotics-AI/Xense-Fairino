@@ -23,7 +23,7 @@ class TeleopPanel(Gtk.Box):
         self.events = queue.Queue()
         self.closed = False
         self.gripper_lease = False
-        self.pack_start(Gtk.Label(label='PICO 双臂遥操', xalign=0), False, False, 0)
+        self.pack_start(Gtk.Label(label='PICO 遥操 · 双臂 / 夹爪 / 身体', xalign=0), False, False, 0)
         text = ('右手柄 → 左臂，左手柄 → 右臂；握 Grip 跟随，松开保持。\n'
                 'A/X 冻结旋转，B/Y 冻结位移；450 Hz 控制由独立进程执行。\n'
                 '先启动接收服务，在头显选择电脑 IP 并打开 Controller / Send。')
@@ -50,6 +50,9 @@ class TeleopPanel(Gtk.Box):
             '首次启动与暂停后先保持，松开 Trigger 再按压开始；Grip 仍用于手臂跟随。', xalign=0)
         gripper_help.set_line_wrap(True)
         self.pack_start(gripper_help, False, False, 0)
+        self.body_lift = Gtk.CheckButton(label='启用身体竖直升降 · 右摇杆上下，回中保持（沿用高低位标定）')
+        self.body_lift.set_active(False)
+        self.pack_start(self.body_lift, False, False, 0)
         row = Gtk.Box(spacing=8)
         self.stop_button = None
         for title, callback in [('启动 PICO 接收服务', self.start_service), ('启动遥操 · 使能上半身', self.start),
@@ -134,6 +137,8 @@ class TeleopPanel(Gtk.Box):
                 argv.append('--grippers')
                 for side in ('left', 'right'):
                     argv.extend([f'--{side}-gripper-sn', self.gripper_serials[side].get_text().strip()])
+            if self.body_lift.get_active():
+                argv.append('--body-lift')
             self.process = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
             self.process.stdin.write(json.dumps({'password': password}) + '\n')
@@ -190,12 +195,18 @@ class TeleopPanel(Gtk.Box):
                         self.gripper_status.set_text(grippers.get('message', '')+'\n'+' · '.join(values))
                     else:
                         self.gripper_status.set_text('夹爪遥操未启用')
+                    if state.get('body_lift_enabled'):
+                        body = state.get('body')
+                        self.gripper_status.set_text(self.gripper_status.get_text()+'\n'+(
+                            f'身体 {body["height"]:.1f}% / 相对低位 {body["height_mm"]:.1f} mm · '
+                            f'右摇杆 {state.get("lift_axis", 0.):+.2f}' if body else '等待身体高度反馈'))
                 except (ValueError, KeyError, TypeError):
                     self.append('遥操状态格式异常')
             else:
                 self.append(f'[{name}] {data}')
         running = self.process is not None and self.process.poll() is None
         self.grippers.set_sensitive(not running and not self.closed)
+        self.body_lift.set_sensitive(not running and not self.closed)
         for entry in self.gripper_serials.values():
             entry.set_sensitive(not running and not self.closed)
         self.stop_button.set_sensitive(running)
