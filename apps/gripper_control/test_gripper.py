@@ -196,6 +196,72 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '0.25'):
             worker.command(dict(id=1, created=10., action='enable', side='both'), 10.3)
 
+    def test_real_worker_loop_holds_on_target_loss_and_disables_on_link_loss(self):
+        events, outputs = [], queue.Queue()
+        class Input:
+            def __init__(self):
+                self.lines = queue.Queue()
+            def __iter__(self):
+                while True:
+                    line = self.lines.get()
+                    if line is None:
+                        return
+                    yield line
+        source = Input()
+        worker = Worker(fake_sdk(events))
+        def connect():
+            worker.endpoints = []
+            worker.devices['left'] = Device(worker.sdk, endpoint())
+        worker.connect = connect
+        acknowledge = [True]
+        latest = [0.]
+        def emit(**value):
+            outputs.put(value)
+            if value.get('stamp'):
+                latest[0] = value['stamp']
+                if acknowledge[0]:
+                    source.lines.put(json.dumps({'ack': latest[0]})+'\n')
+        result = []
+        def run():
+            try:
+                worker.run()
+            except RuntimeError as exc:
+                result.append(str(exc))
+            finally:
+                worker.close()
+                source.lines.put(None)
+        def wait_for(predicate):
+            deadline = time.monotonic()+3.
+            while time.monotonic() < deadline:
+                value = outputs.get(timeout=3.)
+                if predicate(value):
+                    return value
+            self.fail('worker simulation timed out')
+        with patch('worker.sys.stdin', source), patch('worker.emit', emit):
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            try:
+                wait_for(lambda value: 'stamp' in value)
+                source.lines.put(json.dumps({'ack': latest[0], 'request':dict(
+                    action='enable', side='left', id=1, created=latest[0])})+'\n')
+                wait_for(lambda v:v.get('devices', {}).get('left', {}).get('controlled'))
+                source.lines.put(json.dumps({'ack': latest[0], 'request':dict(
+                    action='stream', targets={'left': .27}, id=2, created=latest[0])})+'\n')
+                wait_for(lambda v:v.get('devices', {}).get('left', {}).get('position') == .27)
+                wait_for(lambda v:'stream_paused' in v)
+                self.assertIn('hold', events)
+                self.assertTrue(worker.devices['left'].gripper.motor.enabled)
+                acknowledge[0] = False
+                thread.join(3.)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(any('超时' in value for value in result))
+                self.assertFalse(worker.devices['left'].gripper.motor.enabled)
+                self.assertIn('close_port', events)
+            finally:
+                worker.exit.set()
+                source.lines.put(None)
+                thread.join(3.)
+
 
 class TriggerTests(unittest.TestCase):
     def frame(self, left=0., right=0.):

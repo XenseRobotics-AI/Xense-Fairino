@@ -29,6 +29,8 @@ class GripperTeleop:
             raise RuntimeError('夹爪控制：'+state['message'])
         if not connected:
             self.note = '未连接夹爪（双臂可独立遥操）' if state.get('ready') else '等待夹爪扫描'
+            if state.get('device_errors'):
+                self.note += '；'+str(state['device_errors'])
             return
         if not active or frame is None:
             self.mapping.reset()
