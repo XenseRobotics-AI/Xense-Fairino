@@ -1,5 +1,6 @@
 """Pure control rules, shared by the desktop window and robot-side worker."""
 import math
+import copy
 
 JOINTS = [f"j{i}" for i in range(1, 9)]
 STEER = [0, 2, 4, 6]
@@ -14,6 +15,18 @@ MAX_LINEAR = 0.20
 MAX_ANGULAR = 0.40
 DRIVE_COMMAND_LIMIT = 6.0
 DRIVE_FEEDBACK_LIMIT = 7.0
+
+
+def chassis_parameters(params):
+    """One profile for installation and runtime verification."""
+    params = copy.deepcopy(params)
+    params['cmd_vel_topic'] = '/fairino_keyboard/cmd_vel'
+    params['odom_topic'] = '/eight_dof_chassis_controller/odom'
+    params['limits']['base']['linear'].update(max_velocity=MAX_LINEAR, max_acceleration=.20, max_jerk=.8)
+    params['limits']['base']['angular'].update(max_velocity=MAX_ANGULAR, max_acceleration=.40, max_jerk=1.6)
+    params['limits']['steering'].update(max_velocity=.35, max_acceleration=.7)
+    params['limits']['drive'].update(max_velocity=DRIVE_COMMAND_LIMIT, max_acceleration=6., max_jerk=24.)
+    return params
 
 
 def check_speeds(linear, angular):
@@ -87,12 +100,13 @@ def check_input(packet, received, now):
     ack = packet.get("ack")
     if not isinstance(ack, (int, float)) or not math.isfinite(ack) or not 0 <= now - ack <= LINK_TIMEOUT:
         raise RuntimeError("往返通信超时，拒绝滞留指令")
-    if packet.get("stop") or not packet.get("focused"):
-        raise RuntimeError("已停止：窗口失焦或用户停止")
+    if packet.get("stop"):
+        raise RuntimeError("已停止：用户停止")
     keys = packet.get("keys")
     if not isinstance(keys, list) or any(k not in KEYS for k in keys):
         raise RuntimeError("无效的键盘指令")
-    return keys
+    # Focus loss removes velocity commands, while the owned session stays enabled.
+    return keys if packet.get('focused') else []
 
 
 def neutral_duration(positions):

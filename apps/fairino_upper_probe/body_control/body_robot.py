@@ -67,7 +67,7 @@ class BodyProbe(rp.JointProbe):
             self.pump()
             with self.input_lock:
                 packet = self.packet.copy()
-            request = packet.get('request')
+            request = packet.get('request') if packet.get('focused') else None
             if not request or request.get('id', 0) <= self.last_request:
                 continue
             self.last_request = request['id']

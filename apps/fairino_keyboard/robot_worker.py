@@ -17,10 +17,11 @@ from control_core import (JOINTS, STEER, DRIVE, check_feedback, check_input,
                           key_twist, neutral_duration,
                           normalise_hardware, FEEDBACK_TIMEOUT, check_speeds,
                           check_speed_envelope, DEFAULT_LINEAR, DEFAULT_ANGULAR,
-                          MAX_LINEAR, MAX_ANGULAR, DRIVE_COMMAND_LIMIT)
+                          MAX_LINEAR, MAX_ANGULAR, DRIVE_COMMAND_LIMIT, chassis_parameters)
 
 ANGLE = "fairino_keyboard_angle"
-CHASSIS = "fairino_keyboard_chassis"
+CHASSIS = "eight_dof_chassis_controller"
+ODOM = "/eight_dof_chassis_controller/odom"
 TOPIC = "/fairino_keyboard/cmd_vel"
 PREFIX = "@KEYCTRL "
 CONFIG = "/opt/fairino_AMR_project_B/reference_chassis_runtime/install/fairino_hardware/share/fairino_hardware/config/ros2_controllers.yaml"
@@ -184,6 +185,27 @@ class Worker:
         if len(result.results) != len(values) or failures:
             raise RuntimeError("参数设置失败：" + str(failures))
 
+    def odometry(self, action, guarded=True):
+        from std_srvs.srv import Trigger
+        result = self.service(Trigger, '/fairino_odometry/' + action, Trigger.Request(), guarded)
+        if not result.success:
+            raise RuntimeError('里程计联动失败：' + result.message)
+
+    def verify_chassis(self, params):
+        from control_core import flatten_parameters
+        from rcl_interfaces.srv import GetParameters
+        expected = flatten_parameters(params)
+        request = GetParameters.Request()
+        request.names = list(expected)
+        result = self.service(GetParameters, '/' + CHASSIS + '/get_parameters', request)
+        fields = {1: 'bool_value', 2: 'integer_value', 3: 'double_value', 4: 'string_value',
+                  5: 'byte_array_value', 6: 'bool_array_value', 7: 'integer_array_value',
+                  8: 'double_array_value', 9: 'string_array_value'}
+        actual = [getattr(v, fields[v.type], None) if v.type in fields else None for v in result.values]
+        actual = [list(v) if not isinstance(v, (int, float, str, bool, type(None))) else v for v in actual]
+        if len(actual) != len(expected) or any(a != e for a, e in zip(actual, expected.values())):
+            raise RuntimeError('厂家底盘实例参数与当前配置不同；完成一次配置迁移并重新启动机器人后再控制')
+
     def load(self, name, typ, params):
         # Generated controller parameters can be read-only after on_init().
         # Use the installed spawner's params_file mechanism BEFORE loading.
@@ -288,7 +310,7 @@ class Worker:
             self.phase = "只读检查通过（未使能、未回正）"
             self.status(True, checked=True, controllers=controls)
             return
-        self.phase = "等待窗口获得焦点并松开全部按键"
+        self.phase = "等待操作界面就绪并松开全部按键"
         deadline = time.monotonic() + 30
         while True:
             self.pump(0.02, False)
@@ -307,9 +329,17 @@ class Worker:
                    "eight_dof_chassis_controller", ANGLE, CHASSIS}
         if any(s == "active" and n not in allowed for n, s in controls.items()):
             raise RuntimeError("存在未知的活动控制器，拒绝接管")
-        if ANGLE in controls or CHASSIS in controls:
+        if ANGLE in controls or 'fairino_keyboard_chassis' in controls:
             raise RuntimeError("上次键控控制器尚未卸载，需要先检查上次退出状态")
-        self.phase = "准备独立控制器"
+        chassis_params = config[CHASSIS]["ros__parameters"]
+        if chassis_params.get('cmd_vel_topic') != TOPIC or chassis_params.get('odom_topic') != ODOM:
+            raise RuntimeError('尚未安装统一底盘配置；先运行 tools/install_control_stack.py --execute 并按提示重启')
+        if chassis_params != chassis_parameters(chassis_params):
+            raise RuntimeError('底盘低速保护参数与共享配置不符；请重新安装统一底盘配置')
+        if CHASSIS in controls:
+            self.verify_chassis(chassis_params)
+        self.odometry('pause')
+        self.phase = "接入厂家底盘实例，临时准备转向回正"
         self.owned = True
         self.switch([], [n for n in ("angle_controller", "velocity_controller", "eight_dof_chassis_controller")
                          if controls.get(n) == "active"])
@@ -317,14 +347,8 @@ class Worker:
         self.command("switchmode(velocity,170)")
         angle_params = config["angle_controller"]["ros__parameters"]
         self.load(ANGLE, "joint_trajectory_controller/JointTrajectoryController", angle_params)
-        chassis_params = config["eight_dof_chassis_controller"]["ros__parameters"]
-        chassis_params["cmd_vel_topic"] = TOPIC
-        chassis_params["odom_topic"] = "/fairino_keyboard/odom"
-        chassis_params["limits"]["base"]["linear"].update(max_velocity=MAX_LINEAR, max_acceleration=0.20, max_jerk=0.8)
-        chassis_params["limits"]["base"]["angular"].update(max_velocity=MAX_ANGULAR, max_acceleration=0.40, max_jerk=1.6)
-        chassis_params["limits"]["steering"].update(max_velocity=0.35, max_acceleration=0.7)
-        chassis_params["limits"]["drive"].update(max_velocity=DRIVE_COMMAND_LIMIT, max_acceleration=6.0, max_jerk=24.0)
-        self.load(CHASSIS, "eight_dof_chassis_controller/EightDofChassisController", chassis_params)
+        if CHASSIS not in controls:
+            self.load(CHASSIS, "eight_dof_chassis_controller/EightDofChassisController", chassis_params)
         self.pub = self.node.create_publisher(Twist, TOPIC, 1)
         self.switch([ANGLE], [])
         self.pump(0.2)
@@ -389,6 +413,7 @@ class Worker:
         while self.guard():
             self.zero(); self.pump(0.02)
         self.ready = True
+        self.odometry('resume')
         self.phase = "就绪：按住移动，松开停止"
         self.status(True)
 
@@ -427,11 +452,16 @@ class Worker:
                 self.emit(error="下使能失败，请使用物理急停：" + str(exc))
         cleanup_ok = True
         try:
+            self.odometry('pause', guarded=False)
+        except Exception as exc:
+            cleanup_ok = False
+            self.emit(error='里程计暂停未确认：' + str(exc))
+        try:
             controls = self.controllers(False)
-            self.switch([], [n for n in self.loaded if controls.get(n) == "active"], False)
+            self.switch([], [n for n in set(self.loaded + [CHASSIS]) if controls.get(n) == "active"], False)
             if disable_ok:
                 for name in reversed(self.loaded):
-                    if name not in controls:
+                    if name == CHASSIS or name not in controls:
                         continue
                     request = UnloadController.Request(); request.name = name
                     if not self.service(UnloadController, "/controller_manager/unload_controller", request, False).ok:

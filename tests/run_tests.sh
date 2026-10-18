@@ -5,7 +5,7 @@ PY="${FAIRINO_PYTHON:-$ROOT/.venv/bin/python}"
 if [[ ! -x "$PY" ]]; then PY=/usr/bin/python3; fi
 export FAIRINO_TCP_DIR="$ROOT/apps/fairino_tcp_probe"
 export PYTHONDONTWRITEBYTECODE=1
-for name in fairino_keyboard fairino_upper_probe fairino_upper_probe/body_control fairino_tcp_probe; do
+for name in fairino_keyboard fairino_upper_probe fairino_upper_probe/body_control fairino_tcp_probe map_viewer workbench; do
   (cd "$ROOT/apps/$name" && "$PY" -m unittest discover -p 'test_*.py')
 done
 PICO_PY="${PICO_TEST_PYTHON:-$ROOT/.local/pico4/env/bin/python}"

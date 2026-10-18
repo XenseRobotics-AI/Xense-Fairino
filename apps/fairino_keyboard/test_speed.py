@@ -135,6 +135,35 @@ class SpeedWindowTests(unittest.TestCase):
     def event(self, key):
         return NS(keyval=Gdk.keyval_from_name(key))
 
+    def test_focus_pause_keeps_session_and_requires_release_before_new_motion(self):
+        w = self.w
+        sent = []
+        w.connection = NS(send=lambda keys, **kw: sent.append((tuple(keys), kw)))
+        w.key_press(None, self.event('w'))
+        self.assertEqual(w.keys, {'w'})
+        w.focus_out()
+        self.assertFalse(w.stopped)
+        self.assertTrue(w.ready)
+        self.assertEqual(sent[-1][0], ())
+        self.assertFalse(sent[-1][1]['stop'])
+        self.assertFalse(sent[-1][1]['focused'])
+        w.focus_in()
+        w.key_press(None, self.event('w'))
+        self.assertFalse(w.keys)
+        w.key_release(None, self.event('w'))
+        w.key_press(None, self.event('w'))
+        self.assertEqual(w.keys, {'w'})
+
+    def test_inactive_window_does_not_transmit_queued_velocity(self):
+        w = self.w
+        sent = []
+        w.connection = NS(send=lambda keys, **kw: sent.append((tuple(keys), kw)))
+        w.key_press(None, self.event('w'))
+        with patch.object(w.window, 'is_active', return_value=False):
+            w.send()
+        self.assertEqual(sent[-1][0], ())
+        self.assertFalse(sent[-1][1]['stop'])
+
     def test_adjust_stop_and_entry_typing(self):
         w = self.w
         w.speed_adjustments[0].set_value(.20)
@@ -180,7 +209,8 @@ class SpeedWindowTests(unittest.TestCase):
         self.assertEqual(sent[-1][1]["speeds"], (.12, .10))
         w.had_focus = True
         w.focus_out()
-        self.assertTrue(sent[-1][1]["stop"])
+        self.assertFalse(sent[-1][1]["stop"])
+        self.assertFalse(sent[-1][1]["focused"])
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import patch
 
 import robot_worker as rw
-from control_core import STEER, normalise_hardware
+from control_core import STEER, normalise_hardware, chassis_parameters
 from test_control import hardware
 
 
@@ -19,6 +19,7 @@ CONFIG = {
                         ((.31, .225, 0), (.31, -.225, 0), (-.305, .2175, 0), (-.305, -.2175, 0)))}}},
 }
 
+CONFIG["eight_dof_chassis_controller"]["ros__parameters"] = chassis_parameters(CONFIG["eight_dof_chassis_controller"]["ros__parameters"])
 
 def goal():
     return NS(trajectory=NS(joint_names=[], points=[]), path_tolerance=[],
@@ -27,7 +28,7 @@ def goal():
 
 class StartupTests(unittest.TestCase):
     def exercise(self, trajectory_error=0, prepare=False, initially_enabled=False,
-                 wrong_topic=False):
+                 wrong_topic=False, existing_chassis=False):
         worker = rw.Worker.__new__(rw.Worker)
         worker.args = NS(check=False, prepare_check=prepare)
         worker.hw = normalise_hardware(hardware())
@@ -47,7 +48,9 @@ class StartupTests(unittest.TestCase):
         worker.wait_initial_feedback = lambda: None
         worker.pump = lambda *a: None
         worker.status = lambda *a, **k: None
-        worker.controllers = lambda *a: {"fairino_hardware_command_controller": "active"}
+        worker.controllers = lambda *a: {"fairino_hardware_command_controller": "active", **({rw.CHASSIS: "inactive"} if existing_chassis else {})}
+        worker.odometry = lambda action, **k: worker.trace.append(('odometry', action))
+        worker.verify_chassis = lambda params: worker.trace.append(('verify', params))
         def load(name, typ, params):
             worker.loaded.append(name)
             worker.loaded_params[name] = copy.deepcopy(params)
@@ -106,6 +109,15 @@ class StartupTests(unittest.TestCase):
         self.assertTrue(w.ready)
         self.assertEqual(w.commands[-3:], ["enable(85)", "disable(85)", "enable()"])
         self.assertEqual(len(w.goals), 1)
+
+    def test_existing_factory_instance_is_reused_and_odom_source_is_stable(self):
+        w = self.exercise(existing_chassis=True)
+        self.assertIsNone(w.failure)
+        self.assertNotIn(rw.CHASSIS, w.loaded)
+        self.assertEqual(rw.CHASSIS, 'eight_dof_chassis_controller')
+        self.assertEqual(rw.ODOM, '/eight_dof_chassis_controller/odom')
+        self.assertEqual([x[1] for x in w.trace if x[0] == 'odometry'], ['pause', 'resume'])
+        self.assertTrue(any(x[0] == 'verify' for x in w.trace))
 
     def test_failed_homing_never_enables_drive_motors(self):
         w = self.exercise(trajectory_error=-4)

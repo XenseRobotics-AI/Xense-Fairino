@@ -2,7 +2,7 @@
 import getpass, re, shlex, time
 import pexpect
 
-def run(host, command, user='fairino', password=None, timeout=45):
+def run(host, command, user='fairino', password=None, timeout=45, check=True):
     if not re.fullmatch(r'[A-Za-z0-9_.:-]+',host) or not re.fullmatch(r'[A-Za-z0-9_-]+',user):
         raise ValueError('Invalid SSH host/user')
     child=pexpect.spawn('ssh',['-T','-o','StrictHostKeyChecking=accept-new','-o','ConnectTimeout=8',
@@ -16,7 +16,7 @@ def run(host, command, user='fairino', password=None, timeout=45):
             parts.append(child.before)
             if event==1:
                 child.close()
-                if child.exitstatus not in (None,0):raise RuntimeError('SSH failed: '+''.join(parts)[-1500:])
+                if check and child.exitstatus not in (None,0):raise RuntimeError('SSH failed: '+''.join(parts)[-1500:])
                 return ''.join(parts).replace('\r\n','\n')
             if event==2:raise TimeoutError('SSH timed out')
             if asked:raise RuntimeError('SSH authentication rejected')

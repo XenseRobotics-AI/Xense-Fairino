@@ -147,6 +147,9 @@ class Probe:
             check_packet(packet, received, now, allow_unfocused=getattr(self, "allow_unfocused", False))
             if cancel and self.cancel_count is not None and packet.get("cancel", 0) != self.cancel_count:
                 raise StepCancelled("用户中止本次点动")
+            if (cancel and self.cancel_count is not None and not self.enabling
+                    and getattr(self, 'pause_on_unfocused', False) and not packet.get('focused')):
+                raise StepCancelled('控制界面失焦，暂停轨迹并保持使能')
 
     def pump(self, seconds=0.02, guarded=True):
         end = time.monotonic() + seconds
@@ -419,7 +422,7 @@ class Probe:
             self.pump()
             with self.input_lock:
                 packet = self.packet
-            request = packet.get("request")
+            request = packet.get("request") if packet.get('focused') else None
             if not request or request.get("id", 0) <= self.last_request:
                 continue
             self.last_request = request["id"]
@@ -550,6 +553,8 @@ class JointProbe(Probe):
     """Manual joint adjustment, with the user-requested soft trips removed."""
     feedback_speed_check = False
     path_tracking_check = False
+    allow_unfocused = True
+    pause_on_unfocused = True
 
 
 def main():

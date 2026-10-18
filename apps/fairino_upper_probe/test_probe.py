@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import robot_probe as rp
 from probe_core import (ALL_MASK, JOINTS, JOINT_GROUPS, check_hardware, check_packet,
-                        fresh_request, plan_step, snapshot, step_duration)
+                        fresh_request, plan_step, snapshot, step_duration, StepCancelled)
 
 
 def hardware():
@@ -181,6 +181,37 @@ def fake_probe(probe_type=rp.Probe):
 def goal():
     return NS(trajectory=NS(joint_names=[], points=[]), path_tolerance=[],
               goal_tolerance=[], goal_time_tolerance=NS(sec=0))
+
+
+class FocusHoldTests(unittest.TestCase):
+    def test_joint_focus_loss_cancels_motion_without_ending_enabled_session(self):
+        p = fake_probe(rp.JointProbe)
+        p.session_enabled = p.enable_attempted = True
+        p.hw['enabled'] = [True]*20
+        p.packet['focused'] = False
+        p.cancel_count = 0
+        with self.assertRaises(StepCancelled):
+            p.guard()
+        self.assertTrue(p.session_enabled)
+        self.assertEqual(p.commands, [])
+        p.cancel_count = None
+        p.guard()  # Position hold remains valid after trajectory cancellation.
+
+    def test_focus_loss_alone_does_not_cancel_an_inflight_enable(self):
+        p = fake_probe(rp.JointProbe)
+        p.packet['focused'] = False
+        p.enabling = True
+        p.enable_deadline = time.monotonic()+12
+        p.cancel_count = 0
+        p.guard()
+        self.assertEqual(p.commands, [])
+
+    def test_disconnect_still_ends_the_session_while_unfocused(self):
+        p = fake_probe(rp.JointProbe)
+        p.packet['focused'] = False
+        p.received -= 1
+        with self.assertRaisesRegex(RuntimeError, '心跳'):
+            p.guard()
 
 
 STUBS = {'FollowJointTrajectory': NS(Goal=goal), 'JointTrajectoryPoint': NS,

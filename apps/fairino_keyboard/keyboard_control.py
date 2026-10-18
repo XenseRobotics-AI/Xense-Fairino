@@ -48,7 +48,7 @@ def remote_command(args):
 
 
 class Connection:
-    def __init__(self, args):
+    def __init__(self, args, password=None):
         import pexpect
         self.pexpect = pexpect
         self.events = queue.Queue()
@@ -65,12 +65,16 @@ class Connection:
             timeout=12, maxread=65536, echo=False)
         self.child.delaybeforesend = None
         try:
+            attempts = 0
             while True:
                 result = self.child.expect(["KEYCTRL_CONNECTED", r"(?i)password:", pexpect.EOF])
                 if result == 0:
                     break
                 if result == 1:
-                    self.child.sendline(getpass.getpass(f"SSH 密码（{args.user}@{args.host}）："))
+                    attempts += 1
+                    if password is not None and attempts > 1:
+                        raise RuntimeError("SSH 密码认证失败")
+                    self.child.sendline(password if password is not None else getpass.getpass(f"SSH 密码（{args.user}@{args.host}）："))
                 else:
                     raise RuntimeError("SSH 连接失败：" + self.child.before[-1500:])
         except BaseException:
@@ -137,7 +141,7 @@ class Connection:
 
 
 class Window:
-    def __init__(self, args, connection=None):
+    def __init__(self, args, connection=None, window_factory=None, on_closed=None, compact=False, start_timer=True):
         import gi
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk, Gdk, GLib
@@ -149,9 +153,11 @@ class Window:
         self.stopped = False
         self.closing = False
         self.had_focus = False
+        self.input_suspended = False
         self.speed_pending = False
         self.last_phase = "演示模式，不连接机器人" if args.demo else "正在读取底盘状态"
-        self.window = Gtk.Window(title="法奥底盘键控 · WASD / JL")
+        self.ui_closed = on_closed or Gtk.main_quit
+        self.window = (window_factory or Gtk.Window)(title="法奥底盘键控 · WASD / JL")
         self.window.set_default_size(700, 620)
         self.window.set_border_width(22)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=15)
@@ -212,8 +218,32 @@ class Window:
         stop_button.connect("clicked", lambda *_: self.stop())
         box.pack_start(stop_button, False, False, 0)
         footer = Gtk.Label(label=("松开运动键后可调速；再次按键按新速度运动。\n"
-                                "启动自动回正；失焦、断线或故障会停止本次控制。"))
+                                "切窗暂停移动并保持使能；切回后松键重按。断线或故障会结束控制。"))
         box.pack_start(footer, False, False, 0)
+        if compact:
+            # Reuse the exact controls, events and transport in the workbench.
+            # Only their arrangement changes; the standalone window stays full.
+            for child in box.get_children():
+                box.remove(child)
+            title.destroy()
+            self.window.set_border_width(4)
+            box.set_spacing(4)
+            help_label.set_text('W/S 前后  ·  A/D 横移  ·  J/L 旋转  ·  松键停止，保持使能')
+            box.pack_start(help_label, False, False, 0)
+            columns = Gtk.Box(spacing=12)
+            for widgets in ((speed_grid, self.speed_hint, self.control_focus),
+                            (self.phase, self.motion, self.error, stop_button)):
+                column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                for widget in widgets:
+                    column.pack_start(widget, False, False, 0)
+                columns.pack_start(column, True, True, 0)
+            box.pack_start(columns, False, False, 0)
+            details = Gtk.Expander(label='轮组反馈与操作说明')
+            detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            detail_box.pack_start(self.wheels, False, False, 0)
+            detail_box.pack_start(footer, False, False, 0)
+            details.add(detail_box)
+            box.pack_start(details, False, False, 0)
         for adjustment in self.speed_adjustments:
             adjustment.connect("value-changed", self.speed_changed)
         self.update_speed_hint()
@@ -225,7 +255,7 @@ class Window:
         self.window.show_all()
         self.control_focus.grab_focus()
         self.window.present()
-        GLib.timeout_add(50, self.tick)
+        self.timer = GLib.timeout_add(50, self.tick) if start_timer else None
 
     def update_speed_hint(self):
         self.speed_hint.set_text(
@@ -272,7 +302,7 @@ class Window:
             first_press = key not in self.held
             self.held.add(key)
             if (first_press and self.ready and not self.stopped and not self.speed_pending
-                    and self.window.is_active()):
+                    and not self.input_suspended and self.window.is_active()):
                 self.keys.add(key)
                 self.send()
             return True
@@ -289,22 +319,25 @@ class Window:
 
     def focus_in(self, *_):
         self.had_focus = True
+        self.input_suspended = False
         self.keys.clear()
-        self.held.clear()
+        # Preserve held keys until a release: autorepeat cannot restart motion.
         return False
 
     def focus_out(self, *_):
         self.keys.clear()
-        if self.had_focus:
-            self.stop("窗口失去焦点，正在停止")
+        self.input_suspended = True
+        self.phase.set_text('已暂停移动，保持使能；切回后松开方向键再按')
+        self.send()
         return False
 
     def send(self):
         for widget in self.speed_widgets:
             widget.set_sensitive(not (self.keys or self.held or self.stopped or self.closing))
         if self.connection:
-            self.connection.send(self.keys if self.ready and not self.speed_pending else (),
-                                 focused=self.window.is_active(), stop=self.stopped,
+            focused = self.window.is_active() and not self.input_suspended
+            self.connection.send(self.keys if self.ready and not self.speed_pending and focused else (),
+                                 focused=focused, stop=self.stopped,
                                  speeds=(self.args.linear, self.args.angular))
 
     def stop(self, text="正在停止并下使能"):
@@ -364,10 +397,10 @@ class Window:
         if self.connection:
             def finish():
                 self.connection.finish()
-                self.GLib.idle_add(self.Gtk.main_quit)
+                self.GLib.idle_add(self.ui_closed)
             threading.Thread(target=finish, daemon=True).start()
         else:
-            self.Gtk.main_quit()
+            self.ui_closed()
         return True
 
     def run(self):

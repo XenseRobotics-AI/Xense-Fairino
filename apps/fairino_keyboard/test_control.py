@@ -56,12 +56,12 @@ class ControlTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 check_feedback(hw, 0, 0, 0)
 
-    def test_disconnect_focus_loss_and_delayed_commands_stop(self):
+    def test_disconnect_and_delayed_commands_stop_but_focus_only_pauses(self):
         packet = {"keys": ["w"], "ack": 9.9, "focused": True, "stop": False}
         self.assertEqual(check_input(packet, 9.95, 10), ["w"])
+        self.assertEqual(check_input({**packet, 'focused': False}, 9.95, 10), [])
         cases = [(packet, 9, 10), ({**packet, "ack": 9}, 10, 10),
                  ({**packet, "ack": float("nan")}, 10, 10),
-                 ({**packet, "focused": False}, 10, 10),
                  ({**packet, "stop": True}, 10, 10)]
         for item, received, now in cases:
             with self.assertRaises(RuntimeError):

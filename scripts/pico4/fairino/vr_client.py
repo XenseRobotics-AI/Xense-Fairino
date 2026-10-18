@@ -190,7 +190,7 @@ def operate(args, kin, stream, connection):
                 continue
             if now-connection.last_status > .25:
                 raise RuntimeError("机器人状态反馈超过 0.25 秒未更新")
-            character = key()
+            character = args.gui_input.key() if getattr(args, "gui_input", None) else key()
             if character in ("\x1b", "q", "Q"):
                 return 0
             frame = None
@@ -220,7 +220,7 @@ def operate(args, kin, stream, connection):
                 last_x = x
                 if (not freeze_buttons and any(frame[s]["secondary"] for s in ARMS)) or character == " " or controls["pause"]:
                     stop_reason = "用户暂停，请松开两侧 Grip 后重握"
-                if controls["home"] and not stop_reason:
+                if (controls["home"] or character == "h") and not stop_reason:
                     if home_motion is not None or home_pending:
                         stop_reason = "用户中止 Home；松开 Grip 后可继续遥操"
                     else:
@@ -340,6 +340,11 @@ def operate(args, kin, stream, connection):
                       + f" | 下发 {rate_data['send_hz']:.1f} / 接收 {rate_data['accepted_hz']:.1f} / 回传 {rate_data['feedback_hz']:.1f} Hz"
                       + f" / 硬件反馈 {rate_data['hardware_observed_hz']:.1f} Hz"
                       + (f" | 冻结 {frozen}" if frozen else ""), flush=True)
+                if getattr(args, "gui_input", None):
+                    from vr_gui_ipc import status as gui_status
+                    gui_status(phase=phase, sensitivity=sensitivity, sides=sides,
+                        grips={s: frame[s]["grip"] for s in ARMS} if frame else {},
+                        enabled=sum(hw.get("enabled", [])), **rate_data)
                 last_display = now
             # Both target generation and heartbeat follow one absolute cadence.
             # A late iteration skips expired slots and samples the latest input.
@@ -376,6 +381,7 @@ def main(argv=None):
                         help="A/X 按住冻结旋转，B/Y 按住冻结位移；灵敏度用左摇杆或 +/-，暂停用左摇杆按压或空格")
     parser.add_argument("--home-file", type=Path, default=DEFAULT_HOME, help="双臂 Home 七轴配置文件")
     parser.add_argument("--no-auto-home", action="store_true", help="本次启动保持姿态，不自动回 Home；右摇杆回 Home 仍可用")
+    parser.add_argument("--gui-stdio", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.observe_ros and not args.link_check:
         parser.error("--observe-ros 只能与 --link-check 一起使用")
@@ -387,6 +393,11 @@ def main(argv=None):
     code = 0
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
+        password = None
+        if args.gui_stdio:
+            from vr_gui_ipc import GuiInput
+            args.gui_input = GuiInput()
+            password = args.gui_input.authenticate()
         kin = VendorKinematics()
         if args.execute:
             stream = Stream()
@@ -394,7 +405,8 @@ def main(argv=None):
             wait_for_input(stream)
         logs = ROOT/".local/pico4/fairino-logs"
         logs.mkdir(parents=True, exist_ok=True)
-        connection = Connection(args, worker_command=remote_command(args), log_directory=logs)
+        connection = Connection(args, worker_command=remote_command(args), log_directory=logs, password=password)
+        password = None
         if args.link_check:
             from vr_link_check import run_client
             code = run_client(args, kin, connection)

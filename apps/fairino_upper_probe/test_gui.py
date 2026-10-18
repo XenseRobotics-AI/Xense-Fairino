@@ -23,10 +23,28 @@ except ImportError:
 
 @unittest.skipUnless(GTK_AVAILABLE, 'GTK/display unavailable')
 class GuiTests(unittest.TestCase):
+    def test_focus_pause_keeps_enable_session_and_drops_queued_target(self):
+        w = self.w
+        sent = []
+        w.connection = NS(send=lambda *a, **kw: sent.append((a, kw)))
+        w.request = {'id': 1}
+        w.held.add('left')
+        w.focus_out()
+        self.assertFalse(w.stopped)
+        self.assertIsNone(w.request)
+        self.assertIsNone(sent[-1][0][0])
+        self.assertFalse(sent[-1][1]['focused'])
+        self.assertFalse(sent[-1][1]['exit'])
+        w.focus_in()
+        self.assertIn('left', w.held)
+        self.assertFalse(w.input_suspended)
+
     def setUp(self):
         class HiddenWindow(Gtk.OffscreenWindow):
             def present(self):
                 pass
+            def is_active(self):
+                return True
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name)
         (self.path/'joint_mapping.json').write_text(json.dumps({'joints': {

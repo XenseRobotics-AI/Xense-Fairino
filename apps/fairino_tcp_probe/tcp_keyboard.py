@@ -61,7 +61,7 @@ def verify_both(kin,hw):
 
 
 class Window:
-    def __init__(self,args,kin,connection=None):
+    def __init__(self,args,kin,connection=None,window_factory=None,on_closed=None,start_timer=True):
         import gi
         gi.require_version('Gtk','3.0')
         from gi.repository import Gtk,Gdk,GLib
@@ -75,7 +75,8 @@ class Window:
         self.hw=None;self.proof=None;self.last_status=0.;self.verified=None;self.last_plan=0.
         self.demo_path=None;self.demo_time=0.
         self.rotation_anchor=None;self.previous_rotation_request=None
-        self.window=Gtk.Window(title='法奥双臂 · 胸部坐标 · 法兰中心 TCP 十二键连续控制')
+        self.ui_closed=on_closed or Gtk.main_quit
+        self.window=(window_factory or Gtk.Window)(title='法奥双臂 · 胸部坐标 · 法兰中心 TCP 十二键连续控制')
         self.window.set_default_size(800,620);self.window.set_border_width(16)
         box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10);self.window.add(box)
         title=Gtk.Label();title.set_markup('<span size="18000" weight="bold">胸部坐标 TCP · 十二键连续控制</span>')
@@ -132,7 +133,7 @@ class Window:
         self.window.connect('focus-out-event',self.focus_out)
         self.window.connect('delete-event',self.close)
         self.refresh_controls();self.window.show_all();self.control_area.grab_focus();self.window.present()
-        GLib.timeout_add(50,self.tick)
+        self.timer=GLib.timeout_add(50,self.tick) if start_timer else None
 
     def spin(self,row,label,lo,hi,value):
         row.pack_start(self.Gtk.Label(label=label),False,False,0)
@@ -306,9 +307,9 @@ class Window:
         self.releases.clear()
         if self.connection:
             def finish():
-                self.connection.finish();self.GLib.idle_add(self.Gtk.main_quit)
+                self.connection.finish();self.GLib.idle_add(self.ui_closed)
             threading.Thread(target=finish,daemon=True).start()
-        else:self.Gtk.main_quit()
+        else:self.ui_closed()
         return True
 
     def run(self):self.Gtk.main()

@@ -12,6 +12,8 @@ bash run.sh joints --group body
 
 数字键选轴，左右箭头 ±0.5°，支持绝对角度与计划速度输入；空格中止并保持，Esc/关闭退出并请求全部下使能。分页只改变选择，不重复使能。
 
+切换窗口或工作台功能页会暂停当前轨迹、保持使能；切回后松键重按或重新点击执行，未完成的目标不会自动继续。
+
 本入口取消 ±3°相对范围、固定速度上限、实测超速退出及路径跟踪误差中止。急停、硬件故障、反馈/SSH 超时、终点和保持检查继续工作。
 
 `upper_keyboard.py` 为界面/SSH，`probe_core.py` 为纯逻辑，`robot_probe.py` 为共享 ROS 生命周期。[joint_mapping.json](joint_mapping.json) 保存辨认记录；运行日志生成于 `apps/fairino_upper_probe/logs/`。

@@ -7,6 +7,8 @@ export FAIRINO_TCP_DIR="${FAIRINO_TCP_DIR:-$ROOT/apps/fairino_tcp_probe}"
 COMMAND=${1:-help}
 if (($#)); then shift; fi
 case "$COMMAND" in
+  console) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" "$@" ;;
+  teleop) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" --page teleop "$@" ;;
   status) exec "$FAIRINO_PYTHON" "$ROOT/tools/inspect_robot.py" "$@" ;;
   network) exec "$FAIRINO_PYTHON" "$ROOT/tools/network_check.py" "$@" ;;
   base) exec bash "$ROOT/apps/fairino_keyboard/start.sh" "$@" ;;
@@ -14,6 +16,8 @@ case "$COMMAND" in
   body) exec bash "$ROOT/apps/fairino_upper_probe/start_body.sh" "$@" ;;
   tcp) exec bash "$ROOT/apps/fairino_tcp_probe/start.sh" "$@" ;;
   lidar) exec bash "$ROOT/apps/lidar_viewer/start.sh" "$@" ;;
+  map) exec bash "$ROOT/apps/map_viewer/start.sh" "$@" ;;
+  mapping) exec "$FAIRINO_PYTHON" "$ROOT/tools/map_mode.py" "$@" ;;
   pico) exec bash "$ROOT/scripts/pico4/run.sh" "$@" ;;
   vr)
     exec bash "$ROOT/scripts/pico4/run.sh" fairino --execute \
@@ -27,6 +31,9 @@ case "$COMMAND" in
   help|-h|--help)
     cat <<'HELP'
 法奥机器人控制项目
+  bash run.sh console                   集成工作台：连接、模型、键控、地图、遥操
+  bash run.sh console --demo            工作台离线预览，不连接机器人
+  bash run.sh teleop                    打开遥操界面，不自动使能
   bash setup.sh all                     安装所有功能的项目内环境
   bash setup.sh base                    安装键控/诊断 Python 环境
   bash setup.sh pico                    安装 PICO 接收/遥操 Python 环境
@@ -45,6 +52,12 @@ case "$COMMAND" in
   bash run.sh body                      身体高度/姿态联动
   bash run.sh tcp --arm left            胸部坐标 TCP 键控，窗口可切臂
   bash run.sh lidar                     双雷达实时扫描图
+  bash run.sh map                       地图窗口：默认查看，按需建图/暂停/另存
+  bash run.sh mapping status            查看建图/静态地图模式
+  bash run.sh mapping start --wait 90    显式准备新建图，等待有效里程计输入
+  bash run.sh mapping pause             暂停建图，保留工作地图
+  bash run.sh mapping save --name NAME   地图另存到新目录
+  bash run.sh mapping view              归档工作地图并返回已有静态地图
   bash run.sh pico check                PICO 环境检查
   bash run.sh pico install-apk          USB 安装头显应用
   bash run.sh pico service              启动接收服务，保持终端运行

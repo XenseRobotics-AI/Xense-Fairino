@@ -47,7 +47,7 @@ def remote_command(args, model):
 
 
 class Window:
-    def __init__(self, args, model, connection=None):
+    def __init__(self, args, model, connection=None, window_factory=None, on_closed=None, start_timer=True):
         import gi
         gi.require_version('Gtk', '3.0')
         from gi.repository import Gtk, Gdk, GLib
@@ -62,7 +62,9 @@ class Window:
         self.demo_start = 0.
         self.initialized = bool(args.demo)
         self.updating = False
-        self.window = Gtk.Window(title='身体升降与姿态调节')
+        self.ui_closed = on_closed or Gtk.main_quit
+        self.window = (window_factory or Gtk.Window)(title='身体升降与姿态调节')
+        self.input_suspended = False
         self.window.set_default_size(900, 690)
         self.window.set_border_width(18)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -163,13 +165,15 @@ class Window:
         self.speed.connect('changed', lambda *_: self.changed())
         self.window.connect('delete-event', self.close)
         self.window.connect('key-press-event', self.key_press)
+        self.window.connect('focus-in-event', self.focus_in)
+        self.window.connect('focus-out-event', self.focus_out)
         if args.demo:
             q = model.pose(dict(height=0, forward=0, roll=0, yaw=0), [0.]*20)
             self.last_hw = dict(position=q, command_position=q[:], enabled=[True]*20)
         self.changed()
         self.update_feedback()
         self.window.show_all()
-        self.timer = GLib.timeout_add(50, self.tick)
+        self.timer = GLib.timeout_add(50, self.tick) if start_timer else None
 
     def target(self):
         for spin in self.inputs.values():
@@ -254,7 +258,21 @@ class Window:
 
     def send(self):
         if self.connection:
-            self.connection.send(self.request, self.cancel_count, focused=True, exit=self.stopped)
+            focused = self.window.is_active() and not self.input_suspended
+            self.connection.send(self.request if focused else None, self.cancel_count, focused=focused, exit=self.stopped)
+
+    def focus_in(self, *_):
+        self.input_suspended = False
+        return False
+
+    def focus_out(self, *_):
+        self.input_suspended = True
+        self.request = None
+        if self.pending and self.args.demo:
+            self.cancel()
+        self.phase.set_text('切窗暂停运动并保持使能；切回后点击执行才继续')
+        self.send()
+        return False
 
     def cancel(self):
         self.cancel_count += 1
@@ -346,10 +364,10 @@ class Window:
         if self.connection:
             def finish():
                 self.connection.finish()
-                self.GLib.idle_add(self.Gtk.main_quit)
+                self.GLib.idle_add(self.ui_closed)
             threading.Thread(target=finish, daemon=True).start()
         else:
-            self.Gtk.main_quit()
+            self.ui_closed()
         return True
 
     def run(self):

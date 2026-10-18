@@ -78,12 +78,17 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(w.sequence,0)
             self.assertFalse(w.pending)
 
-    def test_heartbeat_does_not_depend_on_window_focus(self):
+    def test_focus_pause_keeps_heartbeat_without_exit_or_replaying_target(self):
         w=self.w;sent=[]
         w.connection=NS(send=lambda *args,**kwargs:sent.append((args,kwargs)))
-        w.send()
-        self.assertTrue(sent[-1][1]['focused'])
+        w.request={'id':1}
+        w.focus_out()
+        self.assertFalse(sent[-1][1]['focused'])
         self.assertFalse(sent[-1][1]['exit'])
+        self.assertIsNone(sent[-1][0][0])
+        self.assertFalse(w.stopped)
+        w.focus_in()
+        self.assertIsNone(w.request)
 
     def test_worker_source_is_complete(self):
         args=NS(check=True,prepare_check=False)

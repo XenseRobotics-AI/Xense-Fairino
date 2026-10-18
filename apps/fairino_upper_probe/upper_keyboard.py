@@ -46,7 +46,7 @@ def remote_command(args):
 
 
 class Connection:
-    def __init__(self, args, worker_command=None, log_directory=None):
+    def __init__(self, args, worker_command=None, log_directory=None, password=None):
         import pexpect
         self.pexpect = pexpect
         self.events = queue.Queue()
@@ -61,12 +61,16 @@ class Connection:
             echo=False, timeout=12, maxread=65536)
         self.child.delaybeforesend = None
         try:
+            attempts = 0
             while True:
                 match = self.child.expect(["UPPERPROBE_CONNECTED", r"(?i)password:", pexpect.EOF])
                 if match == 0:
                     break
                 if match == 1:
-                    self.child.sendline(getpass.getpass(f"SSH 密码（{args.user}@{args.host}）："))
+                    attempts += 1
+                    if password is not None and attempts > 1:
+                        raise RuntimeError("SSH 密码认证失败")
+                    self.child.sendline(password if password is not None else getpass.getpass(f"SSH 密码（{args.user}@{args.host}）："))
                 else:
                     raise RuntimeError("SSH 连接失败："+self.child.before[-1200:])
         except BaseException:
@@ -128,7 +132,7 @@ class Connection:
 
 
 class Window:
-    def __init__(self, args, connection=None):
+    def __init__(self, args, connection=None, window_factory=None, on_closed=None, start_timer=True):
         import gi
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk, Gdk, GLib
@@ -143,8 +147,10 @@ class Window:
         self.ready = args.demo
         self.pending = False
         self.stopped = self.closing = self.had_focus = False
+        self.input_suspended = False
         self.last_hw = None
-        self.window = Gtk.Window(title="上半身关节调节 · 点动 / 目标角度")
+        self.ui_closed = on_closed or Gtk.main_quit
+        self.window = (window_factory or Gtk.Window)(title="上半身关节调节 · 点动 / 目标角度")
         self.window.set_default_size(1000, 750)
         self.window.set_border_width(20)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -260,7 +266,7 @@ class Window:
         self.error.set_line_wrap(True)
         box.pack_start(self.error, False, False, 0)
         box.pack_start(Gtk.Label(label="启动使能全部 J1–J20；一次只移动所选关节，其他 19 轴保持目标位置。\n"
-            "速度上限、过程跟踪误差及实测超速退出已取消；退出、失焦或故障时全部下使能。"), False, False, 0)
+            "切窗暂停运动并保持使能；切回后松键重按或重新执行目标。退出或故障时全部下使能。"), False, False, 0)
         self.window.connect("key-press-event", self.key_press)
         self.window.connect("key-release-event", self.key_release)
         self.window.connect("focus-in-event", self.focus_in)
@@ -270,7 +276,7 @@ class Window:
         self.notebook.set_current_page(self.group_names.index(self.group))
         self.notebook.connect("switch-page", self.switch_group)
         self.control_area.grab_focus(); self.window.present()
-        GLib.timeout_add(50, self.tick)
+        self.timer = GLib.timeout_add(50, self.tick) if start_timer else None
 
     def switch_group(self, notebook, page, page_number):
         group = self.group_names[page_number]
@@ -388,7 +394,7 @@ class Window:
         if key in ("left", "right"):
             fresh = key not in self.held
             self.held.add(key)
-            if fresh and self.ready and not self.pending and not self.stopped and self.window.is_active():
+            if fresh and self.ready and not self.pending and not self.stopped and not self.input_suspended and self.window.is_active():
                 if len(self.held & {"left", "right"}) == 1:
                     self.step(-1 if key == "left" else 1)
             return True
@@ -425,22 +431,21 @@ class Window:
 
     def focus_in(self, *_):
         self.had_focus = True
-        self.held.clear()
+        self.input_suspended = False
         return False
 
     def focus_out(self, *_):
-        self.held.clear()
-        if self.had_focus:
-            self.stopped = True
-            self.ready = False
-            self.phase.set_text("窗口失焦，正在结束控制并下使能")
-            self.send()
+        self.input_suspended = True
+        self.request = None
+        self.phase.set_text('切窗暂停运动并保持使能；切回后松键重按或重新执行目标')
+        self.send()
         return False
 
     def send(self):
         if self.connection:
-            self.connection.send(self.request, self.cancel_count,
-                                 focused=self.window.is_active(), exit=self.stopped)
+            focused = self.window.is_active() and not self.input_suspended
+            self.connection.send(self.request if focused else None, self.cancel_count,
+                                 focused=focused, exit=self.stopped)
 
     def save_notes(self, *_):
         path = HERE/"joint_mapping.json"
@@ -510,10 +515,10 @@ class Window:
         if self.connection:
             def finish():
                 self.connection.finish()
-                self.GLib.idle_add(self.Gtk.main_quit)
+                self.GLib.idle_add(self.ui_closed)
             threading.Thread(target=finish, daemon=True).start()
         else:
-            self.Gtk.main_quit()
+            self.ui_closed()
         return True
 
     def run(self):
