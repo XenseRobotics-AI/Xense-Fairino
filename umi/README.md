@@ -2,6 +2,11 @@
 
 本文记录 2026-10-18 在上半身实际验证的流程。SDK 已在上半身编译并安装，可以直接从“扫描设备”开始；修改 SDK 源码后才需要重新编译。
 
+上游资料：
+
+- [官方从爪文档（v0.4.3）](https://xenserobotics-ai.github.io/XTac-UMI-G1-Docs/v0.4.3/follower/)
+- [官方 SDK 仓库（TacCap-Gripper）](https://github.com/XenseRobotics-AI/TacCap-Gripper)
+
 ## 1. 连接与已验证环境
 
 在电脑终端登录上半身：
