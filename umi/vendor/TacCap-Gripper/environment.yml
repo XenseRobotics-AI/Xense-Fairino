@@ -1,0 +1,66 @@
+# =============================================================================
+# taccap-gripper development environment
+# =============================================================================
+#
+# Create:    mamba env create -f environment.yml
+# Activate:  mamba activate taccap
+# Update:    mamba env update -f environment.yml
+# =============================================================================
+
+name: taccap
+
+channels:
+  - conda-forge
+
+dependencies:
+  # Build tools
+  - cmake>=3.20
+  - ninja
+  - pkg-config
+  - make
+
+  # C++ toolchain
+  - gcc=14.*
+  - gxx=14.*
+  - gcc_linux-64=14.*
+  - gxx_linux-64=14.*
+
+  # C++ deps. The Camera component links opencv_core + opencv_videoio; use
+  # libopencv (C++ only) here. The Python cv2 binding is pinned via pip below
+  # to opencv-python==4.12.0.88 to align with the rest of the XenseRobotics
+  # Python toolchain (xense-flare etc.). spdlog (header-only) backs the shared
+  # logger; it pulls in fmt as a transitive dep. The logger is registry-free
+  # (see cpp/src/log.cpp) so the spdlog version is not ABI-coupled to other
+  # spdlog copies in a consumer process; pinned for reproducibility.
+  - libopencv=4.12.0
+  - spdlog=1.14.1
+
+  # Testing
+  - gtest=1.17.0
+
+  # Python
+  - python=3.12
+  - pybind11
+  - scikit-build-core
+  - numpy
+  - pytest
+  # Needed for `pre-commit install`, which .pre-commit-config.yaml asks every
+  # clone to run once. Without it the repo has rules that only CI enforces.
+  - pre-commit
+  # Package installs go through uv rather than pip. It targets the active
+  # conda env on its own (prints the prefix it picked, which pip does not) and
+  # its resolve/install overhead is lower -- measured on a warm build dir,
+  # 0.5 s against pip's 1.0 s. Do not expect more than that: the CMake compile
+  # dominates either tool, and both drive the same scikit-build-core backend.
+  # pip stays available, and conda's own `pip:` section below still uses it.
+  - uv
+  - pip
+  - pip:
+      - opencv-python==4.12.0.88   # pinned across XenseRobotics SDKs
+      # Ruff is pinned exactly, and from pip rather than conda-forge, because
+      # CI enforces it: conda-forge tops out at 0.15.x while the gate runs
+      # 0.16.x, and the two disagree about real things — 0.16 moved I001 and
+      # friends into the default rule set, and 0.16.8 began formatting Python
+      # inside Markdown fences. A dev running a different build than the gate
+      # finds out from a red CI. Bump this and .github/workflows/ci.yml together.
+      - ruff==0.16.8

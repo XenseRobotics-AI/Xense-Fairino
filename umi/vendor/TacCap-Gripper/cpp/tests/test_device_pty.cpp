@@ -1,0 +1,190 @@
+// Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
+//
+// Device (heartbeat / SN / device type) and the exclusive port open, against
+// the pty-backed fake follower. No hardware.
+//
+// The setters are pinned hardest because they are factory operations: a wrong
+// SN swaps left and right or routes the wrong role's firmware to the board.
+// Each must refuse bad input before anything reaches the wire, and must notice
+// when what it wrote is not what the flash holds.
+
+#include "fake_follower.hpp"
+
+#include <taccap/error.hpp>
+#include <taccap/follower_gripper.hpp>
+
+#include <cerrno>
+#include <gtest/gtest.h>
+#include <stdexcept>
+
+namespace tx = xense::taccap;
+namespace tp = xense::taccap::protocol;
+using taccap_test::FakeFollower;
+using taccap_test::Pty;
+using taccap_test::open_follower;
+
+TEST(DevicePty, HeartbeatDecodesUptimeAndVersion) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    const auto hb = g->device().heartbeat();
+    EXPECT_EQ(hb.uptime_ms, 123456u);
+    ASSERT_TRUE(g->firmware_version().has_value());
+    EXPECT_EQ(hb.version.major, g->firmware_version()->major);
+    EXPECT_EQ(hb.version.minor, g->firmware_version()->minor);
+    EXPECT_EQ(hb.version.patch, g->firmware_version()->patch);
+}
+
+TEST(DevicePty, TheSnReadAtOpenIsKept) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    EXPECT_EQ(g->firmware_sn(), "TCGU01A28Z0001s");
+    EXPECT_EQ(g->device().get_sn(), "TCGU01A28Z0001s");
+}
+
+TEST(DevicePty, SetSnRoundTrips) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    g->device().set_sn("TCGU01A28Z0099s");
+    EXPECT_EQ(fw.stored_sn(), "TCGU01A28Z0099s");
+    EXPECT_EQ(g->device().get_sn(), "TCGU01A28Z0099s");
+}
+
+TEST(DevicePty, SetSnRefusesBadLengthsBeforeTheWire) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    EXPECT_THROW(g->device().set_sn(""), std::invalid_argument);
+    EXPECT_THROW(g->device().set_sn("TCGU01A28Z0001s-TOO-LONG"), std::invalid_argument);
+    EXPECT_EQ(fw.stored_sn(), "TCGU01A28Z0001s") << "nothing may have been written";
+}
+
+TEST(DevicePty, SetSnCatchesAWriteThatDidNotLand) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_corrupt_sn_writes(true);
+    auto g = open_follower(pty);
+    EXPECT_THROW(g->device().set_sn("TCGU01A28Z0099s"), tx::ProtocolError);
+}
+
+TEST(DevicePty, DeviceTypeRoundTripsAndRefusesUnknown) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    EXPECT_EQ(g->device().get_device_type(), tp::DeviceType::Unknown);
+    g->device().set_device_type(tp::DeviceType::Right);
+    EXPECT_EQ(g->device().get_device_type(), tp::DeviceType::Right);
+    EXPECT_THROW(g->device().set_device_type(tp::DeviceType::Unknown),
+                 std::invalid_argument);
+    EXPECT_EQ(g->device().get_device_type(), tp::DeviceType::Right);
+}
+
+// Two handles on one CDC port split its byte stream between them, and both
+// then see CRC errors and lost ACKs that read as a link fault. The second open
+// must fail cleanly instead, with EBUSY so discovery can report "in use".
+TEST(ExclusiveOpen, ASecondHandleOnTheSamePortIsRefused) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto first = open_follower(pty);
+    try {
+        auto second = open_follower(pty);
+        FAIL() << "second open of " << pty.slave_path() << " succeeded";
+    } catch (const tx::IoError& e) {
+        EXPECT_EQ(e.errno_value(), EBUSY) << e.what();
+    }
+    // The first handle is unaffected.
+    EXPECT_EQ(first->device().get_sn(), "TCGU01A28Z0001s");
+}
+
+TEST(ExclusiveOpen, ThePortIsFreeAgainOnceTheHandleCloses) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    { auto first = open_follower(pty); }
+    EXPECT_NO_THROW({ auto again = open_follower(pty); });
+}
+
+// close() is the only way to free the port while the object is still alive --
+// which in Python is whenever anything else holds a reference to it.
+TEST(ExclusiveOpen, CloseReleasesThePortWhileTheObjectIsStillAlive) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto first = open_follower(pty);
+    EXPECT_FALSE(first->is_closed());
+    first->close();
+    EXPECT_TRUE(first->is_closed());
+    EXPECT_NO_THROW({ auto again = open_follower(pty); })
+        << "the port must be free again with the first object still alive";
+}
+
+TEST(ExclusiveOpen, CloseIsIdempotentAndCommandsFailAfterwards) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    g->close();
+    EXPECT_NO_THROW(g->close());
+    EXPECT_THROW(g->device().heartbeat(), tx::IoError);
+}
+
+// transport().stop() alone joins the threads but keeps the port: that is the
+// trap a GUI fell into, and why close() exists.
+TEST(ExclusiveOpen, TransportStopAloneKeepsThePort) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto first = open_follower(pty);
+    first->transport().stop();
+    EXPECT_THROW({ auto again = open_follower(pty); }, tx::IoError);
+    first->close();
+    EXPECT_NO_THROW({ auto again = open_follower(pty); });
+}
+
+// ---- Motor firmware version record (0x5C / 0x58 fallback, follower 1.2.14) --
+
+TEST(MotorFwVersionPty, WithNoRecordMitReadsInvalid) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    const auto v = g->motor().motor_version();
+    EXPECT_EQ(v.valid, 0u);
+    EXPECT_EQ(v.source, tp::MotorVersionSource::Live);
+}
+
+TEST(MotorFwVersionPty, AWrittenVersionIsReturnedOnMitAndMarkedAsFlash) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    const auto rec = g->motor().set_motor_fw_version({0, 0, 3, 32});
+    EXPECT_EQ(rec.valid, 1u);
+    EXPECT_EQ(rec.source, tp::MotorVersionSource::FlashHost);
+    const auto v = g->motor().motor_version();
+    ASSERT_EQ(v.valid, 1u);
+    EXPECT_EQ(v.source, tp::MotorVersionSource::FlashHost);
+    EXPECT_EQ(v.version[0], 0u);
+    EXPECT_EQ(v.version[2], 3u);
+    EXPECT_EQ(v.version[3], 32u);
+}
+
+// Same rule as set_sn: a write the flash does not reflect must not pass.
+TEST(MotorFwVersionPty, AWriteThatDidNotLandThrows) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_corrupt_fw_ver_writes(true);
+    auto g = open_follower(pty);
+    EXPECT_THROW(g->motor().set_motor_fw_version({10, 5, 0, 4}), tx::ProtocolError);
+}

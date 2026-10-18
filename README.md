@@ -34,6 +34,7 @@ bash run.sh test
 | 双雷达扫描显示 | [apps/lidar_viewer/](apps/lidar_viewer/) | `bash run.sh lidar` |
 | 网络与机器人状态 | [tools/](tools/) | `bash run.sh network` / `status` |
 | 雷达与手腕离线诊断 | [diagnostics/](diagnostics/) | `bash run.sh diagnostics --help` |
+| 上半身夹爪编译、扫描与捏合 | [umi/README.md](umi/README.md) | SSH 到上半身，按文档运行 |
 | 模型、网格和样例 | [models/](models/)、[data/](data/) | 各模块自动按项目路径读取 |
 | 全部离线验证 | [tests/](tests/) | `bash run.sh test` |
 

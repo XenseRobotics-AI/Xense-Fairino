@@ -1,0 +1,7 @@
+# Device reports and generated previews
+/output/
+/build-logs/
+
+# Offline dependency and build artifacts
+/wheels/
+*.whl

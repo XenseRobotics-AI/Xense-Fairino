@@ -1,0 +1,44 @@
+# Build
+build/
+build_*/
+dist/
+*.egg-info/
+*.so
+*.so.*
+*.o
+*.a
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.cache/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project — reference clones of the upstream firmware + PC GUI repos.
+# Tracked in their own (internal) git histories, NOT as submodules — this
+# SDK only depends on the wire protocol they define, not on their build
+# artefacts. Clone-on-demand for development;
+# see README.md "Firmware / PC GUI reference repos".
+/third_party/firmware/
+
+# Legacy: manual copy that used to live here; reorganised into
+# third_party/firmware/ (May 2026). Kept ignored in case anyone still
+# has the old path lying around in a clean checkout.
+Embedded Software/
+
+# Working notes for AI-assisted maintenance — local only.
+# Carries bench details, device serials and internal infrastructure, none of
+# which belongs in a distributed checkout. Keep your own copy; it is not
+# shared through this repo.
+/CLAUDE.md
