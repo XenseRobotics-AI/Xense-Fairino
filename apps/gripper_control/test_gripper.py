@@ -1,0 +1,272 @@
+"""Identity, linear targets, SDK lifecycle and asynchronous link regressions; no hardware."""
+import ast
+import base64
+import json
+from pathlib import Path
+import queue
+import shlex
+import sys
+import threading
+import time
+from types import SimpleNamespace as NS
+import unittest
+from unittest.mock import patch
+import zlib
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gripper_core import TriggerMapping, select_devices, healthy_sample
+from worker import Device, Worker
+from apps.gripper_control.client import Session, remote_command
+
+
+def endpoint(sn='TCGU01A28Z0015s', side='Left', port='/dev/left', role='Follower'):
+    return dict(sn=sn, side=side, port=port, role=role, in_use=False)
+
+
+class FakeMotor:
+    def __init__(self, events):
+        self.events = events
+        self.enabled = False
+        self.position = .4
+        self.fault = NS(report_flags=0x0C, motor_fault_code=0, motor_latched_fault_code=0,
+                        firmware_fault_code=0, firmware_latched_fault_code=0x0303)
+
+    def get_spec(self):
+        return NS(stall_cont_torque_nm=1.1, v_max_rad_s=10.)
+
+    def fault_report(self):
+        return self.fault
+
+    def read_status(self, **_):
+        return NS(actual_pos=self.position, actual_vel=0., actual_torque=0., motor_temp_c=30.,
+                  status=int(self.enabled))
+
+    def enable(self):
+        self.events.append('enable')
+        self.enabled = True
+
+    def disable(self):
+        self.events.append('disable')
+        self.enabled = False
+
+
+class FakeGripper:
+    def __init__(self, events, **_):
+        self.events = events
+        self.motor = FakeMotor(events)
+        self.firmware_sn = endpoint()['sn']
+        self.audit = NS(ok=True, effective=NS(cont_torque_nm=1.1), detail='')
+
+    def position_map(self):
+        return NS()
+
+    def audit_envelope(self):
+        return self.audit
+
+    def rad_to_pos(self, value):
+        return value
+
+    def close(self):
+        self.events.append('close_port')
+
+
+class FakeController:
+    def __init__(self, gripper, cfg):
+        self.g, self.cfg = gripper, cfg
+        self.target = None
+        self.age = 1.
+        self.fault = ''
+
+    def start(self):
+        self.g.events.append('start_at_measured_position')
+        self.target = self.g.motor.position
+
+    def stop(self):
+        self.g.events.append('stop_zero_disable')
+        self.g.motor.enabled = False
+
+    def set_target(self, value):
+        self.g.events.append(('target', value))
+        self.target = self.g.motor.position = value
+
+    def hold_position(self):
+        self.g.events.append('hold')
+        self.target = self.g.motor.position
+
+    def snapshot(self):
+        sample = self.g.motor.read_status()
+        return NS(observation=NS(valid=True, age_ms=self.age, position=sample.actual_pos,
+                                 velocity=0., torque=0., motor_temp_c=30., status=sample.status),
+                  fault_reason=self.fault, target_position=self.target,
+                  state=NS(name='HOLDING_POSITION'), grasp_torque_nm=self.cfg.grasp_torque_nm)
+
+
+def fake_sdk(events):
+    return NS(FollowerGripper=lambda **kw: FakeGripper(events, **kw),
+              ForcePositionConfig=NS(for_spec=lambda _: NS()), ForcePositionController=FakeController)
+
+
+class IdentityTests(unittest.TestCase):
+    def test_missing_side_never_reuses_the_other_device(self):
+        self.assertEqual(set(select_devices([endpoint()])), {'left'})
+        self.assertFalse(select_devices([endpoint(role='Leader')]))
+        self.assertFalse(select_devices([endpoint(side='Unknown')]))
+
+    def test_duplicate_identity_requires_explicit_sn_and_override_is_exact(self):
+        endpoints = [endpoint(), endpoint(sn='OTHERs', port='/dev/other')]
+        with self.assertRaises(ValueError):
+            select_devices(endpoints)
+        chosen = select_devices([endpoint()], {'right': endpoint()['sn']})
+        self.assertEqual(set(chosen), {'right'})
+        self.assertEqual(chosen['right']['sn'], endpoint()['sn'])
+
+    def test_explicit_missing_or_repeated_assignment_is_rejected(self):
+        for assignments in ({'left': 'missing'}, {'left': endpoint()['sn'], 'right': endpoint()['sn']}):
+            with self.assertRaises(ValueError):
+                select_devices([endpoint()], assignments)
+        right = select_devices([endpoint(side='Unknown')], {'right': endpoint()['sn']})
+        self.assertEqual(right['right']['port'], '/dev/left')
+
+
+class DeviceTests(unittest.TestCase):
+    def setUp(self):
+        self.events = []
+        self.device = Device(fake_sdk(self.events), endpoint())
+
+    def test_read_only_connect_and_close_do_not_enable_or_disable(self):
+        self.assertFalse(self.device.last['enabled'])
+        self.device.close()
+        self.assertEqual(self.events, ['close_port'])
+
+    def test_seed_then_enable_continuous_target_hold_and_cleanup(self):
+        self.device.enable(1.1, .25)
+        self.assertEqual(self.events, ['start_at_measured_position', 'enable'])
+        self.assertEqual(self.device.snapshot()['target'], .4)
+        for value in (0., .25, .5, .75, 1.):
+            self.device.target(value)
+            self.assertEqual(self.device.snapshot()['position'], value)
+        self.device.hold()
+        self.device.close()
+        self.assertEqual(self.events[-3:], ['stop_zero_disable', 'disable', 'close_port'])
+
+    def test_ratings_faults_bad_envelope_or_enabled_motor_block_enable(self):
+        for mutate in (lambda d: setattr(d.gripper.motor, 'enabled', True),
+                       lambda d: setattr(d.gripper.motor.fault, 'firmware_fault_code', 1),
+                       lambda d: setattr(d.gripper.motor.fault, 'report_flags', 0),
+                       lambda d: setattr(d.gripper.audit, 'ok', False)):
+            d = Device(fake_sdk([]), endpoint())
+            mutate(d)
+            with self.assertRaises(ValueError):
+                d.enable(1.1, .25)
+            self.assertIsNone(d.controller)
+        with self.assertRaises(ValueError):
+            self.device.enable(1.2, .25)
+        self.assertNotIn('enable', self.events)
+
+    def test_nonfinite_target_and_stale_or_faulty_state_cannot_drive(self):
+        self.device.enable(1.1, .25)
+        for value in (-.1, 1.1, True, float('nan')):
+            with self.assertRaises(ValueError):
+                self.device.target(value)
+        self.device.controller.age = 300
+        with self.assertRaises(RuntimeError):
+            self.device.snapshot()
+        self.device.close()
+        self.assertFalse(self.device.gripper.motor.enabled)
+
+
+class WorkerTests(unittest.TestCase):
+    def test_whole_stream_validated_before_any_jaw_moves(self):
+        events = []
+        worker = Worker(fake_sdk(events))
+        worker.devices['left'] = Device(worker.sdk, endpoint())
+        worker.devices['left'].enable(1.1, .25)
+        for targets in ({'left': .1, 'right': .2}, {'left': float('nan')}):
+            with self.assertRaises(ValueError):
+                worker.command(dict(id=1, created=10., action='stream', targets=targets), 10.1)
+        self.assertFalse(any(isinstance(e, tuple) for e in events))
+        with patch('worker.emit'):
+            worker.close()
+        self.assertFalse(worker.devices['left'].gripper.motor.enabled)
+
+    def test_stale_commands_are_rejected_even_with_fresh_transport(self):
+        worker = Worker(fake_sdk([]))
+        with self.assertRaisesRegex(ValueError, '0.25'):
+            worker.command(dict(id=1, created=10., action='enable', side='both'), 10.3)
+
+
+class TriggerTests(unittest.TestCase):
+    def frame(self, left=0., right=0.):
+        return {side: dict(trigger=value, trigger_available=True)
+                for side, value in [('left', left), ('right', right)]}
+
+    def test_linear_mapping_and_mirror_routing_with_release_to_arm(self):
+        mapping = TriggerMapping()
+        hands = {'left': 'right', 'right': 'left'}
+        self.assertFalse(mapping.update(self.frame(1., 1.), hands, ['left', 'right']))
+        self.assertFalse(mapping.update(self.frame(), hands, ['left', 'right']))
+        self.assertEqual(mapping.update(self.frame(.75, .25), hands, ['left', 'right']),
+                         {'left': .75, 'right': .25})
+        self.assertEqual(mapping.update(self.frame(), hands, ['left', 'right']), {'left': 1., 'right': 1.})
+        mapping.reset()
+        self.assertFalse(mapping.update(self.frame(1., 1.), hands, ['left']))
+
+    def test_missing_trigger_is_not_synthesized_as_an_open_command(self):
+        with self.assertRaises(ValueError):
+            TriggerMapping().update({'left': {}}, {'left': 'left'}, ['left'])
+
+
+class TransportTests(unittest.TestCase):
+    def test_bundled_worker_compiles_and_uses_installed_robot_sdk_without_ros(self):
+        setup = shlex.split(remote_command())[2]
+        self.assertIn('/home/fairino/umi/.venv/bin/python', setup)
+        self.assertNotIn('/opt/ros', setup)
+        source = shlex.split(setup.split(' -u -c ', 1)[1])[0]
+        tree = ast.parse(source)
+        encoded = next(n.args[0].value for n in ast.walk(tree) if isinstance(n, ast.Call)
+                       and ast.unparse(n.func) == 'base64.b64decode')
+        bundle = json.loads(zlib.decompress(base64.b64decode(encoded)))
+        for name, text in bundle.items():
+            compile(text, name, 'exec')
+
+    def test_background_transport_handles_ui_actions_then_stream_and_disable(self):
+        calls = []
+        class Connection:
+            def __init__(self, *_, **__):
+                self.events = queue.Queue()
+                self.done = threading.Event()
+                self.last_status = time.monotonic()
+                self.latest = dict(stamp=self.last_status, last_request=0, ready=True,
+                                   devices={'left': {'connected': True, 'controlled': False}})
+
+            def send(self, request=None):
+                calls.append(request)
+                now = time.monotonic()
+                self.latest = {**self.latest, 'stamp': now}
+                self.last_status = now
+                if request:
+                    self.latest['last_request'] = request['id']
+
+            def finish(self):
+                self.events.put({'disabled_confirmed': True})
+
+        session = Session('host', 'user', 'not-a-real-password', connection_factory=Connection).start()
+        session.command('enable', 'left')
+        limit = time.monotonic()+2
+        while not any(c and c['action'] == 'enable' for c in calls) and time.monotonic() < limit:
+            time.sleep(.01)
+        session.set_targets({'left': .37})
+        limit = time.monotonic()+2
+        while not any(c and c['action'] == 'stream' for c in calls) and time.monotonic() < limit:
+            time.sleep(.01)
+        session.close()
+        session.thread.join(2)
+        self.assertFalse(session.failure)
+        self.assertTrue(session.disabled_confirmed)
+        self.assertTrue(any(c and c.get('targets') == {'left': .37} for c in calls))
+
+
+if __name__ == '__main__':
+    unittest.main()

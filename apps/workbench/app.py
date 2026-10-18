@@ -24,6 +24,7 @@ from apps.workbench.embedding import PanelHost
 from apps.workbench.network import route_info, describe
 from apps.workbench.telemetry import Feedback, fresh_hardware
 from apps.workbench.teleop import TeleopPanel
+from apps.gripper_control.panel import GripperPanel
 
 # Several independent features may share one page without sharing a controller.
 CONTROL_PAGES = {'base': 'map', 'joints': 'joints', 'body': 'body', 'tcp': 'tcp'}
@@ -89,7 +90,7 @@ class Workbench:
         split.pack1(self.notebook, resize=True, shrink=False)
         self.pages = {}
         self.page_controls = {}
-        for name, title in [('map', '建图与底盘'), ('joints', '关节'), ('body', '身体'), ('tcp', 'TCP'), ('teleop', 'PICO 遥操'), ('maintenance', '维护')]:
+        for name, title in [('map', '建图与底盘'), ('joints', '关节'), ('body', '身体'), ('tcp', 'TCP'), ('gripper', '夹爪调试'), ('teleop', 'PICO 遥操'), ('maintenance', '维护')]:
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             page.set_border_width(10)
             self.pages[name] = page
@@ -124,6 +125,8 @@ class Workbench:
             self.show_control_preview(name)
         self.teleop = TeleopPanel(self.credentials, self.acquire, self.release, args.demo)
         self.pages['teleop'].pack_start(self.teleop, True, True, 0)
+        self.gripper = GripperPanel(self.credentials, self.acquire, self.release, args.demo)
+        self.pages['gripper'].pack_start(self.gripper, True, True, 0)
         self.add_maintenance()
         self.add_model(split)
         split.set_position(1000)
@@ -473,7 +476,7 @@ class Workbench:
         for key, entry in self.entries.items():
             entry.set_sensitive(not self.leases and not self.observers and not self.closing)
         self.refresh_control_access()
-        if self.closing and not self.controls and not self.starting and not self.leases and self.teleop.finished():
+        if self.closing and not self.controls and not self.starting and not self.leases and self.teleop.finished() and self.gripper.finished():
             if all(not o.thread.is_alive() for o in self.observers.values()) and not any(t.is_alive() for t in self.retired_threads) and (not self.map_panel or not self.map_panel.stream.thread.is_alive()):
                 Gtk.main_quit()
                 return False
@@ -491,6 +494,7 @@ class Workbench:
         for name in list(self.controls):
             self.stop_control(name)
         self.teleop.close()
+        self.gripper.close()
         for observer in self.observers.values():
             observer.stop.set()
         return True
@@ -502,7 +506,7 @@ def main():
     parser.add_argument('--base-host', default='192.168.58.3')
     parser.add_argument('--upper-host', default='192.168.58.1')
     parser.add_argument('--user', default='fairino')
-    parser.add_argument('--page', choices=('map', 'base', 'joints', 'body', 'tcp', 'teleop', 'maintenance'), default='map')
+    parser.add_argument('--page', choices=('map', 'base', 'joints', 'body', 'tcp', 'gripper', 'teleop', 'maintenance'), default='map')
     parser.add_argument('--live-arms', action='store_true', default=True, help='兼容选项；默认显示双臂及已标定折叠关节')
     parser.add_argument('--static-model', action='store_false', dest='live_arms', help='只显示静态模型参考')
     args = parser.parse_args()

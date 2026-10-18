@@ -9,6 +9,7 @@ if (($#)); then shift; fi
 case "$COMMAND" in
   console) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" "$@" ;;
   teleop) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" --page teleop "$@" ;;
+  gripper) exec "$FAIRINO_PYTHON" "$ROOT/apps/gripper_control/app.py" "$@" ;;
   status) exec "$FAIRINO_PYTHON" "$ROOT/tools/inspect_robot.py" "$@" ;;
   network) exec "$FAIRINO_PYTHON" "$ROOT/tools/network_check.py" "$@" ;;
   base) exec bash "$ROOT/apps/fairino_keyboard/start.sh" "$@" ;;
@@ -34,6 +35,7 @@ case "$COMMAND" in
   bash run.sh console                   集成工作台：连接、模型、键控、地图、遥操
   bash run.sh console --demo            工作台离线预览，不连接机器人
   bash run.sh teleop                    打开遥操界面，不自动使能
+  bash run.sh gripper                   独立夹爪调试：扫描、开度、闭合、保持
   bash setup.sh all                     安装所有功能的项目内环境
   bash setup.sh base                    安装键控/诊断 Python 环境
   bash setup.sh pico                    安装 PICO 接收/遥操 Python 环境

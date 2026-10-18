@@ -46,12 +46,13 @@ def remote_command(args):
 
 
 class Connection:
-    def __init__(self, args, worker_command=None, log_directory=None, password=None):
+    def __init__(self, args, worker_command=None, log_directory=None, password=None, feedback_timeout=.5):
         import pexpect
         self.pexpect = pexpect
         self.events = queue.Queue()
         self.latest = {}
         self.last_status = 0.0
+        self.feedback_timeout = feedback_timeout
         self.done = threading.Event()
         self.write_lock = threading.Lock()
         self.child = pexpect.spawn("ssh", ["-T", "-o", "ConnectTimeout=5",
@@ -110,7 +111,7 @@ class Connection:
     def send(self, request=None, cancel=0, focused=True, exit=False, kinematics=None):
         if self.done.is_set():
             return
-        stale = self.last_status != 0 and time.monotonic()-self.last_status > 0.5
+        stale = self.last_status != 0 and time.monotonic()-self.last_status > self.feedback_timeout
         data = {"request": request, "cancel": cancel, "focused": focused,
                 "exit": bool(exit or stale), "ack": self.latest.get("stamp", 0)}
         if kinematics is not None:

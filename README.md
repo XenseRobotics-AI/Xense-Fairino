@@ -73,6 +73,7 @@ bash run.sh test
 | PICO 安装、接收与预览 | [scripts/pico4/](scripts/pico4/) | `bash run.sh pico service` |
 | 双臂遥操、插值、Home、冻结 | [scripts/pico4/fairino/](scripts/pico4/fairino/) | `bash run.sh vr` |
 | PICO 设备接入与双手柄 | [src/lerobot/teleoperators/](src/lerobot/teleoperators/) | 由 PICO 入口加载 |
+| TacCap / XTac 夹爪调试 | [apps/gripper_control/](apps/gripper_control/) | 工作台「夹爪调试」 / `bash run.sh gripper` |
 | 上半身和底盘清错 | [clear_errors.py](scripts/pico4/fairino/clear_errors.py) | `bash run.sh errors --execute` |
 | 双雷达扫描显示 | [apps/lidar_viewer/](apps/lidar_viewer/) | `bash run.sh lidar` |
 | 固定地图、实时雷达与按需建图 | [apps/map_viewer/](apps/map_viewer/) | `bash run.sh map` / `mapping status` |
