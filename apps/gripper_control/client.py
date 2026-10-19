@@ -59,6 +59,7 @@ class Session:
         with self.lock:
             self.targets = None
             self.busy = True
+            self.message = ''
         self.commands.put_nowait(dict(action=action, side=side, **fields))
 
     def set_targets(self, values):

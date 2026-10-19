@@ -3,6 +3,8 @@ from contextlib import ExitStack
 import io
 from pathlib import Path
 import sys
+import threading
+import time
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
@@ -70,6 +72,31 @@ class TeleopOptionsTests(unittest.TestCase):
                 self.assertFalse(widgets['target'].get_sensitive())
             self.assertIsNone(panel.session)
             session.assert_not_called()
+
+    def gripper_state(self, diagnostics=None):
+        panel = GripperPanel(lambda _:None, lambda *_:True, lambda *_:None)
+        self.addCleanup(panel.destroy)
+        unit = dict(connected=True, controlled=False, enabled=False, sn='TCGU01A28Z0018s',
+                    port='/dev/right', position=.92, state='未使能', torque_nm=0., temperature_c=27.)
+        if diagnostics is not None:
+            unit['diagnostics'] = diagnostics
+        state = dict(received=time.monotonic(), devices={'right':unit})
+        panel.session = NS(snapshot=lambda:state, finished=lambda:False, stop=threading.Event())
+        panel.tick()
+        return panel
+
+    def test_missing_diagnostics_never_appear_as_a_pass(self):
+        panel = self.gripper_state()
+        text = panel.widgets['right']['diagnostics'].get_text()
+        self.assertIn('尚未更新', text)
+        self.assertNotIn('通过', text)
+
+    def test_connected_device_shows_preflight_failure_separately_from_disconnection(self):
+        panel = self.gripper_state(dict(firmware='1.2.6', issues=['电机历史故障=0x00000004（欠压）']))
+        self.assertIn('使能检查未通过', panel.state.get_text())
+        self.assertIn('欠压', panel.state.get_text())
+        self.assertIn('92.0%', panel.widgets['right']['info'].get_text())
+        self.assertFalse(panel.widgets['right']['buttons']['target'].get_sensitive())
 
 
 if __name__ == '__main__':

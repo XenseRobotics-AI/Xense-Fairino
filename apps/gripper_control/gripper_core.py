@@ -7,6 +7,58 @@ DEFAULT_TORQUE = 1.1  # Nm, bounded again against the connected motor's spec.
 DEFAULT_SPEED = .25  # shaft rad/s
 
 
+def diagnostic_snapshot(fault, audit, firmware='未知'):
+    """Cached reads only; this can be rendered while the SDK owns the stream."""
+    fields = ('report_flags', 'motor_fault_code', 'motor_latched_fault_code',
+              'firmware_fault_code', 'firmware_latched_fault_code')
+    values = {key: int(getattr(fault, key)) for key in fields}
+    envelope = {'ok': bool(audit.ok), 'detail': audit.detail}
+    for name in ('stored', 'effective', 'recommended'):
+        record = getattr(audit, name, None)
+        envelope[name] = (dict(cont_nm=float(record.cont_torque_nm),
+                               peak_nm=float(record.peak_torque_nm))
+                          if record is not None else None)
+    return {'firmware': firmware, 'fault': values, 'envelope': envelope,
+            'issues': preflight_issues(values, envelope)}
+
+
+def preflight_issues(fault, envelope):
+    """Explain each existing enable gate; never reinterpret invalid fields as clear."""
+    issues = []
+    flags = fault['report_flags']
+    missing = []
+    if not flags & 0x04:
+        missing.append('电机 MotorValid')
+    if not flags & 0x08:
+        missing.append('固件 FwValid')
+    if missing:
+        issues.append(f'故障诊断有效标记不完整（flags=0x{flags:02X}，缺少'+ '、'.join(missing)+'）')
+    # Keep the existing refusal of nonzero raw motor fields as well as missing
+    # validity. Explain the value without claiming it is trustworthy when invalid.
+    for field, title in (('motor_fault_code', '电机当前故障'),
+                         ('motor_latched_fault_code', '电机历史故障')):
+        value = fault[field]
+        if value:
+            name = '（SDK 故障表：欠压）' if value == 0x04 and flags & 0x04 else ''
+            trust = '' if flags & 0x04 else '（有效性未确认）'
+            issues.append(f'{title}=0x{value:08X}{name}{trust}')
+    for field, title in (('firmware_fault_code', '固件当前故障'),
+                         ('firmware_latched_fault_code', '固件历史故障')):
+        value = fault[field]
+        if value and not (field == 'firmware_latched_fault_code' and value == 0x0303):
+            trust = '' if flags & 0x08 else '（有效性未确认）'
+            issues.append(f'{title}=0x{value:08X}{trust}')
+    if not envelope['ok'] or envelope['effective'] is None:
+        stored, recommended = envelope['stored'], envelope['recommended']
+        if stored is not None and recommended is not None:
+            issues.append('力矩包络校验未通过：已存持续/峰值 '
+                f'{stored["cont_nm"]:.3f}/{stored["peak_nm"]:.3f} Nm，SDK 建议 '
+                f'{recommended["cont_nm"]:.3f}/{recommended["peak_nm"]:.3f} Nm')
+        else:
+            issues.append('力矩包络校验未通过：'+envelope['detail'])
+    return issues
+
+
 def number(value, low, high, label):
     if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
         raise ValueError(f'{label}必须在 {low:g}～{high:g} 范围内且为有限数值')

@@ -79,8 +79,16 @@ class GripperPanel(Gtk.Box):
                 buttons[action] = button
                 button.set_sensitive(False)
             box.pack_start(grid, False, False, 0)
+            diagnostic_expander = Gtk.Expander(label='诊断详情 · 固件 / 故障 / 力矩包络')
+            diagnostics = Gtk.Label(label='连接后显示只读诊断', xalign=0)
+            diagnostics.set_line_wrap(True)
+            diagnostics.set_selectable(True)
+            diagnostics.set_max_width_chars(48)
+            diagnostic_expander.add(diagnostics)
+            box.pack_start(diagnostic_expander, False, False, 0)
             columns.pack_start(frame, True, True, 0)
-            self.widgets[side] = dict(info=info, target=value, torque=torque, speed=speed, buttons=buttons)
+            self.widgets[side] = dict(info=info, target=value, torque=torque, speed=speed, buttons=buttons,
+                                      diagnostics=diagnostics, diagnostic_expander=diagnostic_expander)
             for widget in (value, torque, speed):
                 widget.set_sensitive(False)
         self.pack_start(columns, False, False, 0)
@@ -139,7 +147,12 @@ class GripperPanel(Gtk.Box):
             elif self.session.stop.is_set():
                 message = '正在断开，等待夹爪下使能确认…'
             elif fresh and not message:
-                message = '连接就绪；未连接的一侧保持禁用。'
+                blocked = []
+                for side, title in [('left', '左夹爪'), ('right', '右夹爪')]:
+                    issues = state.get('devices', {}).get(side, {}).get('diagnostics', {}).get('issues', [])
+                    if issues:
+                        blocked.append(title+'使能检查未通过：\n'+'\n'.join(issues))
+                message = '\n'.join(blocked) if blocked else '连接就绪；未连接的一侧保持禁用。'
             if message:
                 self.state.set_text(message)
         for side in SIDES:
@@ -152,6 +165,15 @@ class GripperPanel(Gtk.Box):
                     f'实测开度 {100*unit["position"]:.1f}% · {unit["state"]}\n'
                     f'使能 {"是" if unit["enabled"] else "否"} · 力矩 {unit["torque_nm"]:+.2f} Nm · '
                     f'温度 {unit["temperature_c"]:.1f}°C'+('' if fresh else '\n反馈未更新'))
+                diagnostic = unit.get('diagnostics', {})
+                issues = diagnostic.get('issues', [])
+                if diagnostic:
+                    widgets['diagnostics'].set_text('固件：'+diagnostic.get('firmware', '未知')+'\n'+(
+                        '\n'.join(issues) if issues else '使能前故障与包络检查通过；使能时仍会重新读取复查。'))
+                    widgets['diagnostic_expander'].set_label(
+                        f'诊断详情 · {len(issues)} 项使能检查未通过' if issues else '诊断详情 · 固件 / 故障 / 力矩包络')
+                else:
+                    widgets['diagnostics'].set_text('诊断数据尚未更新，请重新连接夹爪。')
             else:
                 widgets['info'].set_text(state.get('device_errors', {}).get(side, '未连接'))
             for key in ('target', 'torque', 'speed'):

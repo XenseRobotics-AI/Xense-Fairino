@@ -57,7 +57,10 @@ class FakeGripper:
         self.events = events
         self.motor = FakeMotor(events)
         self.firmware_sn = endpoint()['sn']
-        self.audit = NS(ok=True, effective=NS(cont_torque_nm=1.1), detail='')
+        self.firmware_version = 'FirmwareVersion(1.2.16.0)'
+        self.audit = NS(ok=True, effective=NS(cont_torque_nm=1.1, peak_torque_nm=1.8), detail='',
+                        stored=NS(cont_torque_nm=1.1, peak_torque_nm=1.8),
+                        recommended=NS(cont_torque_nm=1.1, peak_torque_nm=1.8))
 
     def position_map(self):
         return NS()
@@ -175,6 +178,29 @@ class DeviceTests(unittest.TestCase):
             self.device.snapshot()
         self.device.close()
         self.assertFalse(self.device.gripper.motor.enabled)
+
+    def test_right_gripper_capture_reports_each_gate_without_sending_enable(self):
+        self.device.firmware = 'FirmwareVersion(1.2.6.0)'
+        self.device.gripper.motor.fault.report_flags = 0x15
+        self.device.gripper.motor.fault.motor_latched_fault_code = 0x04
+        self.device.gripper.motor.fault.firmware_latched_fault_code = 0
+        self.device.gripper.audit.ok = False
+        self.device.gripper.audit.stored.peak_torque_nm = 2.
+        with self.assertRaises(ValueError) as result:
+            self.device.enable(1.1, .25)
+        text = str(result.exception)
+        for expected in ('未发送使能', 'flags=0x15', 'FwValid', '0x00000004', '欠压', '2.000', '1.800'):
+            self.assertIn(expected, text)
+        self.assertNotIn('enable', self.events)
+        self.assertIsNone(self.device.controller)
+        self.assertEqual(len(self.device.diagnostics()['issues']), 3)
+
+    def test_cached_diagnostics_do_not_poll_the_serial_bus_while_running(self):
+        self.device.enable(1.1, .25)
+        with patch.object(self.device.gripper.motor, 'fault_report', side_effect=AssertionError('serial poll')), \
+             patch.object(self.device.gripper, 'audit_envelope', side_effect=AssertionError('serial poll')):
+            self.assertEqual(self.device.diagnostics()['issues'], [])
+            self.assertTrue(self.device.snapshot()['enabled'])
 
 
 class WorkerTests(unittest.TestCase):

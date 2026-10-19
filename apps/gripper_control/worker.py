@@ -9,7 +9,7 @@ import threading
 import time
 
 from gripper_core import (DEFAULT_SPEED, DEFAULT_TORQUE, LEASE, SIDES, fresh_request,
-                          healthy_sample, number, opening, select_devices)
+                          healthy_sample, number, opening, select_devices, diagnostic_snapshot)
 
 PREFIX = '@UPPERPROBE '
 
@@ -30,6 +30,7 @@ class Device:
                 raise RuntimeError('夹爪身份在扫描后发生变化')
             self.gripper.position_map()  # Valid calibrated conversion, no config writes.
             self.spec = self.gripper.motor.get_spec()
+            self.firmware = str(self.gripper.firmware_version)
             self.audit = self.gripper.audit_envelope()
             self.fault = self.gripper.motor.fault_report()
             self.last = self.read_idle()
@@ -53,15 +54,12 @@ class Device:
                        sample['temperature_c'], sample['status'])
         if sample['enabled']:
             raise ValueError('夹爪已有使能，拒绝接管其他会话')
-        fault = self.gripper.motor.fault_report()
-        if (fault.report_flags & 0x0C != 0x0C or fault.motor_fault_code
-                or fault.motor_latched_fault_code or fault.firmware_fault_code
-                or fault.firmware_latched_fault_code not in (0, 0x0303)):
-            raise ValueError('夹爪当前故障或故障诊断无效；请先独立排查，不自动清错')
+        self.fault = self.gripper.motor.fault_report()
         # 0x0303 is recorded host-deadline history, as reviewed in umi/xtac_grip.py.
         self.audit = self.gripper.audit_envelope()
-        if not self.audit.ok or self.audit.effective is None:
-            raise ValueError('夹爪固件力矩包络未通过检查：'+self.audit.detail)
+        issues = self.diagnostics()['issues']
+        if issues:
+            raise ValueError('夹爪使能检查未通过（未发送使能）：\n'+'\n'.join(issues))
         limit = min(self.spec.stall_cont_torque_nm, self.audit.effective.cont_torque_nm)
         number(torque, .01, limit, '夹持力矩 Nm')
         number(speed, .01, min(1., self.spec.v_max_rad_s), '夹爪速度 rad/s')
@@ -83,6 +81,9 @@ class Device:
         if self.controller is None:
             raise ValueError('请先显式使能该夹爪')
         self.controller.set_target(opening(value))
+
+    def diagnostics(self):
+        return diagnostic_snapshot(self.fault, self.audit, self.firmware)
 
     def hold(self):
         if self.controller is not None:
@@ -194,7 +195,7 @@ class Worker:
         states = {}
         for side, device in self.devices.items():
             states[side] = dict(connected=True, sn=device.endpoint['sn'], port=device.endpoint['port'],
-                                **device.snapshot())
+                                diagnostics=device.diagnostics(), **device.snapshot())
         emit(stamp=time.monotonic(), ready=True, devices=states, device_errors=self.errors,
              discovered=self.endpoints, last_request=self.last_request)
 
