@@ -9,7 +9,8 @@ DEFAULT_SPEED = .25  # shaft rad/s
 
 def diagnostic_snapshot(fault, audit, firmware='未知'):
     """Cached reads only; this can be rendered while the SDK owns the stream."""
-    fields = ('report_flags', 'motor_fault_code', 'motor_latched_fault_code',
+    fields = ('version', 'report_flags', 'source_mask', 'protocol_mode',
+              'motor_fault_code', 'motor_latched_fault_code',
               'firmware_fault_code', 'firmware_latched_fault_code')
     values = {key: int(getattr(fault, key)) for key in fields}
     envelope = {'ok': bool(audit.ok), 'detail': audit.detail}
@@ -19,20 +20,39 @@ def diagnostic_snapshot(fault, audit, firmware='未知'):
                                peak_nm=float(record.peak_torque_nm))
                           if record is not None else None)
     return {'firmware': firmware, 'fault': values, 'envelope': envelope,
-            'issues': preflight_issues(values, envelope)}
+            'issues': preflight_issues(values, envelope, firmware)}
 
 
-def preflight_issues(fault, envelope):
-    """Explain each existing enable gate; never reinterpret invalid fields as clear."""
+def preflight_issues(fault, envelope, firmware='未知'):
+    """Validate fault reports, including the reviewed 1.2.16 zero-fault layout."""
     issues = []
     flags = fault['report_flags']
     missing = []
+    if not flags & 0x01:
+        missing.append('报告 Valid')
     if not flags & 0x04:
         missing.append('电机 MotorValid')
-    if not flags & 0x08:
+    # In the shipped 1.2.16 image (CRC32 0x4A8CD360), 0x08021146 writes
+    # both firmware fault words even when zero; 0x080211E4 only sets FwValid
+    # when that word is nonzero. The 0x52 handler also sets it for control
+    # errors/deadline history. See README for the checked image/addresses.
+    # Keep the strict fallback for unreviewed firmware/layouts or MCU sources.
+    known_zero = (firmware == 'FirmwareVersion(1.2.16.0)'
+                  and fault.get('version') == 1
+                  and fault.get('protocol_mode') == 2
+                  and fault.get('source_mask') in (0, 1)
+                  and fault['firmware_fault_code'] == 0
+                  and fault['firmware_latched_fault_code'] == 0)
+    if not flags & 0x08 and not known_zero:
         missing.append('固件 FwValid')
     if missing:
         issues.append(f'故障诊断有效标记不完整（flags=0x{flags:02X}，缺少'+ '、'.join(missing)+'）')
+    if fault.get('version') != 1:
+        issues.append('故障报告协议版本未确认或不受支持')
+    if flags & 0x20:
+        issues.append('故障读取超时，拒绝使用该次诊断')
+    if flags & 0x40:
+        issues.append('故障报告为私有协议部分数据，无法完成使能检查')
     # Keep the existing refusal of nonzero raw motor fields as well as missing
     # validity. Explain the value without claiming it is trustworthy when invalid.
     for field, title in (('motor_fault_code', '电机当前故障'),

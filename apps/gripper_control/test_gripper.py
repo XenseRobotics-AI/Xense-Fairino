@@ -30,7 +30,8 @@ class FakeMotor:
         self.events = events
         self.enabled = False
         self.position = .4
-        self.fault = NS(report_flags=0x0C, motor_fault_code=0, motor_latched_fault_code=0,
+        self.fault = NS(version=1, report_flags=0x1D, source_mask=4, protocol_mode=2,
+                        motor_fault_code=0, motor_latched_fault_code=0,
                         firmware_fault_code=0, firmware_latched_fault_code=0x0303)
 
     def get_spec(self):
@@ -77,6 +78,8 @@ class FakeGripper:
 
 class FakeController:
     def __init__(self, gripper, cfg):
+        if cfg.close_preload_nm > cfg.grasp_torque_nm:
+            raise ValueError('SDK preload must fit within grasp torque')
         self.g, self.cfg = gripper, cfg
         self.target = None
         self.age = 1.
@@ -108,7 +111,8 @@ class FakeController:
 
 def fake_sdk(events):
     return NS(FollowerGripper=lambda **kw: FakeGripper(events, **kw),
-              ForcePositionConfig=NS(for_spec=lambda _: NS()), ForcePositionController=FakeController)
+              ForcePositionConfig=NS(for_spec=lambda _: NS(close_preload_nm=.25)),
+              ForcePositionController=FakeController)
 
 
 class IdentityTests(unittest.TestCase):
@@ -201,6 +205,67 @@ class DeviceTests(unittest.TestCase):
              patch.object(self.device.gripper, 'audit_envelope', side_effect=AssertionError('serial poll')):
             self.assertEqual(self.device.diagnostics()['issues'], [])
             self.assertTrue(self.device.snapshot()['enabled'])
+
+    def test_low_torque_also_bounds_the_sdk_closed_endpoint_preload(self):
+        for torque, expected_preload in ((.01, .01), (.2, .2), (.25, .25), (1.1, .25)):
+            with self.subTest(torque=torque):
+                device = Device(fake_sdk([]), endpoint())
+                device.enable(torque, .1)
+                self.assertEqual(device.controller.cfg.close_preload_nm, expected_preload)
+                device.close()
+
+    def zero_fault_capture(self, flags=0x15):
+        self.device.gripper.motor.fault = NS(
+            version=1, report_flags=flags, source_mask=1, protocol_mode=2,
+            motor_fault_code=0, motor_latched_fault_code=0,
+            firmware_fault_code=0, firmware_latched_fault_code=0)
+
+    def test_reviewed_post_power_capture_accepts_zero_firmware_fault_without_flag(self):
+        for flags in (0x15, 0x17):
+            with self.subTest(flags=flags):
+                self.zero_fault_capture(flags)
+                self.assertEqual(self.device.diagnostics()['issues'], [])
+        self.device.enable(1.1, .25)
+        self.assertEqual(self.events, ['start_at_measured_position', 'enable'])
+        self.device.close()
+        self.assertFalse(self.device.gripper.motor.enabled)
+
+    def test_zero_firmware_rule_never_accepts_unknown_firmware_layout_or_mcu_sources(self):
+        for field, value in (('version', 0), ('version', 2), ('protocol_mode', 0),
+                             ('source_mask', 2), ('source_mask', 4), ('source_mask', 8),
+                             ('firmware_fault_code', 0x0202),
+                             ('firmware_latched_fault_code', 0x0303)):
+            with self.subTest(field=field, value=value):
+                self.zero_fault_capture()
+                setattr(self.device.gripper.motor.fault, field, value)
+                with self.assertRaises(ValueError):
+                    self.device.enable(1.1, .25)
+                self.assertNotIn('enable', self.events)
+        self.zero_fault_capture()
+        for firmware in ('未知', 'FirmwareVersion(1.2.6.0)', 'FirmwareVersion(1.2.17.0)'):
+            with self.subTest(firmware=firmware):
+                self.device.firmware = firmware
+                with self.assertRaisesRegex(ValueError, 'FwValid'):
+                    self.device.enable(1.1, .25)
+        self.assertNotIn('enable', self.events)
+
+    def test_zero_firmware_rule_preserves_motor_validity_fault_and_envelope_guards(self):
+        for flags in (0x00, 0x11, 0x14, 0x35, 0x55):
+            with self.subTest(flags=flags):
+                self.zero_fault_capture(flags)
+                with self.assertRaises(ValueError):
+                    self.device.enable(1.1, .25)
+                self.assertNotIn('enable', self.events)
+        for field in ('motor_fault_code', 'motor_latched_fault_code'):
+            self.zero_fault_capture()
+            setattr(self.device.gripper.motor.fault, field, 4)
+            with self.assertRaisesRegex(ValueError, '欠压'):
+                self.device.enable(1.1, .25)
+        self.zero_fault_capture()
+        self.device.gripper.audit.ok = False
+        with self.assertRaisesRegex(ValueError, '力矩包络'):
+            self.device.enable(1.1, .25)
+        self.assertNotIn('enable', self.events)
 
 
 class WorkerTests(unittest.TestCase):

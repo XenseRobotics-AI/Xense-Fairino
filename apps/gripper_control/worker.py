@@ -65,6 +65,7 @@ class Device:
         number(speed, .01, min(1., self.spec.v_max_rad_s), '夹爪速度 rad/s')
         cfg = self.sdk.ForcePositionConfig.for_spec(self.spec)
         cfg.grasp_torque_nm = torque
+        cfg.close_preload_nm = min(cfg.close_preload_nm, torque)
         cfg.close_speed_radps = speed
         cfg.status_timeout_ms = 200
         cfg.motor_stream_hz = 100
