@@ -14,7 +14,7 @@ import time
 import zlib
 from pathlib import Path
 
-from control_core import (KEYS, STEER, key_twist, check_speeds,
+from control_core import (KEYS, STEER, key_twist, check_speeds, check_axes,
                           DEFAULT_LINEAR, DEFAULT_ANGULAR, MIN_SPEED,
                           MAX_LINEAR, MAX_ANGULAR)
 
@@ -114,7 +114,7 @@ class Connection:
             self.done.set()
             self.events.put({"connection_closed": True})
 
-    def send(self, keys=(), focused=True, stop=False, speeds=None):
+    def send(self, keys=(), focused=True, stop=False, speeds=None, axes=None):
         if self.done.is_set():
             return
         # No replay after a delayed feedback stream: stop is latched robot-side.
@@ -123,6 +123,10 @@ class Connection:
         packet = {"keys": sorted(keys), "focused": bool(focused),
                   "stop": bool(stop or stale), "ack": self.latest.get("stamp", 0),
                   "linear": linear, "angular": angular}
+        if axes is not None:
+            if packet['keys']:
+                raise RuntimeError('底盘摇杆与键盘指令不能混发')
+            packet['axes'] = list(check_axes(axes))
         with self.write_lock:
             try:
                 self.child.sendline(json.dumps(packet))

@@ -1,6 +1,7 @@
 """Pure control rules, shared by the desktop window and robot-side worker."""
 import math
 import copy
+from collections import namedtuple
 
 JOINTS = [f"j{i}" for i in range(1, 9)]
 STEER = [0, 2, 4, 6]
@@ -62,6 +63,30 @@ def key_twist(keys, linear=DEFAULT_LINEAR, angular=DEFAULT_ANGULAR):
     return x * scale, y * scale, angular * (int("j" in keys) - int("l" in keys))
 
 
+class AxisInput(namedtuple('AxisInput', 'forward left yaw')):
+    """Normalized continuous input; a neutral sample is false during startup."""
+    __slots__ = ()
+
+    def __bool__(self):
+        return any(value != 0. for value in self)
+
+
+def check_axes(values):
+    if (not isinstance(values, (list, tuple)) or len(values) != 3
+            or any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 1.
+                   for v in values)):
+        raise RuntimeError('底盘摇杆必须是三个 -1～1 的有限数值')
+    if math.hypot(values[0], values[1]) > 1.+1e-9:
+        raise RuntimeError('底盘平移摇杆超出单位圆')
+    return AxisInput(*(float(v) for v in values))
+
+
+def input_twist(value, linear=DEFAULT_LINEAR, angular=DEFAULT_ANGULAR):
+    if isinstance(value, AxisInput):
+        return value.forward*linear, value.left*linear, value.yaw*angular
+    return key_twist(value, linear, angular)
+
+
 def normalise_hardware(raw):
     names = list(raw["joint_names"])
     if len(names) != 8 or set(names) != set(JOINTS):
@@ -105,6 +130,11 @@ def check_input(packet, received, now):
     keys = packet.get("keys")
     if not isinstance(keys, list) or any(k not in KEYS for k in keys):
         raise RuntimeError("无效的键盘指令")
+    if 'axes' in packet:
+        if keys:
+            raise RuntimeError('底盘摇杆与键盘指令不能混发')
+        axes = check_axes(packet['axes'])
+        return axes if packet.get('focused') else AxisInput(0., 0., 0.)
     # Focus loss removes velocity commands, while the owned session stays enabled.
     return keys if packet.get('focused') else []
 

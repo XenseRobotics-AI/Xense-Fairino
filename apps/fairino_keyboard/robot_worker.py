@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from control_core import (JOINTS, STEER, DRIVE, check_feedback, check_input,
-                          key_twist, neutral_duration,
+                          input_twist, neutral_duration,
                           normalise_hardware, FEEDBACK_TIMEOUT, check_speeds,
                           check_speed_envelope, DEFAULT_LINEAR, DEFAULT_ANGULAR,
                           MAX_LINEAR, MAX_ANGULAR, DRIVE_COMMAND_LIMIT, chassis_parameters)
@@ -130,7 +130,7 @@ class Worker:
                 speeds = check_speeds(self.packet.get("linear", self.args.linear),
                                       self.packet.get("angular", self.args.angular))
                 if keys and speeds != (self.args.linear, self.args.angular):
-                    raise RuntimeError("调速前请松开全部运动键")
+                    raise RuntimeError("调速前请松开全部运动键并将摇杆回中")
                 self.args.linear, self.args.angular = speeds
         else:
             keys = []
@@ -424,7 +424,7 @@ class Worker:
         while True:
             self.pump(0.02)
             keys = self.guard()
-            self.commanded = key_twist(keys, self.args.linear, self.args.angular)
+            self.commanded = input_twist(keys, self.args.linear, self.args.angular)
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = self.commanded
             self.pub.publish(msg)
@@ -432,12 +432,28 @@ class Worker:
     def cleanup(self):
         if not self.owned:
             return True
+        reporting_ok = True
+
+        def report_cleanup(**values):
+            # Even a broken diagnostic channel must not interrupt motor cleanup.
+            nonlocal reporting_ok
+            try:
+                self.emit(**values)
+            except Exception:
+                reporting_ok = False
+
         self.ready = False
         self.phase = "停止并下使能"
-        self.zero()
+        try:
+            self.zero()
+        except Exception as exc:
+            report_cleanup(cleanup_warning='发送零速度失败，仍继续下使能：' + str(exc))
         # Do not wait for a cancellation result before attempting disable.
-        if self.trajectory is not None and self.trajectory.accepted:
-            self.trajectory.cancel_goal_async()
+        try:
+            if self.trajectory is not None and self.trajectory.accepted:
+                self.trajectory.cancel_goal_async()
+        except Exception as exc:
+            report_cleanup(cleanup_warning='取消回正轨迹失败，仍继续下使能：' + str(exc))
         disable_ok = (not self.enable_attempted and self.hw is not None
                       and time.monotonic()-self.hw_time < 0.4 and not any(self.hw["enabled"]))
         if self.enable_attempted:
@@ -447,15 +463,15 @@ class Worker:
                 disable_ok = (self.hw is not None and time.monotonic()-self.hw_time < 0.4
                               and not any(self.hw["enabled"]))
                 if not disable_ok:
-                    self.emit(error="下使能未获反馈确认，请使用物理急停")
+                    report_cleanup(error="下使能未获反馈确认，请使用物理急停")
             except Exception as exc:
-                self.emit(error="下使能失败，请使用物理急停：" + str(exc))
+                report_cleanup(error="下使能失败，请使用物理急停：" + str(exc))
         cleanup_ok = True
         try:
             self.odometry('pause', guarded=False)
         except Exception as exc:
             cleanup_ok = False
-            self.emit(error='里程计暂停未确认：' + str(exc))
+            report_cleanup(error='里程计暂停未确认：' + str(exc))
         try:
             controls = self.controllers(False)
             self.switch([], [n for n in set(self.loaded + [CHASSIS]) if controls.get(n) == "active"], False)
@@ -466,15 +482,23 @@ class Worker:
                     request = UnloadController.Request(); request.name = name
                     if not self.service(UnloadController, "/controller_manager/unload_controller", request, False).ok:
                         cleanup_ok = False
-                        self.emit(error="卸载控制器失败：" + name)
+                        report_cleanup(error="卸载控制器失败：" + name)
         except Exception as exc:
             cleanup_ok = False
-            self.emit(error="控制器清理失败：" + str(exc))
-        self.phase = "已停止并确认下使能" if disable_ok else "停止异常，请检查物理急停"
-        self.status(True, finished=True, disabled_confirmed=disable_ok)
+            report_cleanup(error="控制器清理失败：" + str(exc))
         if self.param_dir is not None:
-            self.param_dir.cleanup()
-        return disable_ok and cleanup_ok
+            try:
+                self.param_dir.cleanup()
+            except Exception as exc:
+                cleanup_ok = False
+                report_cleanup(error='临时控制配置清理失败：' + str(exc))
+        self.phase = "已停止并确认下使能" if disable_ok else "停止异常，请检查物理急停"
+        try:
+            self.status(True, finished=True, disabled_confirmed=disable_ok,
+                        cleanup_confirmed=cleanup_ok and reporting_ok)
+        except Exception:
+            reporting_ok = False
+        return disable_ok and cleanup_ok and reporting_ok
 
 
 def main():
