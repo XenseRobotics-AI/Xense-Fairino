@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import json
+import math
 from pathlib import Path
 import signal
 import sys
@@ -9,13 +10,50 @@ import threading
 import time
 
 from gripper_core import (DEFAULT_SPEED, DEFAULT_TORQUE, LEASE, SIDES, fresh_request,
-                          healthy_sample, number, opening, select_devices, diagnostic_snapshot)
+                          healthy_sample, number, opening, select_devices, diagnostic_snapshot,
+                          TARGET_PERIOD)
 
 PREFIX = '@UPPERPROBE '
+LINK_TIMEOUT = .6
 
 
 def emit(**values):
     print(PREFIX + json.dumps(values, ensure_ascii=False, allow_nan=False), flush=True)
+
+
+def client_exit_reason(packet):
+    value = packet.get('exit_reason')
+    return value if value in ('client_exit', 'feedback_timeout') else 'unspecified'
+
+
+class LinkFailure(RuntimeError):
+    def __init__(self, reason, message, diagnostics):
+        super().__init__(message+'，退出并下使能')
+        self.reason, self.diagnostics = reason, diagnostics
+
+
+def check_link(packet, received, now, first_report, ack_grace):
+    """All timestamps here belong to the robot's monotonic clock."""
+    ack = packet.get('ack')
+    valid_ack = isinstance(ack, (int, float)) and not isinstance(ack, bool) and math.isfinite(ack)
+    diagnostics = dict(server_monotonic=now, received_monotonic=received,
+                       heartbeat_age_s=now-received, timeout_s=LINK_TIMEOUT,
+                       feedback_ack_monotonic=ack if valid_ack else None,
+                       feedback_ack_age_s=now-ack if valid_ack else None,
+                       ack_grace_remaining_s=max(0., ack_grace-now))
+    # An exit packet must not be misreported as a timeout, even if its ACK is old.
+    if packet.get('exit'):
+        return dict(reason='exit_request', client_exit_reason=client_exit_reason(packet), **diagnostics)
+    if now-first_report < LINK_TIMEOUT and not ack:
+        return None
+    if now-received > LINK_TIMEOUT:
+        raise LinkFailure('heartbeat_timeout', '夹爪上位机心跳超时（超过 0.6 秒未更新）', diagnostics)
+    if now >= ack_grace:
+        if not valid_ack or ack <= 0 or ack > now:
+            raise LinkFailure('feedback_ack_invalid', '夹爪反馈确认 ACK 无效或时间戳超前', diagnostics)
+        if now-ack > LINK_TIMEOUT:
+            raise LinkFailure('feedback_ack_timeout', '夹爪反馈确认 ACK 超时（超过 0.6 秒未更新）', diagnostics)
+    return None
 
 
 class Device:
@@ -28,7 +66,10 @@ class Device:
         try:
             if self.gripper.firmware_sn != endpoint['sn']:
                 raise RuntimeError('夹爪身份在扫描后发生变化')
-            self.gripper.position_map()  # Valid calibrated conversion, no config writes.
+            mapping = self.gripper.position_map()  # Cached calibrated conversion, no config writes.
+            self.open_span_rad = float(mapping.max_open_rad - mapping.min_open_rad)
+            if not math.isfinite(self.open_span_rad) or self.open_span_rad <= 0:
+                raise RuntimeError('夹爪标定行程无效')
             self.spec = self.gripper.motor.get_spec()
             self.firmware = str(self.gripper.firmware_version)
             self.audit = self.gripper.audit_envelope()
@@ -40,6 +81,7 @@ class Device:
 
     def read_idle(self):
         sample = self.gripper.motor.read_status(timeout_ms=150)
+        self.sampled_at = time.monotonic()
         return dict(position=self.gripper.rad_to_pos(sample.actual_pos),
                     velocity_rad_s=sample.actual_vel, torque_nm=sample.actual_torque,
                     temperature_c=sample.motor_temp_c, enabled=bool(sample.status & 1),
@@ -92,7 +134,9 @@ class Device:
 
     def snapshot(self):
         if self.controller is None:
-            return self.last
+            return dict(self.last, age_ms=(time.monotonic()-self.sampled_at)*1000,
+                        open_span_rad=self.open_span_rad,
+                        opening_angle_rad=self.last['position']*self.open_span_rad)
         s = self.controller.snapshot()
         o = s.observation
         if s.fault_reason or not o.valid or o.age_ms > 250:
@@ -103,7 +147,8 @@ class Device:
         self.last = dict(position=o.position, velocity_rad_s=o.velocity, torque_nm=o.torque,
                          temperature_c=o.motor_temp_c, enabled=bool(o.status & 1), status=int(o.status),
                          target=s.target_position, state=s.state.name, controlled=True,
-                         age_ms=o.age_ms, grasp_torque_nm=s.grasp_torque_nm)
+                         age_ms=o.age_ms, grasp_torque_nm=s.grasp_torque_nm,
+                         open_span_rad=self.open_span_rad, opening_angle_rad=o.position*self.open_span_rad)
         return self.last
 
     def disable(self):
@@ -130,24 +175,38 @@ class Worker:
         self.sdk, self.assignments = sdk, assignments or {}
         self.devices, self.errors = {}, {}
         self.packet = {}
-        self.lock = threading.Lock()
+        # Signal handlers can request exit while the main thread owns this lock.
+        self.lock = threading.RLock()
         self.exit = threading.Event()
         self.received = time.monotonic()
         self.last_request = 0
         self.streaming_at = None
+        self.exit_detail = None
+
+    def request_exit(self, reason, **details):
+        with self.lock:
+            if self.exit_detail is None:
+                self.exit_detail = dict(reason=reason, server_monotonic=time.monotonic(), **details)
+        self.exit.set()
 
     def read(self):
         try:
             for line in sys.stdin:
                 packet = json.loads(line)
                 if not isinstance(packet, dict):
+                    self.request_exit('input_invalid')
                     break
                 with self.lock:
                     self.packet, self.received = packet, time.monotonic()
                 if packet.get('exit'):
+                    self.request_exit('exit_request', client_exit_reason=client_exit_reason(packet))
                     break
+        except (ValueError, TypeError):
+            self.request_exit('input_invalid')
+        except OSError as exc:
+            self.request_exit('input_read_error', error=str(exc))
         finally:
-            self.exit.set()
+            self.request_exit('stdin_closed')
 
     def connect(self):
         self.endpoints = [dict(side=ep.side.name, role=ep.role.name, sn=ep.firmware_sn,
@@ -201,21 +260,36 @@ class Worker:
              discovered=self.endpoints, last_request=self.last_request)
 
     def run(self):
+        try:
+            self._run()
+        except LinkFailure as exc:
+            self.exit_detail = dict(reason=exc.reason, **exc.diagnostics)
+            raise
+        except Exception as exc:
+            self.exit_detail = dict(reason='worker_error', server_monotonic=time.monotonic(),
+                                    error_type=type(exc).__name__, error=str(exc))
+            raise
+        finally:
+            emit(exit_reason=self.exit_detail or dict(
+                reason='stop_event', server_monotonic=time.monotonic()))
+
+    def _run(self):
         threading.Thread(target=self.read, daemon=True).start()
         self.connect()
         self.report()
         last_report, idle_read = time.monotonic(), time.monotonic()
         first_report = last_report
-        ack_grace = first_report+.6
-        while not self.exit.wait(.02):
+        ack_grace = first_report+LINK_TIMEOUT
+        while not self.exit.wait(TARGET_PERIOD):
             now = time.monotonic()
             with self.lock:
                 packet, received = self.packet.copy(), self.received
-            if now-first_report < .6 and not packet.get('ack'):
+            exit_detail = check_link(packet, received, now, first_report, ack_grace)
+            if exit_detail:
+                self.exit_detail = exit_detail
+                break
+            if now-first_report < LINK_TIMEOUT and not packet.get('ack'):
                 continue  # First status/ack round trip after a potentially slow scan.
-            if (now-received > .6 or packet.get('exit')
-                    or (now >= ack_grace and not 0 <= now-packet.get('ack', 0.) <= .6)):
-                raise RuntimeError('夹爪连接或反馈确认超时，退出并下使能')
             request = packet.get('request')
             if request and request.get('id', 0) > self.last_request:
                 self.last_request = request['id']
@@ -228,7 +302,7 @@ class Worker:
                     emit(rejected=str(exc), request_id=self.last_request)
                 self.report()
                 last_report = time.monotonic()
-                ack_grace = last_report+.6
+                ack_grace = last_report+LINK_TIMEOUT
             if self.streaming_at is not None and now-self.streaming_at > LEASE:
                 for device in self.devices.values():
                     device.hold()
@@ -236,12 +310,12 @@ class Worker:
                 emit(stream_paused='夹爪目标断流，保持当前位置')
             for device in self.devices.values():
                 device.snapshot()
-            if now-idle_read >= 1.:
+            if now-idle_read >= .1:
                 for device in self.devices.values():
                     if device.controller is None:
                         device.last = device.read_idle()
                 idle_read = now
-            if now-last_report >= .1:
+            if now-last_report >= .05:
                 self.report()
                 last_report = now
 
@@ -267,8 +341,8 @@ def main():
     import xense.taccap as sdk
     sdk.log.set_level('warn')
     worker = Worker(sdk, dict(left=args.left_sn, right=args.right_sn))
-    signal.signal(signal.SIGTERM, lambda *_: worker.exit.set())
-    signal.signal(signal.SIGINT, lambda *_: worker.exit.set())
+    signal.signal(signal.SIGTERM, lambda *_: worker.request_exit('signal', signal='SIGTERM'))
+    signal.signal(signal.SIGINT, lambda *_: worker.request_exit('signal', signal='SIGINT'))
     code = 0
     try:
         worker.run()

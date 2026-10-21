@@ -22,9 +22,10 @@ from test_vr_controls import hand
 from vendor_kinematics import VendorKinematics
 from vr_client import operate
 from vr_controls import JoystickControls, sensitivity_step
-from vr_home import DEFAULT_HOME, HomeMotion, load_home
+from vr_home import DEFAULT_HOME, HomeMotion, load_home, resolve_home
 from vr_input import Clutch, decode_packet, rotation_mapping
 from vr_core import direct_positions as position_trajectory, validate
+from apps.workbench.model import RobotModel
 
 
 def frame(left=None, right=None):
@@ -73,14 +74,14 @@ class JoystickTests(unittest.TestCase):
             controls['left']['axisY'] = value
             with self.assertRaises(ValueError): decode()
 
-    def test_one_step_per_deflection_and_neutral_rearm(self):
+    def test_stick_axes_are_reserved_for_motion_and_never_change_sensitivity(self):
         j = JoystickControls(); j.update(frame())
         up = frame({**hand(grip=0.), 'axis_y': .9})
-        self.assertEqual(j.update(up)['sensitivity'], 1)
+        self.assertEqual(j.update(up)['sensitivity'], 0)
         for _ in range(20): self.assertEqual(j.update(up)['sensitivity'], 0)
         j.update(frame())
         down = frame({**hand(grip=0.), 'axis_y': -.9})
-        self.assertEqual(j.update(down)['sensitivity'], -1)
+        self.assertEqual(j.update(down)['sensitivity'], 0)
         self.assertEqual(sensitivity_step(.25, 1), .5)
         self.assertEqual(sensitivity_step(.5, -1), .25)
         self.assertEqual(sensitivity_step(1., 1), 1.)
@@ -102,6 +103,23 @@ class HomeTests(unittest.TestCase):
 
     def test_all_home_targets_pass_vendor_fk_ik(self):
         for q in self.home['target'].values(): self.assertLess(self.kin.verify_tcp(q)['roundtrip_deg'], .0001)
+
+    def test_second_home_is_an_explicit_valid_mirror_with_default_and_override_preserved(self):
+        second = load_home(resolve_home('right_mirrored'))
+        self.assertEqual(resolve_home(), DEFAULT_HOME)
+        self.assertEqual(resolve_home('right_mirrored', DEFAULT_HOME), DEFAULT_HOME)
+        self.assertNotEqual(second['target'], self.home['target'])
+        for q in second['target'].values():
+            self.assertLess(self.kin.verify_tcp(q)['roundtrip_deg'], .0001)
+        positions = {f'j{j}': value for side, joints in ARMS.items()
+                     for j, value in zip(joints, second['target'][side])}
+        transforms, _ = RobotModel().transforms(positions)
+        # Torso mirror is world X; vendor wrist frames have mirrored local Y.
+        mirrored = np.diag([-1., 1., 1., 1.]) @ transforms['right_waist2_Link'] @ np.diag([1., -1., 1., 1.])
+        np.testing.assert_allclose(transforms['left_waist2_Link'], mirrored, atol=3e-5)
+        self.assertEqual(second['max_joint_speed_deg_s'], self.home['max_joint_speed_deg_s'])
+        with self.assertRaises(ValueError):
+            resolve_home('unknown')
 
     def test_path_has_bounded_home_speed_no_overshoot_and_never_moves_body(self):
         motion = HomeMotion(self.home, self.hw, 10.)
@@ -161,6 +179,8 @@ class HomeClientTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             c=NS(events=queue.Queue(),done=threading.Event(),last_status=10.,
                  latest={'hardware':hw,'stamp':10.,'ready':True},log_path=Path(d)/'client.jsonl')
+            from test_probe import connected_wrist
+            connected_wrist(c)
             def send(**kw):
                 sent.append(copy.deepcopy(kw.get('request')))
                 req=kw.get('request')
@@ -207,11 +227,12 @@ class HomeClientTests(unittest.TestCase):
         self.assertTrue(any(x and x.get('source')=='home' for x in sent[10:40]))
         self.assertTrue(all(x is None for x in sent[40:]))
 
-    def test_left_stick_changes_sensitivity_and_cancels_pending_motion(self):
+    def test_double_y_changes_sensitivity_and_cancels_pending_motion(self):
         def change(f,n):
-            f['left']['axis_y']=.9 if 20<=n<=30 else 0.
+            f['left']['secondary']=n in (20, 23)
         sent,logs=self.simulate(change,loops=70)
-        self.assertTrue(all(x is None for x in sent[20:]))
+        self.assertTrue(any(x and x.get('source')=='home' for x in sent[20:24]))
+        self.assertTrue(all(x is None for x in sent[24:]))
         self.assertEqual(sum('灵敏度已改为 0.5' in x.get('reason','') for x in logs),1)
 
     def test_pico_stream_loss_cancels_home_without_automatic_restart(self):

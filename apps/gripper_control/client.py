@@ -9,9 +9,12 @@ import threading
 import time
 from types import SimpleNamespace
 import zlib
+from apps.gripper_control.gripper_core import TARGET_PERIOD
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+COMMAND_TIMEOUT = 3.
+ACTION_LABELS = {'enable': '使能', 'disable': '下使能', 'target': '目标开度', 'hold': '保持'}
 
 
 def remote_command(left_sn='', right_sn='', sdk_python='/home/fairino/umi/.venv/bin/python'):
@@ -42,6 +45,7 @@ class Session:
         self.latest = {}
         self.failure = self.message = ''
         self.busy = False
+        self.pending_action = ''
         self.targets, self.target_time = None, 0.
         self.disabled_confirmed = False
 
@@ -51,7 +55,8 @@ class Session:
 
     def snapshot(self):
         with self.lock:
-            return {**self.latest, 'error': self.failure, 'message': self.message, 'busy': self.busy}
+            return {**self.latest, 'error': self.failure, 'message': self.message, 'busy': self.busy,
+                    'pending_action': self.pending_action}
 
     def command(self, action, side='both', **fields):
         if self.stop.is_set():
@@ -78,11 +83,13 @@ class Session:
             log_dir = ROOT/'logs/gripper'
             log_dir.mkdir(parents=True, exist_ok=True)
             connection = factory(self.args, worker_command=remote_command(self.left_sn, self.right_sn),
-                                 log_directory=log_dir, password=self.password, feedback_timeout=3.)
+                                 log_directory=log_dir, password=self.password, feedback_timeout=3.,
+                                 request_protocol='gripper')
             self.password = None
             sequence, pending, streaming = 0, None, False
+            pending_since = 0.
             started = time.monotonic()
-            while not self.stop.wait(.04):
+            while not self.stop.wait(TARGET_PERIOD):
                 now = time.monotonic()
                 while not connection.events.empty():
                     event = connection.events.get_nowait()
@@ -110,6 +117,11 @@ class Session:
                     pending = None
                     with self.lock:
                         self.busy = not self.commands.empty()
+                        self.pending_action = ''
+                if pending and now-pending_since > COMMAND_TIMEOUT:
+                    label = ACTION_LABELS.get(pending['action'], pending['action'])
+                    raise RuntimeError(f'夹爪{label}指令 #{pending["id"]} 超过 {COMMAND_TIMEOUT:g} 秒未确认；'
+                                       '正在结束会话并请求下使能，请重新连接后再操作')
                 if pending is None:
                     try:
                         command = self.commands.get_nowait()
@@ -118,6 +130,7 @@ class Session:
                     if command is not None:
                         sequence += 1
                         pending = {**command, 'id': sequence, 'created': state['stamp']}
+                        pending_since = now
                         streaming = False
                 outgoing = pending
                 if pending is None:
@@ -129,11 +142,19 @@ class Session:
                         sequence += 1
                         outgoing = dict(action='hold', side='both', id=sequence, created=state['stamp'])
                         pending, streaming = outgoing, False
+                        pending_since = now
+                with self.lock:
+                    self.pending_action = ACTION_LABELS.get(pending['action'], pending['action']) if pending else ''
                 connection.send(request=outgoing)
         except Exception as exc:
             self.failure = str(exc)
         finally:
             self.password = None
+            self.stop.set()
+            with self.lock:
+                self.busy = False
+                self.pending_action = ''
+                self.targets = None
             if connection is not None:
                 connection.finish()
                 # The final cleanup event does not have a periodic status stamp.

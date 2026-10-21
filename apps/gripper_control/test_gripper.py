@@ -1,11 +1,14 @@
 """Identity, linear targets, SDK lifecycle and asynchronous link regressions; no hardware."""
 import ast
 import base64
+from contextlib import contextmanager
 import json
+import io
 from pathlib import Path
 import queue
 import shlex
 import sys
+import tempfile
 import threading
 import time
 from types import SimpleNamespace as NS
@@ -17,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gripper_core import TriggerMapping, select_devices, healthy_sample
-from worker import Device, Worker
+from worker import Device, Worker, LinkFailure, check_link
 from apps.gripper_control.client import Session, remote_command
 
 
@@ -64,7 +67,7 @@ class FakeGripper:
                         recommended=NS(cont_torque_nm=1.1, peak_torque_nm=1.8))
 
     def position_map(self):
-        return NS()
+        return NS(max_open_rad=1., min_open_rad=0.)
 
     def audit_envelope(self):
         return self.audit
@@ -145,6 +148,24 @@ class DeviceTests(unittest.TestCase):
     def test_read_only_connect_and_close_do_not_enable_or_disable(self):
         self.assertFalse(self.device.last['enabled'])
         self.device.close()
+        self.assertEqual(self.events, ['close_port'])
+
+    def test_idle_feedback_age_and_calibrated_motor_span_are_real_measurements(self):
+        with patch('worker.time.monotonic', return_value=10.), \
+             patch.object(FakeGripper, 'position_map', return_value=NS(min_open_rad=.2, max_open_rad=1.4)):
+            device = Device(fake_sdk(self.events), endpoint())
+        with patch('worker.time.monotonic', return_value=10.25):
+            snapshot = device.snapshot()
+        self.assertAlmostEqual(snapshot['age_ms'], 250.)
+        self.assertAlmostEqual(snapshot['open_span_rad'], 1.2)
+        self.assertAlmostEqual(snapshot['opening_angle_rad'], .48)
+        with patch('worker.time.monotonic', return_value=10.4):
+            self.assertAlmostEqual(device.snapshot()['age_ms'], 400.)
+            device.gripper.motor.position = .7
+            device.last = device.read_idle()
+            self.assertEqual(device.snapshot()['age_ms'], 0.)
+            self.assertEqual(device.snapshot()['position'], .7)
+        device.close()
         self.assertEqual(self.events, ['close_port'])
 
     def test_seed_then_enable_continuous_target_hold_and_cleanup(self):
@@ -354,6 +375,64 @@ class WorkerTests(unittest.TestCase):
                 thread.join(3.)
 
 
+class LinkDiagnosticsTests(unittest.TestCase):
+    def test_heartbeat_and_feedback_timeouts_are_distinct(self):
+        for received, ack, reason in ((9., 9.9, 'heartbeat_timeout'),
+                                      (9.9, 9., 'feedback_ack_timeout')):
+            with self.subTest(reason=reason), self.assertRaises(LinkFailure) as caught:
+                check_link({'ack': ack}, received, 10., 8., 8.6)
+            failure = caught.exception
+            self.assertEqual(failure.reason, reason)
+            self.assertAlmostEqual(failure.diagnostics['heartbeat_age_s'], 10.-received)
+            self.assertAlmostEqual(failure.diagnostics['feedback_ack_age_s'], 10.-ack)
+            self.assertEqual(failure.diagnostics['server_monotonic'], 10.)
+            self.assertEqual(failure.diagnostics['timeout_s'], .6)
+
+    def test_invalid_ack_is_not_reported_as_network_timeout(self):
+        for ack in (None, True, '9.9', float('nan'), float('inf'), 10.01, 0.):
+            with self.subTest(ack=ack), self.assertRaises(LinkFailure) as caught:
+                check_link({'ack': ack}, 9.9, 10., 8., 8.6)
+            self.assertEqual(caught.exception.reason, 'feedback_ack_invalid')
+            json.dumps(caught.exception.diagnostics, allow_nan=False)
+
+    def test_existing_grace_and_timeout_limits_are_preserved(self):
+        self.assertIsNone(check_link({}, 7., 10., 9.5, 10.1))
+        self.assertIsNone(check_link({'ack': 8.}, 9.9, 10., 8., 10.1))
+        with self.assertRaises(LinkFailure):
+            check_link({'ack': 8.}, 9.9, 10.1001, 8., 10.1)
+        self.assertIsNone(check_link({'ack': 9.4001}, 9.4001, 10., 8., 8.6))
+        with self.assertRaises(LinkFailure):
+            check_link({'ack': 9.3999}, 9.9, 10., 8., 8.6)
+
+    def test_exit_request_wins_over_stale_heartbeat_and_ack(self):
+        detail = check_link({'exit': True, 'exit_reason': 'client_exit', 'ack': 1.},
+                            1., 10., 8., 8.6)
+        self.assertEqual(detail['reason'], 'exit_request')
+        self.assertEqual(detail['client_exit_reason'], 'client_exit')
+        self.assertEqual(detail['heartbeat_age_s'], 9.)
+
+    def test_input_exit_eof_and_invalid_packet_have_specific_causes(self):
+        for source, expected in (
+            ('{"exit":true,"exit_reason":"feedback_timeout","ack":1}\n', 'exit_request'),
+            ('', 'stdin_closed'), ('not json\n', 'input_invalid'), ('[]\n', 'input_invalid')):
+            with self.subTest(expected=expected), patch('worker.sys.stdin', io.StringIO(source)):
+                worker = Worker(fake_sdk([]))
+                worker.read()
+                self.assertTrue(worker.exit.is_set())
+                self.assertEqual(worker.exit_detail['reason'], expected)
+                self.assertIsInstance(worker.exit_detail['server_monotonic'], float)
+                if expected == 'exit_request':
+                    self.assertEqual(worker.exit_detail['client_exit_reason'], 'feedback_timeout')
+
+    def test_normal_exit_emits_reason_and_does_not_raise_timeout(self):
+        worker = Worker(fake_sdk([]))
+        def explicit_exit():
+            worker.request_exit('exit_request', client_exit_reason='client_exit')
+        with patch.object(worker, '_run', side_effect=explicit_exit), patch('worker.emit') as output:
+            worker.run()
+        self.assertEqual(output.call_args.kwargs['exit_reason']['reason'], 'exit_request')
+
+
 class TriggerTests(unittest.TestCase):
     def frame(self, left=0., right=0.):
         return {side: dict(trigger=value, trigger_available=True)
@@ -374,6 +453,30 @@ class TriggerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             TriggerMapping().update({'left': {}}, {'left': 'left'}, ['left'])
 
+    def test_independent_limits_follow_robot_side_and_preserve_release_to_arm(self):
+        mapping = TriggerMapping({'left': .6, 'right': .3})
+        hands = {'left': 'right', 'right': 'left'}
+        self.assertEqual(mapping.update(self.frame(), hands, hands), {})
+        for pressed in (.1, .5, 1., 0.):
+            value = mapping.update(self.frame(pressed, pressed), hands, hands)
+            self.assertAlmostEqual(value['left'], .6*(1.-pressed))
+            self.assertAlmostEqual(value['right'], .3*(1.-pressed))
+        mapping.reset()
+        self.assertEqual(mapping.update(self.frame(1., 1.), hands, hands), {})
+        self.assertEqual(mapping.max_openings, {'left': .6, 'right': .3})
+
+    def test_zero_full_and_invalid_opening_limits(self):
+        hands = {'left': 'left', 'right': 'right'}
+        mapping = TriggerMapping({'left': 0., 'right': 1.})
+        mapping.update(self.frame(), hands, hands)
+        self.assertEqual(mapping.update(self.frame(.5, .5), hands, hands), {'left': 0., 'right': .5})
+        for value in (-.1, 1.1, float('nan'), True, None):
+            with self.assertRaises(ValueError):
+                TriggerMapping({'left': value, 'right': 1.})
+        for value in ({'left': .5}, [], {}):
+            with self.assertRaises(ValueError):
+                TriggerMapping(value)
+
 
 class TransportTests(unittest.TestCase):
     def test_bundled_worker_compiles_and_uses_installed_robot_sdk_without_ros(self):
@@ -388,41 +491,152 @@ class TransportTests(unittest.TestCase):
         for name, text in bundle.items():
             compile(text, name, 'exec')
 
+    @contextmanager
+    def session_peer(self, drop_actions=()):
+        """Use the real Session + Connection/JSON path; replace only SSH and SDK."""
+        sys.path.insert(0, str(ROOT/'apps/fairino_upper_probe'))
+        import upper_keyboard  # Load before replacing the session's log root.
+        from apps.gripper_control import client
+        events, packets, lines = [], [], queue.Queue()
+        worker = Worker(fake_sdk(events))
+        worker.endpoints = []
+        worker.devices['left'] = Device(worker.sdk, endpoint())
+
+        def output(**value):
+            lines.put(upper_keyboard.PREFIX+json.dumps(value)+'\n')
+
+        class Peer:
+            closed = False
+
+            def expect(self, *_):
+                worker.report()
+                return 0  # SSH authenticated, worker ready.
+
+            def readline(self):
+                return lines.get()
+
+            def sendline(self, line):
+                packet = json.loads(line)
+                packets.append(packet)
+                if packet.get('exit'):
+                    self.close()
+                    return
+                request = packet.get('request')
+                if (request and request['id'] > worker.last_request
+                        and request['action'] not in drop_actions):
+                    worker.last_request = request['id']
+                    try:
+                        worker.command(request, time.monotonic())
+                    except ValueError as exc:
+                        output(rejected=str(exc), request_id=worker.last_request)
+                worker.report()
+
+            def close(self, **_):
+                if not self.closed:
+                    self.closed = True
+                    worker.close()
+                    lines.put('')  # Remote EOF after the disable confirmation.
+
+        peer = Peer()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(client, 'ROOT', Path(directory)), \
+             patch('pexpect.spawn', return_value=peer), patch('worker.emit', output):
+            session = Session('unused', 'unused', 'not-a-real-password').start()
+            try:
+                self.wait_for(lambda: session.snapshot().get('ready'))
+                yield session, worker, events, packets
+            finally:
+                session.close()
+                session.thread.join(2.)
+                peer.close()
+                self.assertFalse(session.thread.is_alive(), 'session cleanup did not complete')
+
+    def wait_for(self, condition):
+        deadline = time.monotonic()+2.
+        while time.monotonic() < deadline:
+            if condition():
+                return
+            time.sleep(.005)
+        self.fail('shared transport simulation timed out')
+
     def test_background_transport_handles_ui_actions_then_stream_and_disable(self):
-        calls = []
-        class Connection:
-            def __init__(self, *_, **__):
-                self.events = queue.Queue()
-                self.done = threading.Event()
-                self.last_status = time.monotonic()
-                self.latest = dict(stamp=self.last_status, last_request=0, ready=True,
-                                   devices={'left': {'connected': True, 'controlled': False}})
-
-            def send(self, request=None):
-                calls.append(request)
-                now = time.monotonic()
-                self.latest = {**self.latest, 'stamp': now}
-                self.last_status = now
-                if request:
-                    self.latest['last_request'] = request['id']
-
-            def finish(self):
-                self.events.put({'disabled_confirmed': True})
-
-        session = Session('host', 'user', 'not-a-real-password', connection_factory=Connection).start()
-        session.command('enable', 'left')
-        limit = time.monotonic()+2
-        while not any(c and c['action'] == 'enable' for c in calls) and time.monotonic() < limit:
-            time.sleep(.01)
-        session.set_targets({'left': .37})
-        limit = time.monotonic()+2
-        while not any(c and c['action'] == 'stream' for c in calls) and time.monotonic() < limit:
-            time.sleep(.01)
-        session.close()
-        session.thread.join(2)
+        with self.session_peer() as (session, worker, events, packets):
+            self.assertNotIn('enable', events)  # Connecting remains read-only.
+            session.command('enable', 'left')
+            self.wait_for(lambda: session.snapshot().get('last_request') == 1
+                          and not session.snapshot()['busy'])
+            self.assertTrue(worker.devices['left'].gripper.motor.enabled)
+            self.assertEqual(events, ['start_at_measured_position', 'enable'])
+            session.command('target', 'left', opening=.65)
+            self.wait_for(lambda: ('target', .65) in events and not session.snapshot()['busy'])
+            session.set_targets({'left': .37})
+            self.wait_for(lambda: ('target', .37) in events)
+            session.set_targets(None)
+            self.wait_for(lambda: 'hold' in events)
+            self.assertTrue(worker.devices['left'].gripper.motor.enabled)
+            session.command('disable', 'left')
+            self.wait_for(lambda: not session.snapshot()['busy']
+                          and not worker.devices['left'].gripper.motor.enabled)
+            self.assertTrue(all('wrist_guard' not in packet for packet in packets))
         self.assertFalse(session.failure)
         self.assertTrue(session.disabled_confirmed)
-        self.assertTrue(any(c and c.get('targets') == {'left': .37} for c in calls))
+
+    def test_pico_trigger_reaches_sdk_through_the_same_session_and_transport(self):
+        sys.path.insert(0, str(ROOT/'scripts/pico4/fairino'))
+        from vr_grippers import GripperTeleop
+        with self.session_peer() as (session, worker, events, packets):
+            control = GripperTeleop(NS(host='unused', user='unused'), None,
+                                   session_factory=lambda *_, **__: session)
+            hands = {'left': 'right', 'right': 'left'}
+            def frame(trigger):
+                return {side: dict(trigger=trigger, trigger_available=True) for side in hands}
+            control.update(frame(0.), hands, True)
+            self.wait_for(lambda: session.snapshot()['devices']['left']['controlled']
+                          and not session.snapshot()['busy'])
+            control.update(frame(0.), hands, True)  # Release-to-arm; keep measured position.
+            self.assertFalse(any(isinstance(e, tuple) for e in events))
+            control.update(frame(.75), hands, True)
+            self.wait_for(lambda: ('target', .25) in events)
+            control.update(None, hands, False)
+            self.wait_for(lambda: 'hold' in events)
+            self.assertTrue(worker.devices['left'].gripper.motor.enabled)
+        self.assertFalse(session.failure)
+        self.assertTrue(session.disabled_confirmed)
+
+    def test_unacknowledged_commands_expire_even_when_feedback_is_live(self):
+        for action in ('enable', 'disable'):
+            with self.subTest(action=action), \
+                 patch('apps.gripper_control.client.COMMAND_TIMEOUT', .1):
+                with self.session_peer(drop_actions={action}) as (session, worker, events, packets):
+                    if action == 'disable':
+                        session.command('enable', 'left')
+                        self.wait_for(lambda: session.snapshot()['devices']['left']['controlled']
+                                      and not session.snapshot()['busy'])
+                    session.command(action, 'left')
+                    self.wait_for(session.finished)
+                    self.assertIn('秒未确认', session.failure)
+                    self.assertFalse(session.snapshot()['busy'])
+                    self.assertTrue(session.stop.is_set())
+                    self.assertTrue(session.disabled_confirmed)
+                    self.assertFalse(worker.devices['left'].gripper.motor.enabled)
+                    self.assertTrue(any(p['exit'] for p in packets))
+                    self.assertTrue(all(p['request'] is None or p['request']['action'] != 'stream'
+                                        for p in packets))
+                    if action == 'enable':
+                        self.assertNotIn('enable', events)
+                    else:
+                        self.assertIn('stop_zero_disable', events)
+
+    def test_worker_rejection_is_reported_and_never_leaves_enable_pending(self):
+        with self.session_peer() as (session, worker, events, packets):
+            worker.devices['left'].gripper.motor.fault.motor_fault_code = 4
+            session.command('enable', 'left')
+            self.wait_for(lambda: session.snapshot().get('last_request') == 1
+                          and not session.snapshot()['busy'])
+            self.assertIn('欠压', session.snapshot()['message'])
+            self.assertNotIn('enable', events)
+            self.assertFalse(worker.devices['left'].gripper.motor.enabled)
+        self.assertTrue(session.disabled_confirmed)
 
 
 if __name__ == '__main__':

@@ -20,7 +20,7 @@ from body_core import load_config, plan, sample_interval
 
 
 def remote_command(args, model):
-    bundle = {name: (HERE.parent/name).read_text() for name in ('probe_core.py', 'robot_probe.py')}
+    bundle = {name: (HERE.parent/name).read_text() for name in ('wrist_guard.py', 'probe_core.py', 'robot_probe.py')}
     bundle.update({name: (HERE/name).read_text() for name in ('body_core.py', 'body_robot.py')})
     encoded = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
     argv = ['body_robot.py']
@@ -31,7 +31,7 @@ def remote_command(args, model):
     loader = '\n'.join([
         'import base64,zlib,json,sys,types',
         f'bundle=json.loads(zlib.decompress(base64.b64decode({encoded!r})))',
-        "for name in ('probe_core','robot_probe','body_core'):",
+        "for name in ('wrist_guard','probe_core','robot_probe','body_core'):",
         " m=types.ModuleType(name);m.__file__=name+'.py';sys.modules[name]=m",
         " exec(compile(bundle[name+'.py'],name+'.py','exec'),m.__dict__)",
         f'sys.argv={argv!r}',

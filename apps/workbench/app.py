@@ -25,6 +25,7 @@ from apps.workbench.network import route_info, describe
 from apps.workbench.telemetry import Feedback, fresh_hardware
 from apps.workbench.teleop import TeleopPanel
 from apps.gripper_control.panel import GripperPanel
+from apps.gripper_control.feedback import measured_openings
 
 # Several independent features may share one page without sharing a controller.
 CONTROL_PAGES = {'base': 'map', 'joints': 'joints', 'body': 'body', 'tcp': 'tcp'}
@@ -131,7 +132,7 @@ class Workbench:
         self.add_model(split)
         split.set_position(1000)
         self.window.show_all()
-        GLib.timeout_add(200, self.tick)
+        GLib.timeout_add(100, self.tick)
         GLib.timeout_add_seconds(5, self.refresh_routes)
         self.refresh_routes()
         page = CONTROL_PAGES.get(args.page, args.page)
@@ -238,6 +239,15 @@ class Workbench:
         if self.args.demo:
             self.message.set_text('离线演示：不连接机器人；模型为静态参考')
             return
+        # Check the lazily loaded plotting backend before replacing observers:
+        # an incomplete GUI environment must not leave a half-connected session.
+        try:
+            from apps.map_viewer.viewer import Stream
+            from apps.map_viewer.panel import MapPanel
+        except ImportError as exc:
+            self.message.set_text(
+                f'地图绘图依赖未就绪：{exc}。请在项目目录运行 bash setup.sh console，然后重启工作台。')
+            return
         if not self.disconnect_observers():
             return
         for part in ('base', 'upper'):
@@ -248,8 +258,6 @@ class Workbench:
                 observer.thread.start()
         creds = self.credentials('base')
         if creds:
-            from apps.map_viewer.viewer import Stream
-            from apps.map_viewer.panel import MapPanel
             host, user, password = creds
             stream = Stream(SimpleNamespace(host=host, user=user, check=False, duration=0), password)
             for child in self.map_container.get_children():
@@ -388,6 +396,7 @@ class Workbench:
             self.hardware_labels[part] = label
             panel.pack_start(label, False, False, 0)
         self.model = ModelView()
+        self.teleop.tool_preview = self.model.set_tool_geometry
         self.body_readout = Gtk.Label(label='身体：等待实测角度', xalign=0)
         self.body_readout.set_line_wrap(True)
         panel.pack_start(self.body_readout, False, False, 0)
@@ -463,9 +472,13 @@ class Workbench:
                 if part == 'upper':
                     upper = hardware
             else:
-                self.hardware_labels[part].set_text(f'{title}：反馈未更新 / 状态未知\n' + state.get('error', '等待硬件状态'))
+                self.hardware_labels[part].set_text(f'{title}：反馈未更新 / 状态未知\n'
+                    + state.get('error', state.get('status', '等待硬件状态')))
         try:
-            self.model.update(upper, live_arms=self.args.live_arms)
+            gripper_state = (self.gripper.session.snapshot() if self.gripper.session
+                             and not self.gripper.session.finished() else {})
+            jaws = measured_openings(gripper_state, self.teleop.gripper_feedback)
+            self.model.update(upper, live_arms=self.args.live_arms, grippers=jaws)
             state = self.model.model.body_state(upper)
             self.body_readout.set_text(
                 f'身体：{state["height"]:.1f}% · 相对低位约 {state["height_mm"]:.1f} mm\n'

@@ -36,6 +36,7 @@ case "$COMMAND" in
   bash run.sh console --demo            工作台离线预览，不连接机器人
   bash run.sh teleop                    打开遥操界面，不自动使能
   bash run.sh vr --grippers --body-lift  PICO 显式启用 Trigger 夹爪和右摇杆升降
+  bash run.sh vr --tcp-tool taccap --grippers --gripper-speed-rad-s 0.75  已核对安装后的指尖 TCP 遥操
   bash run.sh gripper                   独立夹爪调试：扫描、开度、闭合、保持
   bash setup.sh all                     安装所有功能的项目内环境
   bash setup.sh base                    安装键控/诊断 Python 环境
@@ -69,6 +70,7 @@ case "$COMMAND" in
   bash run.sh pico fairino --check       机器人/运动学只读检查
   bash run.sh pico latency --duration 25  PICO 时间戳至电脑的链路测量
   bash run.sh vr                        450 Hz 面对面遥操，自动使能并先回 Home
+  bash run.sh vr --chassis              同时回正并使能底盘，左杆平移、右杆左右旋转
   bash run.sh diagnostics geometry      雷达机械位置离线分析
   bash run.sh diagnostics lidar         双雷达样例配准与验证
   bash run.sh diagnostics wrist         手腕模型离线绘图
@@ -76,7 +78,8 @@ case "$COMMAND" in
 
 普通 base / joints / body / tcp 启动会使能；vr 会使能并自动回 Home。
 vr：右手柄→左臂，左手柄→右臂；Grip 握住跟随，松开保持。
-A/X 冻结旋转；B/Y 冻结位移；左摇杆上下调灵敏度、按压暂停；右摇杆按压 Home。
+A/X 按住冻结旋转；B/Y 按住冻结位移；X 双击降灵敏度、Y 双击升灵敏度。
+左摇杆按压暂停；右摇杆按压 Home；--chassis 启用左杆全向平移、右杆左右旋转。
 旧上半身清错兼容入口：bash run.sh reset-upper --execute-reset。
 完整说明：docs/功能汇总.md；全部命令从仓库根目录运行。
 HELP

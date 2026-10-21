@@ -195,6 +195,13 @@ class Clutch:
         self.reference = self.start = self.previous = None
         self.frozen_position = self.frozen_rotation = False
 
+    def rebase(self, controller, accepted_tcp):
+        """Discard a limited target's excess while keeping Grip engaged."""
+        position, rotation = mapped_pose(controller["pose"], self.side, self.mode, self.rotation_mode)
+        self.reference = (position.copy(), rotation.copy())
+        self.start = np.asarray(accepted_tcp, dtype=float).copy()
+        self.previous = position.copy()
+
     def target(self, controller, current_tcp, sensitivity, stationary=True,
                freeze_position=False, freeze_rotation=False):
         position, rotation = mapped_pose(controller["pose"], self.side, self.mode, self.rotation_mode)

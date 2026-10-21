@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from wrist_guard import GuardSession, WristBlocked
 
 from probe_core import (JOINTS, ALL_MASK, SPEED_DEG_S, StepCancelled, check_hardware, check_packet,
                         fresh_request, plan_step, plan_target, plan_request, snapshot)
@@ -26,6 +27,7 @@ class Probe:
 
     def __init__(self, args):
         self.args = args
+        self.wrist = GuardSession()
         self.node = rclpy.create_node("fairino_upper_identify_guard")
         self.hw = None
         self.hw_time = 0.0
@@ -114,8 +116,14 @@ class Probe:
                       baseline=self.baseline, selected=self.selected, last_request=self.last_request,
                       hw_age=now-self.hw_time, enabling=self.enabling,
                       speed_protection=self.feedback_speed_check and not self.enabling,
-                      path_tracking_check=self.path_tracking_check, **extra)
+                      path_tracking_check=self.path_tracking_check,
+                      wrist_guard=self.wrist.status(), **extra)
             self.last_status = now
+
+    def wrist_request(self, packet):
+        idle = (getattr(self, "path", None) is None and self.goal is None
+                and self.pending_goal is None and not self.enabling)
+        return self.wrist.filter(packet, self.hw, idle)
 
     def guard(self, link=True, cancel=True):
         if self.fault:
@@ -147,6 +155,9 @@ class Probe:
             check_packet(packet, received, now, allow_unfocused=getattr(self, "allow_unfocused", False))
             if cancel and self.cancel_count is not None and packet.get("cancel", 0) != self.cancel_count:
                 raise StepCancelled("用户中止本次点动")
+            if (cancel and self.cancel_count is not None and not self.enabling and self.wrist.active is not None
+                    and packet.get("wrist_guard") != self.wrist.active):
+                raise StepCancelled("切换腕部保护，暂停并保持使能")
             if (cancel and self.cancel_count is not None and not self.enabling
                     and getattr(self, 'pause_on_unfocused', False) and not packet.get('focused')):
                 raise StepCancelled('控制界面失焦，暂停轨迹并保持使能')
@@ -324,6 +335,15 @@ class Probe:
         self.report(True)
 
     def enable_all(self):
+        self.phase = "等待腕部模块双端确认，尚未使能"
+        deadline = time.monotonic()+10
+        while self.wrist.active is None:
+            with self.input_lock:
+                self.wrist_request(self.packet)
+            self.report(True)
+            if time.monotonic() > deadline:
+                raise RuntimeError("腕部模块缺失或版本不一致，拒绝使能")
+            self.pump(.02)
         speed_note = "此阶段暂停速度检查" if self.feedback_speed_check else "实测超速退出已关闭"
         self.phase = f"正在使能全部 J1–J20（{speed_note}）"
         self.enable_attempted = True
@@ -364,6 +384,7 @@ class Probe:
                              speed_deg_s=plan["speed_deg_s"])
             movement = "单步点动中"
         self.moving_speed_limit = max(2.0, plan["speed_deg_s"])
+        self.wrist.guard.segment(plan["start"], plan["target"])
         self.phase = f"J{self.selected} {movement} · 最高速度 {plan['speed_deg_s']:.1f}°/s"
         self.report(True)
         goal = FollowJointTrajectory.Goal()
@@ -422,7 +443,7 @@ class Probe:
             self.pump()
             with self.input_lock:
                 packet = self.packet
-            request = packet.get("request") if packet.get('focused') else None
+            request = self.wrist_request(packet) if packet.get('focused') else self.wrist_request({**packet, "request": None})
             if not request or request.get("id", 0) <= self.last_request:
                 continue
             self.last_request = request["id"]
@@ -441,6 +462,9 @@ class Probe:
                 self.phase = "正在中止轨迹，全部关节保持使能"
                 self.cancel_step()
                 done_text = "本步已中止，全部关节继续使能并保持位置"
+            except WristBlocked as exc:
+                done_text = str(exc)
+                self.emit(jog_rejected=done_text)
             # Other failures propagate straight to cleanup: disable all axes.
             self.cancel_count = None
             self.goal = self.pending_goal = None

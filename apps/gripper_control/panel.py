@@ -145,7 +145,10 @@ class GripperPanel(Gtk.Box):
                 result = '已确认本会话夹爪下使能' if self.session.disabled_confirmed else '未收到下使能确认，请检查设备'
                 message = (message+'；' if message else '')+result
             elif self.session.stop.is_set():
-                message = '正在断开，等待夹爪下使能确认…'
+                message = (message+'；' if message else '')+'正在断开，等待夹爪下使能确认…'
+            elif state.get('busy') and not message:
+                action = state.get('pending_action') or '操作'
+                message = f'正在等待夹爪{action}确认…'
             elif fresh and not message:
                 blocked = []
                 for side, title in [('left', '左夹爪'), ('right', '右夹爪')]:

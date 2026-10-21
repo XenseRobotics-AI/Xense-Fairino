@@ -5,8 +5,9 @@ from pathlib import Path
 
 from tcp_core import ARMS, MODEL_ID, check_arm_limits, finite_vector
 from vr_core import KIND, validate
-
-DEFAULT_HOME = Path(__file__).with_name("home_pose.json")
+from tool_frames import packet_tool_id
+from home_presets import DEFAULT_HOME, HOME_PRESETS, resolve_home
+from wrist_guard import WristGuard
 
 
 def load_home(path=DEFAULT_HOME):
@@ -28,15 +29,24 @@ def load_home(path=DEFAULT_HOME):
 
 
 class HomeMotion:
-    def __init__(self, home, hw, now):
+    def __init__(self, home, hw, now, guard=None):
+        guard = guard if guard is not None else WristGuard()
         if max(abs(v) for v in finite_vector(hw["velocity"], 20, "Home 当前速度")) >= .005:
             raise ValueError("回 Home 前必须先停止并松开两侧 Grip")
         self.start = {}
         self.target = home["target"]
         for side, joints in ARMS.items():
             self.start[side] = check_arm_limits([hw["command_position"][j-1] for j in joints])
+            # All joints share the same monotonic quintic progress, so the
+            # geometric path is exactly this joint-space line, not just its ends.
+            guard.arm_segment(self.start[side], self.target[side], label=side+" Home 腕部")
+            guard.arm_segment([hw["position"][j-1] for j in joints], self.target[side],
+                              label=side+" Home 实测腕部")
         delta = max(abs(math.degrees(b-a)) for side in ARMS for a, b in zip(self.start[side], self.target[side]))
         self.duration = max(home["minimum_duration_s"], 1.875*delta/home["max_joint_speed_deg_s"])
+        for side in ARMS:
+            peak = [1.875*(b-a)/self.duration for a, b in zip(self.start[side], self.target[side])]
+            guard.arm_segment(self.start[side], self.target[side], peak, label=side+" Home 停止余量")
         self.started = self.last_sample = now
         self.settled_at = None
 
@@ -52,12 +62,12 @@ class HomeMotion:
         targets = self.sample(now)
         arms = {}
         for side, q in targets.items():
-            tcp, _ = kin.forward_tcp(q)
+            tcp, _ = kin.forward_tcp(q, side)
             arms[side] = {"reference": [hw["command_position"][j-1] for j in ARMS[side]],
                           "target": q, "tcp": [v for row in tcp for v in row]}
         packet = {"kind": KIND, "model": MODEL_ID, "id": sequence,
-                  "created": stamp, "arms": arms, "source": "home"}
-        validate(hw, packet, stamp)
+                  "created": stamp, "arms": arms, "source": "home", "tool_id":packet_tool_id(kin)}
+        validate(hw, packet, stamp, getattr(kin, 'tools', None))
         return packet
 
     def complete(self, hw, now):

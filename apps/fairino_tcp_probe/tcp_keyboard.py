@@ -22,12 +22,13 @@ from tcp_frames import CHEST_FRAME_ID,tcp_in_chest
 from tcp_jog import (KEYS,KEY_PAIRS,MAX_SPEED,DEFAULT_SPEED,MAX_LINEAR,MAX_ANGULAR,
                      make_request,validate_velocity,trajectory,sample)
 from vendor_kinematics import VendorKinematics
+from tool_frames import for_arm, tool_config
 
 AXES=('X','Y','Z','Rx','Ry','Rz')
 
 
 def remote_command(args):
-    bundle={n:(SHARED/n).read_text() for n in ('probe_core.py','robot_probe.py')}
+    bundle={n:(SHARED/n).read_text() for n in ('wrist_guard.py','probe_core.py','robot_probe.py')}
     bundle.update({n:(HERE/n).read_text() for n in ('tcp_core.py','tcp_frames.py','tcp_jog.py','tcp_robot.py')})
     encoded=base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
     argv=['tcp_robot.py']
@@ -35,7 +36,7 @@ def remote_command(args):
     if args.prepare_check:argv.append('--prepare-check')
     loader=('import base64,zlib,json,sys,types;'
             f'bundle=json.loads(zlib.decompress(base64.b64decode({encoded!r})));'
-            "\nfor name in ('probe_core','robot_probe','tcp_core','tcp_frames','tcp_jog'):\n"
+            "\nfor name in ('wrist_guard','probe_core','robot_probe','tcp_core','tcp_frames','tcp_jog'):\n"
             " m=types.ModuleType(name);sys.modules[name]=m;exec(compile(bundle[name+'.py'],name+'.py','exec'),m.__dict__)\n"
             f'sys.argv={argv!r}\n'
             "exec(compile(bundle['tcp_robot.py'],'tcp_robot.py','exec'),{'__name__':'__main__'})")
@@ -51,13 +52,18 @@ def verify_both(kin,hw):
     details={}
     for arm,joints in ARMS.items():
         q=[hw['position'][j-1] for j in joints]
-        result=kin.verify_tcp(q)
-        details[arm]={'tcp_definition':'flange_face_center','offset_mm':list(FLANGE_OFFSET_MM),
+        result=kin.verify_tcp(q,arm)
+        tools = getattr(kin, 'tools', tool_config())
+        offset = for_arm(tools, arm)
+        definition = 'flange_face_center' if tools['mode'] == 'flange' else 'fixed_gripper_tip_center'
+        details[arm]={'tcp_definition':definition,
+                      'offset_mm':[FLANGE_OFFSET_MM[i]+offset[i][3] for i in range(3)],
                       'coordinate_frame':CHEST_FRAME_ID,
                       'pose_mm_deg':matrix_pose(tcp_in_chest(arm,result['matrix'])),
                       'base_pose_mm_deg':matrix_pose(result['matrix']),
                       'arm_angle_deg':result['arm_angle'],'roundtrip_deg':result['roundtrip_deg']}
-    return {'model':MODEL_ID,'reference':hw['position'][:14]},details
+    return {'model':MODEL_ID,'reference':hw['position'][:14],
+            'tool_id':getattr(kin, 'tools', tool_config())['id']},details
 
 
 class Window:
@@ -79,6 +85,10 @@ class Window:
         self.window=(window_factory or Gtk.Window)(title='法奥双臂 · 胸部坐标 · 法兰中心 TCP 十二键连续控制')
         self.window.set_default_size(800,620);self.window.set_border_width(16)
         box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=10);self.window.add(box)
+        from wrist_guard_ui import GuardControls
+        self.wrist_controls = GuardControls(self.switch_wrist)
+        self.wrist_controls.toggle.set_sensitive(connection is not None)
+        box.pack_start(self.wrist_controls,False,False,0)
         title=Gtk.Label();title.set_markup('<span size="18000" weight="bold">胸部坐标 TCP · 十二键连续控制</span>')
         box.pack_start(title,False,False,0)
         box.pack_start(Gtk.Label(label='W/S 前/后 · A/D 左/右 · R/F 上/下（相对胸部，左右臂相同）'),False,False,0)
@@ -205,6 +215,14 @@ class Window:
         self.phase.set_text(reason+'；停止并保持位置')
         self.send();self.refresh_controls()
 
+    def switch_wrist(self, enabled):
+        if self.connection:
+            self.connection.wrist.switch(enabled)
+            self.stop_hold('切换腕部模块，请松键后重按')
+            self.input_blocked = bool(self.held)
+            self.ready = False
+            self.refresh_controls()
+
     def key_press(self,_,event):
         key=(self.Gdk.keyval_name(event.keyval) or '').lower()
         if key=='escape':self.close();return True
@@ -274,7 +292,10 @@ class Window:
                     self.error.set_text(data['jog_rejected']);self.input_blocked=bool(self.held)
                     self.stop_hold('机器人拒绝本次运动')
                 if 'phase' in data:
-                    self.phase.set_text(data['phase']);self.ready=data.get('ready',False) and not self.stopped
+                    self.phase.set_text(data['phase'])
+                    self.ready=(data.get('ready',False) and not self.stopped
+                                and self.connection.wrist.ready(data.get('wrist_guard', {}))
+                                and self.connection.wrist.released)
                     self.jogging=data.get('jogging',False)
                     if self.ready and not self.jogging and data.get('stamp',0)>self.stop_stamp:
                         self.awaiting_stop=False
@@ -298,6 +319,9 @@ class Window:
                 self.demo_time=now;self.hw['position']=q;self.hw['command_position']=q[:]
                 self.update_hardware(self.hw)
             except ValueError as exc:self.error.set_text(str(exc));self.stop_hold('离线模拟停止')
+        if self.connection:
+            state = self.connection.latest.get('wrist_guard', {})
+            self.wrist_controls.update(state, not self.connection.wrist.ready(state))
         self.send();self.refresh_controls();return True
 
     def close(self,*_):

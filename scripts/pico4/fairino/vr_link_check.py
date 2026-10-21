@@ -103,7 +103,7 @@ def run_server(args):
                 if request["id"] <= accepted:
                     raise ValueError("压测请求序号倒退")
                 t = time.monotonic()
-                validate(hw, request, now)
+                validate(hw, request, now, getattr(args, 'tools', None))
                 validated = time.monotonic()
                 validation_ms.append(1000*(validated-t))
                 dispatch_ms.append(1000*(t-packet["server_read"]))
@@ -208,13 +208,13 @@ def run_client(args, kin, connection):
         goals = {}
         for side in ARMS:
             angles = [v+.004*math.sin((now-start)*.5+j*.4) for j, v in enumerate(q_by_side[side])]
-            goals[side] = kin.forward_tcp(angles)[0]
+            goals[side] = kin.forward_tcp(angles, side)[0]
         sequence += 1
         compute_start = time.monotonic()
         outgoing = request(kin, hw, goals, sequence, connection.latest["stamp"])
         ik_ms.append(1000*(time.monotonic()-compute_start))
         validation_start = time.monotonic()
-        validate(hw, outgoing, connection.latest["stamp"])
+        validate(hw, outgoing, connection.latest["stamp"], getattr(kin, 'tools', None))
         local_validation_ms.append(1000*(time.monotonic()-validation_start))
         sent_at[sequence] = time.monotonic()
         sent_times.append(sent_at[sequence])

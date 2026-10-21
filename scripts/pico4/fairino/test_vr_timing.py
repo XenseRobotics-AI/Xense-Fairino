@@ -120,6 +120,8 @@ class TimingTests(unittest.TestCase):
             c = NS(events=queue.Queue(), done=threading.Event(), last_status=10.,
                    latest={"hardware": hw, "stamp": 10., "ready": True},
                    log_path=Path(directory)/"cadence.jsonl")
+            from test_probe import connected_wrist
+            connected_wrist(c)
             def send(**kw):
                 if kw.get("request"):
                     sent.append(kw["request"])

@@ -221,15 +221,19 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(w.request);w.control_area.grab_focus()
         w.args.demo=False;sent=[]
         w.connection=NS(latest={'stamp':time.monotonic()},events=queue.Queue(),send=lambda *a,**kw:sent.append((a,kw)))
+        from test_probe import connected_wrist
+        connected_wrist(w.connection)
         w.last_status-=1;w.press('w');self.assertIsNone(w.request)
         w.release('w');w.update_hardware(hardware())
-        w.connection.events.put({'phase':'保持','ready':True,'jogging':False,'stamp':w.stop_stamp+.01})
+        w.connection.events.put({'phase':'保持','ready':True,'jogging':False,'stamp':w.stop_stamp+.01,
+                                 'wrist_guard':w.connection.latest['wrist_guard']})
         w.tick();w.press('w');self.assertIsNotNone(w.request)
         w.had_focus=True;w.focus_out();self.assertFalse(sent[-1][1]['exit'])
         self.assertFalse(sent[-1][1]['focused']);self.assertIsNone(sent[-1][0][0])
         self.assertIsNone(w.request);self.assertFalse(w.stopped)
         self.assertTrue(w.input_suspended);self.assertTrue(w.awaiting_stop)
-        w.connection.events.put({'phase':'保持','ready':True,'jogging':False,'stamp':w.stop_stamp+.01})
+        w.connection.events.put({'phase':'保持','ready':True,'jogging':False,'stamp':w.stop_stamp+.01,
+                                 'wrist_guard':w.connection.latest['wrist_guard']})
         w.tick();self.assertFalse(w.awaiting_stop)
         w.focus_in();w.tick();self.assertIsNone(w.request)
         w.press('w');self.assertIsNone(w.request) # old key/autorepeat must not resume

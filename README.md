@@ -22,7 +22,25 @@ bash run.sh console --demo        # 不连接机器人的界面演示
 
 独立 `base / joints / body / tcp / map / vr / errors` 入口保留。工作台嵌入原有控制界面，地图窗口使用同一个 `MapPanel`，清错调用同一份远端实现，因此修改功能模块会同时影响集成与独立运行。
 
+关节、TCP、PICO 共用可切换的腕部联合限位模块，默认开启。
+在界面运行中启用 / 停用会先暂停、保持使能，再确认双端配置；重新输入才继续。
+它检查 J6/J7、J13/J14 的组合及经过路径，PICO 限制后不补走旧手柄位移，
+Home 先检查整条路径。范围、模型余量与验证限制见 [腕部保护](docs/腕部保护.md)。
+
 新增「夹爪调试」页，也可单独运行 `bash run.sh gripper`：按固件 SN 识别左右 TacCap / XTac，从只读连接开始，分别使能、调节连续开度、闭合、保持和下使能。与 PICO 共用同一 SDK 接口。
+
+整机视图已加入用户 STEP 提供的夹爪和转接件，随手臂运动；夹指按实测开度更新，
+内部连杆使用近似几何。工作台「夹爪调试」只读连接或 PICO 夹爪会话提供反馈，
+显示复用同一个会话，不重复占用串口；超过 0.5 秒没有有效反馈时保留最后开度并变灰。
+PICO 页支持选择固定指尖中心 TCP、分别调整左右安装角度、最大开度百分比，以及夹爪速度
+（默认 0.75 rad/s，范围 0.01–1.0 rad/s）。最大开度分别限制左右 Trigger 的映射上限，
+100% 对应各夹爪的标定全开；界面反馈同时显示对应的电机转角。安装角度和固定工具点需核对后再用于实机，
+显示与控制共用配置。详见 [夹爪模型与 TCP](models/taccap/README.md)。
+
+PICO 页的「双臂起始位姿」保留原 Home 为默认，并可选「起始位姿 2 · 10-20 右臂实测镜像」。
+第二项来自 2026-10-20 14:18 的右臂静止实测，左臂按躯干中线镜像；只改变 J1–J14。
+自动回 Home、界面回 Home 和右摇杆回 Home 均使用启动前所选项。第二项已做厂家 FK/IK、
+关节限位及镜像校验，未执行实机轨迹，需自行确认手臂与夹爪路径的空间。
 
 PICO 页显式勾选夹爪和身体升降后再启动：食指 Trigger 线性控制对应夹爪（松开张开、压到底闭合），Grip 继续控制手臂跟随；右摇杆上下控制标定范围内的竖直升降，回中保持。身体升降复用身体程序的模型和标定，与双臂共用一个二十轴控制实例。命令行对应 `bash run.sh vr --grippers --body-lift`，选项默认关闭，开窗口不会使能。详见 [PICO 说明](scripts/pico4/README.md) 与 [夹爪说明](apps/gripper_control/README.md)。
 
@@ -64,6 +82,8 @@ bash run.sh test
 
 `setup.sh all` 准备基础界面、离线诊断、PICO 接收服务、头显 APK、ADB 和 SDK 绑定。环境与缓存位于 `.venv/` 和 `.local/`，厂家运动学库及诊断模型随代码提供。
 
+仅准备工作台可运行 `bash setup.sh console`，其中包含地图绘图需要的 GTK/Cairo 组件。工作目录通过符号链接复用已有 `.venv` 时，也会自动查找该环境所属目录的 `.local/gtk`。
+
 ## 功能与项目位置
 
 以下命令均从仓库根目录执行，路径均相对于仓库根目录。
@@ -100,7 +120,7 @@ bash run.sh errors --execute
 bash run.sh errors
 ```
 
-清错最多请求一次复位，再按需下使能。只有复查全局和各轴错误码归零、机器人静止且全部下使能才报告完成。原有静止阈值保持 0.005 rad/s，超出时显示具体关节与反馈值；故障复发时保留日志排查。
+清错最多请求一次复位，再按需下使能。只有复查全局和各轴错误码归零、机器人静止且全部下使能才报告完成。实测速度静止阈值为 0.05 rad/s，速度指令阈值仍为 0.005 rad/s；超出时显示具体关节与数值，故障复发时保留日志排查。工作台和独立清错命令共用这些阈值。
 
 ## PICO 双臂遥操
 
@@ -110,7 +130,7 @@ bash run.sh pico monitor # 另一个终端先确认数据，随后退出 monitor
 bash run.sh vr
 ```
 
-头显填写电脑可达的局域网地址，开启 Controller Tracking 和 Send。右手柄控制左臂，左手柄控制右臂；Grip 握住跟随、松开保持。A/X 冻结旋转，B/Y 冻结位移；左摇杆上下调灵敏度、按压暂停；右摇杆按压回 Home。
+头显填写电脑可达的局域网地址，开启 Controller Tracking 和 Send。右手柄控制左臂，左手柄控制右臂；Grip 握住跟随、松开保持。A/X 按住冻结旋转，B/Y 按住冻结位移；左手 X 双击降低灵敏度、Y 双击提高；左摇杆按压暂停，右摇杆按压回 Home。勾选「同时启动底盘」或加 `--chassis` 后，左摇杆全向平移、右摇杆左右旋转，回中停车；右摇杆上下仍用于可选的身体升降。
 
 `vr` 指定 450 Hz TCP 插值、IK 和下发，500 Hz 接收轮询，100 Hz 状态回传，12 ms 输入缓冲。链路为 TCP 位移线性插值／姿态 SLERP → 厂家 IK → 有线 SSH → 机器人 ROS 控制器 → EtherCAT。实际频率以日志为准。
 
@@ -123,4 +143,4 @@ bash run.sh vr
 - [雷达与模型](docs/雷达与模型.md)
 - [故障排查](docs/故障排查.md)
 
-双臂 Home 在 [home_pose.json](scripts/pico4/fairino/home_pose.json)，身体参数在 [body_config.json](apps/fairino_upper_probe/body_control/body_config.json)，依赖清单在 [requirements/](requirements/)。第三方许可见 [资源说明](THIRD_PARTY_NOTICES.md)。
+双臂原 Home 在 [home_pose.json](scripts/pico4/fairino/home_pose.json)，第二项在 [home_pose_right_mirrored.json](scripts/pico4/fairino/home_pose_right_mirrored.json)；身体参数在 [body_config.json](apps/fairino_upper_probe/body_control/body_config.json)，依赖清单在 [requirements/](requirements/)。第三方许可见 [资源说明](THIRD_PARTY_NOTICES.md)。

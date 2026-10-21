@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "geometry_id": "taccap-step-20261020-v1",
+  "tip_cad_mm": [
+    0.0,
+    20.825,
+    -152.712
+  ],
+  "tip_definition": "固定工具点：所供 STEP 张开姿态的两指尖中心；不是随开合变化的实时接触点",
+  "arms": {
+    "left": {
+      "installed": true,
+      "roll_deg": 180.0,
+      "confirmed": true
+    },
+    "right": {
+      "installed": true,
+      "roll_deg": -180.0,
+      "confirmed": true
+    }
+  }
+}

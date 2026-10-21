@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "model": "ART7-R7-20260615-flange-x-106mm-v2",
+  "name": "right_measured_mirrored_20261020",
+  "description": "起始位姿 2：2026-10-20 14:18 右臂实测姿态，左臂按躯干中线镜像；仅移动 J1–J14。",
+  "joint_degrees": {
+    "left": [
+      57.83573,
+      79.57887,
+      -98.633438,
+      104.219577,
+      -8.442286,
+      -51.971206,
+      -6.081857
+    ],
+    "right": [
+      -57.83573,
+      79.57887,
+      98.633438,
+      104.219577,
+      8.442286,
+      -51.971206,
+      6.081857
+    ]
+  },
+  "max_joint_speed_deg_s": 8.0,
+  "minimum_duration_s": 4.0,
+  "source": {
+    "captured_at": "2026-10-20T14:18:38.927457",
+    "host": "192.168.58.1",
+    "source_arm": "right",
+    "sample_count": 15,
+    "aggregation": "median of 15 measured frames",
+    "right_to_left_joint_signs": [
+      -1,
+      1,
+      -1,
+      1,
+      -1,
+      1,
+      -1
+    ],
+    "max_source_spread_deg": 0.0034502518078631684,
+    "capture_log": "logs/20261020-141835-arm-pose-capture/hardware.json",
+    "all_axes_disabled": true,
+    "hardware_fault": 0
+  },
+  "validation": "已做左右镜像、厂家 FK/IK 与关节限位离线校验；尚未执行该双臂轨迹，不含环境或夹爪碰撞验证。"
+}

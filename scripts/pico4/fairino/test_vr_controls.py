@@ -20,6 +20,7 @@ from test_tcp import hardware
 from vendor_kinematics import VendorKinematics
 from vr_input import Clutch, controller_sides, decode_packet
 from vr_client import operate
+from vr_controls import JoystickControls
 
 
 def hand(position=(0., 0., 0.), angle=(0., 0., 0.), grip=1., primary=False, secondary=False):
@@ -125,6 +126,112 @@ class FreezeTests(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(moving[:3, 3]), 20.)
 
 
+class DoubleTapTests(unittest.TestCase):
+    def frame(self, stamp, x=False, y=False, left_click=False, right_click=False, axis_y=0.):
+        return dict(received_monotonic=stamp,
+                    left=dict(primary=x, secondary=y, axis_click=left_click, axis_y=axis_y),
+                    right=dict(primary=False, secondary=False, axis_click=right_click))
+
+    def feed(self, controls, *samples):
+        return [controls.update(sample, now=sample['received_monotonic']) for sample in samples]
+
+    def tap_pair(self, button, start=0.):
+        return [self.frame(start), self.frame(start+.04, **{button: True}),
+                self.frame(start+.08), self.frame(start+.14, **{button: True}), self.frame(start+.18)]
+
+    def test_short_x_lowers_and_y_raises_on_second_release_only(self):
+        for button, direction in (('x', -1), ('y', 1)):
+            controls = JoystickControls()
+            results = self.feed(controls, *self.tap_pair(button))
+            self.assertEqual([r['sensitivity'] for r in results], [0, 0, 0, 0, direction])
+            self.assertTrue(all(not r['home'] and not r['pause'] for r in results))
+
+    def test_explicit_loop_clock_fallback_and_repeated_frame_are_supported(self):
+        controls = JoystickControls()
+        results = []
+        for sample in self.tap_pair('y'):
+            now = sample.pop('received_monotonic')
+            results.append(controls.update(sample, now=now)['sensitivity'])
+            self.assertEqual(controls.update(sample, now=now)['sensitivity'], 0)
+        self.assertEqual(results, [0, 0, 0, 0, 1])
+
+    def test_held_button_is_not_a_tap_even_as_second_press(self):
+        for button in ('x', 'y'):
+            for first_long in (False, True):
+                controls = JoystickControls()
+                samples = [self.frame(0.), self.frame(.02, **{button: True})]
+                if first_long:
+                    samples += [self.frame(.2, **{button: True}), self.frame(.32)]
+                    samples += [self.frame(.4, **{button: True}), self.frame(.45)]
+                else:
+                    samples += [self.frame(.08), self.frame(.14, **{button: True}),
+                                self.frame(.3, **{button: True}), self.frame(.45)]
+                self.assertTrue(all(r['sensitivity'] == 0 for r in self.feed(controls, *samples)))
+
+    def test_startup_held_and_mixed_or_simultaneous_buttons_do_not_form_pairs(self):
+        sequences = [
+            [self.frame(0., y=True), self.frame(.05), self.frame(.1, y=True), self.frame(.15)],
+            [self.frame(0.), self.frame(.02, x=True), self.frame(.04),
+             self.frame(.06, y=True), self.frame(.08), self.frame(.1, x=True), self.frame(.12)],
+            [self.frame(0.), self.frame(.02, x=True), self.frame(.04),
+             self.frame(.06, x=True, y=True), self.frame(.08), self.frame(.1, x=True), self.frame(.12)]]
+        for samples in sequences:
+            self.assertTrue(all(r['sensitivity'] == 0 for r in self.feed(JoystickControls(), *samples)))
+
+    def test_taps_expire_without_extending_gap_on_repeated_frames(self):
+        controls = JoystickControls()
+        samples = [self.frame(0.), self.frame(.02, y=True), self.frame(.06),
+                   self.frame(.2), self.frame(.4), self.frame(.43, y=True), self.frame(.48)]
+        self.assertTrue(all(r['sensitivity'] == 0 for r in self.feed(controls, *samples)))
+
+    def test_reset_or_input_gap_discards_first_tap_and_requires_release(self):
+        for reset in (False, True):
+            controls = JoystickControls()
+            self.feed(controls, self.frame(0.), self.frame(.02, y=True), self.frame(.06))
+            if reset:
+                controls.reset()
+            start = .1 if reset else .32
+            result = self.feed(controls, self.frame(start, y=True), self.frame(start+.04))
+            self.assertEqual([r['sensitivity'] for r in result], [0, 0])
+
+    def test_batched_edges_are_preserved_and_duplicate_or_old_samples_never_retrigger(self):
+        controls = JoystickControls()
+        samples = self.tap_pair('y')
+        batch = dict(samples[-1], samples=samples)
+        self.assertEqual(controls.update(batch, now=.18)['sensitivity'], 1)
+        for now in (.19, .2, .24):
+            self.assertEqual(controls.update(batch, now=now)['sensitivity'], 0)
+        controls.reset()
+        self.assertEqual(controls.update(batch, now=.24)['sensitivity'], 0)
+        self.assertEqual(controls.update(dict(samples[-1], samples=[]), now=.24)['sensitivity'], 0)
+
+    def test_stale_batch_cannot_apply_a_delayed_double_tap(self):
+        controls = JoystickControls()
+        samples = self.tap_pair('y')
+        batch = dict(samples[-1], samples=samples)
+        self.assertEqual(controls.update(batch, now=.6)['sensitivity'], 0)
+
+    def test_stick_clicks_clear_taps_and_axes_do_not_change_sensitivity(self):
+        controls = JoystickControls()
+        self.feed(controls, self.frame(0.), self.frame(.02, y=True), self.frame(.06))
+        result = controls.update(self.frame(.1, left_click=True), now=.1)
+        self.assertTrue(result['pause'])
+        self.assertEqual(result['sensitivity'], 0)
+        result = self.feed(controls, self.frame(.12), self.frame(.14, y=True), self.frame(.18))
+        self.assertTrue(all(r['sensitivity'] == 0 for r in result))
+        for n, y in enumerate((1., -1., 0., 1., 0.)):
+            self.assertEqual(controls.update(self.frame(.2+n*.02, axis_y=y), now=.2+n*.02)['sensitivity'], 0)
+        self.assertTrue(controls.update(self.frame(.32, right_click=True), now=.32)['home'])
+        self.assertFalse(controls.update(self.frame(.34, right_click=True), now=.34)['home'])
+
+    def test_batched_pause_has_priority_over_tap_and_clears_history(self):
+        controls = JoystickControls()
+        samples = [self.frame(0.), self.frame(.02, left_click=True), *self.tap_pair('y', .04)[1:]]
+        result = controls.update(dict(samples[-1], samples=samples), now=.22)
+        self.assertTrue(result['pause'])
+        self.assertEqual(result['sensitivity'], 0)
+
+
 class EndClient(Exception): pass
 
 
@@ -134,6 +241,8 @@ class ClientRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             c = NS(events=queue.Queue(), done=threading.Event(), last_status=10.,
                    latest={"hardware": hw, "stamp": 10., "ready": True}, log_path=Path(directory)/"run.jsonl")
+            from test_probe import connected_wrist
+            connected_wrist(c)
             def send(**kw):
                 packets.append(copy.deepcopy(kw))
                 if len(packets) >= len(frames): raise EndClient()
@@ -185,11 +294,20 @@ class ClientRoutingTests(unittest.TestCase):
         self.assertEqual(logs[-1]["freeze"]["left"], {"position": True, "rotation": True})
         self.assertEqual(packets[-1]["request"]["arms"]["left"]["tcp"], packets[1]["request"]["arms"]["left"]["tcp"])
 
-    def test_legacy_x_still_changes_sensitivity_and_pauses_without_flag(self):
+    def test_single_x_no_longer_changes_sensitivity_without_freeze_flag(self):
         frames = [self.frame(), self.frame(hand()), self.frame(hand(primary=True))]
         packets, _ = self.run_frames(frames, False, "first_person")
         self.assertIsNotNone(packets[1]["request"])
-        self.assertIsNone(packets[2]["request"])
+        self.assertIsNotNone(packets[2]["request"])
+
+    def test_double_y_changes_sensitivity_and_pauses_with_or_without_freeze(self):
+        frames = [self.frame(), self.frame(hand()), self.frame(hand(secondary=True)),
+                  self.frame(hand()), self.frame(hand(secondary=True)), self.frame(hand())]
+        for freeze in (False, True):
+            packets, _ = self.run_frames(frames, freeze, 'first_person')
+            self.assertIsNotNone(packets[1]['request'])
+            self.assertIsNotNone(packets[4]['request'])
+            self.assertIsNone(packets[5]['request'])
 
     def test_selected_same_room_mode_moves_robot_back_when_operator_reaches_forward(self):
         frames = [self.frame(), self.frame(hand()),

@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace as NS
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -17,11 +17,43 @@ from apps.workbench.model import RobotModel
 from apps.workbench.network import route_info
 from apps.workbench.odom_guard import input_problem
 from apps.workbench.telemetry import fresh_hardware
+from apps.workbench.telemetry_remote import feedback_packet
 from apps.map_viewer import map_control_remote as mapping
+from tools.ros_environment import feedback_environment
 from vr_gui_ipc import GuiInput
 
 
 class FeedbackTests(unittest.TestCase):
+    def test_empty_ssh_heartbeats_do_not_hide_missing_hardware(self):
+        waiting = feedback_packet({}, None, 11., 10.)
+        self.assertIn('SSH 已连接', waiting['status'])
+        self.assertNotIn('error', waiting)
+        missing = feedback_packet({}, None, 16., 10.)
+        self.assertIn('/hardware_states', missing['error'])
+        self.assertIsNone(fresh_hardware(dict(missing, received=time.monotonic())))
+
+    def test_stale_or_rejected_hardware_recovers_only_after_new_valid_sample(self):
+        hardware = {'position': [1.]}
+        for packet in (feedback_packet(hardware, 10., 11., 9.),
+                       feedback_packet(hardware, 10., 10.1, 9., 'bad data')):
+            self.assertIn('error', packet)
+            self.assertIsNone(fresh_hardware(dict(packet, received=time.monotonic())))
+        recovered = feedback_packet(hardware, 11., 11.01, 9.)
+        self.assertNotIn('error', recovered)
+        self.assertEqual(fresh_hardware(dict(recovered, received=time.monotonic())), hardware)
+
+    def test_upper_observer_uses_existing_udp_profile_and_base_keeps_own_domain(self):
+        upper = feedback_environment('upper')
+        self.assertIn('export ROS_DOMAIN_ID=0', upper)
+        self.assertIn('export FASTRTPS_DEFAULT_PROFILES_FILE=/home/fairino/fastrtps_udp.xml', upper)
+        self.assertNotIn('unset FASTRTPS_DEFAULT_PROFILES_FILE', upper)
+        base = feedback_environment('base')
+        self.assertIn('export ROS_DOMAIN_ID=1', base)
+        self.assertIn('unset FASTRTPS_DEFAULT_PROFILES_FILE', base)
+        self.assertNotIn('/home/fairino/fastrtps_udp.xml', base)
+        with self.assertRaises(ValueError):
+            feedback_environment('unknown')
+
     def test_stale_transport_or_hardware_never_appears_live(self):
         now = time.monotonic()
         state = {'hardware': {'position': [1]}, 'age': .1, 'received': now}
@@ -75,6 +107,27 @@ class PanelFocusTests(unittest.TestCase):
         self.assertTrue(PanelHost.is_active(panel))
         panel.input_enabled = False
         self.assertFalse(PanelHost.is_active(panel))
+
+
+class ObserverConnectionTests(unittest.TestCase):
+    def test_missing_plotting_dependency_preserves_connection_without_starting_ssh(self):
+        from apps.workbench.app import Workbench
+        app = NS(closing=False, args=NS(demo=False), message=Mock(),
+                 disconnect_observers=Mock(), credentials=Mock())
+        real_import = __import__
+
+        def missing_backend(name, *args, **kwargs):
+            if name == 'apps.map_viewer.panel':
+                raise ImportError("No module named 'gi._gi_cairo'")
+            return real_import(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=missing_backend), \
+                patch('apps.workbench.app.Feedback') as feedback:
+            Workbench.connect_observers(app)
+        app.disconnect_observers.assert_not_called()
+        app.credentials.assert_not_called()
+        feedback.assert_not_called()
+        self.assertIn('bash setup.sh console', app.message.set_text.call_args.args[0])
 
 
 class NetworkTests(unittest.TestCase):

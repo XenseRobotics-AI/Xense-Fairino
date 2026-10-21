@@ -1,10 +1,14 @@
 """Opt-in Trigger routing and pause behavior with a fake shared Session."""
 import json
+import contextlib
+import io
 from types import SimpleNamespace as NS
 import unittest
+from unittest.mock import Mock
 
 from vr_input import decode_packet
 from vr_grippers import GripperTeleop
+from vr_gui_ipc import gripper_status
 
 
 class FakeSession:
@@ -61,6 +65,45 @@ class GripperTests(unittest.TestCase):
         self.control.session.state['error'] = 'lost hardware'
         with self.assertRaisesRegex(RuntimeError, 'lost hardware'):
             self.control.update(frame(), self.hands, True)
+
+    def test_selected_speed_reaches_shared_worker_and_does_not_raise_torque(self):
+        control = GripperTeleop(NS(host='unused', user='unused', gripper_speed_rad_s=.9), None, FakeSession)
+        control.update(frame(), self.hands, True)
+        fields = control.session.commands[0][1]
+        self.assertEqual(fields, dict(torque=1.1, speed=.9))
+        self.assertEqual(control.snapshot()['speed_rad_s'], .9)
+        for speed in (0., 1.01, float('nan'), True):
+            with self.assertRaises(ValueError):
+                GripperTeleop(NS(host='unused', user='unused', gripper_speed_rad_s=speed), None, FakeSession)
+
+    def test_selected_opening_limit_reaches_target_and_invalid_values_never_connect(self):
+        args = NS(host='unused', user='unused', left_gripper_max_open_percent=60.)
+        control = GripperTeleop(args, None, FakeSession)
+        control.update(frame(), self.hands, True)
+        control.session.state['devices']['left']['controlled'] = True
+        control.update(frame(), self.hands, True)
+        control.update(frame(right=.5), self.hands, True)
+        self.assertEqual(control.session.values, {'left': .3})
+        self.assertEqual(control.snapshot()['max_openings'], {'left': .6, 'right': 1.})
+        factory = Mock()
+        for value in (-1., 101., True, float('nan')):
+            args.left_gripper_max_open_percent = value
+            with self.assertRaises(ValueError):
+                GripperTeleop(args, None, factory)
+        factory.assert_not_called()
+
+    def test_gui_measurement_packet_keeps_source_timestamp_and_excludes_targets(self):
+        self.control.session.state.update(received=10.)
+        self.control.session.state['devices']['left'].update(position=.3, target=.8, age_ms=20., open_span_rad=1.2)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            gripper_status(self.control.snapshot())
+        header, body = out.getvalue().split(' ', 1)
+        self.assertEqual(header, 'WORKBENCH_GRIPPERS')
+        record = json.loads(body)
+        self.assertEqual(record['received'], 10.)
+        self.assertEqual(record['devices']['left'],
+                         dict(connected=True, position=.3, age_ms=20., open_span_rad=1.2))
 
 
 class TriggerPacketTests(unittest.TestCase):

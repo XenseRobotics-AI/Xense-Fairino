@@ -140,7 +140,8 @@ class ReceiverTests(unittest.TestCase):
             if ticks[0] > 120:
                 raise EndSimulation()
             if ticks[0] < 65:
-                p.packet['request'] = dict(kind=KIND, model=MODEL_ID, id=ticks[0], created=clock[0], arms={}, lift=1.)
+                p.packet['request'] = dict(kind=KIND, model=MODEL_ID, id=ticks[0], created=clock[0],
+                                          arms={}, lift=1., _wrist_guard=p.wrist.active)
             elif not stale:
                 p.packet['request'] = None
             if guarded:
@@ -180,6 +181,8 @@ class ClientTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             connection = NS(events=queue.Queue(), done=threading.Event(), last_status=10.,
                 latest={'hardware':hw, 'stamp':10., 'ready':True}, log_path=Path(directory)/'client.jsonl')
+            from test_probe import connected_wrist
+            connected_wrist(connection)
             def send(**fields):
                 sent.append(copy.deepcopy(fields.get('request')))
                 if len(sent) >= 60:

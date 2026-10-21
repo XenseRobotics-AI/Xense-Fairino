@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import robot_probe as rp
+from wrist_guard import GuardSession, GuardClient, policy
 from probe_core import (ALL_MASK, JOINTS, JOINT_GROUPS, check_hardware, check_packet,
                         fresh_request, plan_step, snapshot, step_duration, StepCancelled)
 
@@ -155,6 +156,9 @@ def fake_probe(probe_type=rp.Probe):
     p.phase = 'test'; p.fault = ''; p.exit = threading.Event()
     p.input_lock = threading.Lock(); p.cancel_count = None; p.last_request = 0
     p.packet = {'ack': time.monotonic(), 'focused': True, 'exit': False, 'cancel': 0}
+    p.packet['wrist_guard'] = policy()
+    p.wrist = GuardSession()
+    p.wrist.filter(p.packet, p.hw, idle=True)
     p.received = time.monotonic()
     p.commands = []; p.events = []; p.reports = []; p.sent = []
     p.emit = lambda **data: p.events.append(data)
@@ -176,6 +180,14 @@ def fake_probe(probe_type=rp.Probe):
     p.service = lambda *a, **k: NS(ok=True)
     p.confirm_disabled = lambda: not any(p.hw['enabled'])
     return p
+
+
+def connected_wrist(connection):
+    """Simulate a completed real connection handshake for client loop tests."""
+    connection.wrist = GuardClient()
+    connection.latest["wrist_guard"] = {"policy": connection.wrist.wanted.copy()}
+    connection.wrist.filter(None, connection.latest["wrist_guard"])
+    return connection
 
 
 def goal():

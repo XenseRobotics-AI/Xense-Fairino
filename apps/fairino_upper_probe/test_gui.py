@@ -86,8 +86,9 @@ class GuiTests(unittest.TestCase):
         w.speed.set_value(.2)
         sent = []
         w.args.demo = False
-        w.connection = NS(latest={'stamp': time.monotonic()}, events=queue.Queue(),
+        w.connection = NS(wrist=ui.GuardClient(), latest={'stamp': time.monotonic()}, events=queue.Queue(),
                           send=lambda *a, **kw: sent.append((a, kw)))
+        w.connection.wrist.filter(None, {'policy': w.connection.wrist.wanted})
         w.step(1)
         self.assertEqual(w.request['joint'], 14)
         self.assertEqual(w.request['speed_deg_s'], .2)
@@ -97,7 +98,8 @@ class GuiTests(unittest.TestCase):
         w.key_press(None, NS(keyval=Gdk.KEY_1))
         self.assertEqual(w.selected, 14)
         self.assertEqual(w.request['speed_deg_s'], .2)
-        w.connection.events.put({'phase': '完成', 'ready': True, 'last_request': w.sequence})
+        w.connection.events.put({'phase': '完成', 'ready': True, 'last_request': w.sequence,
+                                 'wrist_guard': {'policy': w.connection.wrist.wanted}})
         w.tick()
         self.assertFalse(w.pending)
         self.assertTrue(w.notebook.get_sensitive())
@@ -129,8 +131,9 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(w.request)
         sent = []
         w.args.demo = False
-        w.connection = NS(latest={'stamp': time.monotonic()}, last_status=time.monotonic(),
+        w.connection = NS(wrist=ui.GuardClient(), latest={'stamp': time.monotonic()}, last_status=time.monotonic(),
                           events=queue.Queue(), send=lambda *a, **kw: sent.append((a, kw)))
+        w.connection.wrist.filter(None, {'policy': w.connection.wrist.wanted})
         w.move_to_target()
         self.assertEqual(w.request['kind'], 'target')
         self.assertEqual(w.request['joint'], 16)
@@ -144,7 +147,8 @@ class GuiTests(unittest.TestCase):
         w.key_press(None, NS(keyval=Gdk.KEY_space))
         self.assertIsNone(w.request)
         self.assertEqual(w.cancel_count, 1)
-        w.connection.events.put({'phase': '已中止', 'ready': True, 'last_request': w.sequence})
+        w.connection.events.put({'phase': '已中止', 'ready': True, 'last_request': w.sequence,
+                                 'wrist_guard': {'policy': w.connection.wrist.wanted}})
         w.tick()
         self.assertTrue(w.move_button.get_sensitive())
         w.buttons[17].set_active(True)
@@ -171,7 +175,7 @@ class GuiTests(unittest.TestCase):
             widget.set_value(12.)
             self.assertEqual(widget.get_value(), 12.)
         w.last_hw = hardware(); w.args.demo = False
-        w.connection = NS(latest={'stamp': time.monotonic()}, last_status=time.monotonic(),
+        w.connection = NS(wrist=ui.GuardClient(), latest={'stamp': time.monotonic()}, last_status=time.monotonic(),
                           events=queue.Queue(), send=lambda *a, **kw: None)
         w.target_angle.set_text('20')
         w.move_to_target()

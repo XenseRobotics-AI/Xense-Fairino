@@ -13,6 +13,11 @@ from tcp_jog import LEASE
 from vr_core import validate, direct_positions, KIND
 from vr_lift import LiftPlanner, lift_axis, DEADBAND
 from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
+from tool_frames import tool_config, validate_runtime
+
+STOP_CONFIRM_TIMEOUT = 3.
+STOP_SPEED_RAD_S = .005
+HOLD_COMMAND_TOLERANCE_RAD = 1e-5
 
 
 class VRProbe(TCPProbe):
@@ -24,11 +29,16 @@ class VRProbe(TCPProbe):
     held_speed_limit = 1.0  # deg/s; VR-only trip threshold for held joints.
 
     def __init__(self, args):
+        self.tools = validate_runtime(json.loads(args.tools_json)) if getattr(args, 'tools_json', None) else tool_config()
         self.input_event = threading.Event()
         self.lift = LiftPlanner(json.loads(args.body_config_json), args.lift_speed_mm_s) if getattr(args, 'body_lift', False) else None
         self.lift_axis_active = False
         self.lift_stop_deadline = None
         super().__init__(args)
+
+    def kinematics_matches(self, proof):
+        return (super().kinematics_matches(proof)
+                and proof.get('tool_id', 'flange') == self.tools['id'])
 
     def read_input(self):
         try:
@@ -123,6 +133,53 @@ class VRProbe(TCPProbe):
         self.publisher.publish(msg)
         self.path, self.path_time = points, now
 
+    def hold_feedback(self, target, published_at):
+        now = time.monotonic()
+        errors = [abs(a-b) for a, b in zip(self.hw["command_position"], target)]
+        joint = max(range(20), key=errors.__getitem__)
+        velocity_joint = max(range(20), key=lambda i: abs(self.hw["velocity"][i]))
+        return dict(published_monotonic=published_at, hardware_monotonic=self.hw_time,
+                    fresh_feedback=self.hw_time > published_at,
+                    wait_ms=1000*(now-published_at), hardware_age_ms=1000*(now-self.hw_time),
+                    command_error_joint=joint+1, max_command_error_rad=errors[joint],
+                    target_position_rad=target[joint],
+                    feedback_command_position_rad=self.hw["command_position"][joint],
+                    velocity_joint=velocity_joint+1,
+                    max_velocity_rad_s=abs(self.hw["velocity"][velocity_joint]))
+
+    def confirm_hold(self, target, published_at):
+        """Confirm both the held command and measured stop using NEW feedback.
+
+        The 100 Hz status stream can repeat the same hardware frame. A fixed
+        sleep cannot confirm that the controller has consumed the hold target.
+        Every pump continues the existing fault, estop, enable and link guards.
+        """
+        try:
+            while True:
+                self.pump(.01)
+                state = self.hold_feedback(target, published_at)
+                if (state["fresh_feedback"]
+                        and state["max_command_error_rad"] <= HOLD_COMMAND_TOLERANCE_RAD
+                        and state["max_velocity_rad_s"] <= STOP_SPEED_RAD_S):
+                    self.emit(stop_confirmation=dict(result="confirmed", **state))
+                    return
+                if time.monotonic()-published_at >= STOP_CONFIRM_TIMEOUT:
+                    if not state["fresh_feedback"]:
+                        reason = "停止保持确认超时：未收到保持指令发布后的新硬件反馈"
+                    elif state["max_command_error_rad"] > HOLD_COMMAND_TOLERANCE_RAD:
+                        reason = "控制器未确认停止保持目标"
+                    else:
+                        reason = "释放输入后未确认停止"
+                    raise RuntimeError(
+                        f'{reason}：J{state["command_error_joint"]} 指令差 '
+                        f'{state["max_command_error_rad"]:.6g} rad；'
+                        f'J{state["velocity_joint"]} 速度 {state["max_velocity_rad_s"]:.6g} rad/s；'
+                        f'反馈年龄 {state["hardware_age_ms"]:.1f} ms')
+        except RuntimeError as exc:
+            self.emit(stop_confirmation=dict(result="failed", reason=str(exc),
+                                              **self.hold_feedback(target, published_at)))
+            raise
+
     def stop_stream(self, reason):
         self.ready = False
         self.phase = reason+"；停止追踪并保持当前位置"
@@ -134,14 +191,7 @@ class VRProbe(TCPProbe):
                 self.hold_positions[17:20] = current[17:20]
             hold = direct_positions(current, {}, self.hold_positions)
             self.publish_positions(hold, now)
-            self.pump(.05)
-            deadline = time.monotonic()+3.
-            while max(abs(v) for v in self.hw["velocity"]) > .005:
-                if time.monotonic() > deadline:
-                    raise RuntimeError("释放输入后未确认停止")
-                self.pump()
-            if max(abs(a-b) for a, b in zip(self.hw["command_position"], hold[-1][1])) > 1e-5:
-                raise RuntimeError("控制器未确认停止保持目标")
+            self.confirm_hold(hold[-1][1], time.monotonic())
             self.hold_positions[:14] = self.hw["command_position"][:14]
             if getattr(self, 'lift', None):
                 self.hold_positions[17:20] = self.hw['command_position'][17:20]
@@ -180,7 +230,7 @@ class VRProbe(TCPProbe):
             self.pump_input(1/self.timing.receiver_hz)
             with self.input_lock:
                 packet = self.packet.copy()
-            request = packet.get("request")
+            request = self.wrist_request(packet)
             now = time.monotonic()
             if request is None:
                 if self.path is not None:
@@ -198,7 +248,7 @@ class VRProbe(TCPProbe):
                     if type(request.get("id")) is not int or request["id"] <= self.last_request:
                         raise ValueError("已丢弃旧双臂请求")
                     work_started = time.monotonic()
-                    targets = validate(self.hw, request, now)
+                    targets = validate(self.hw, request, now, getattr(self, 'tools', None))
                     now = time.monotonic()
                     validated = now
                     if self.path is None:
@@ -206,6 +256,16 @@ class VRProbe(TCPProbe):
                         self.moving_joints = list(range(1, 15))
                     current = self.hold_positions[:] if self.path is None else self.path[-1][1][:]
                     points = direct_positions(current, targets, self.hold_positions)
+                    for side, target in targets.items():
+                        offset = 0 if side == "left" else 7
+                        self.wrist.guard.arm_segment(
+                            current[offset:offset+7], target, self.hw["velocity"][offset:offset+7],
+                            label="左腕 J6/J7" if side == "left" else "右腕 J13/J14")
+                        # Actual feedback is checked separately from the previous
+                        # command. A stale reference cannot hide a wrist crossing.
+                        self.wrist.guard.arm_segment(
+                            self.hw["position"][offset:offset+7], target,
+                            self.hw["velocity"][offset:offset+7])
                     axis = lift_axis(request)
                     lift = getattr(self, 'lift', None)
                     if abs(axis) > DEADBAND and lift is None:
@@ -254,10 +314,12 @@ def main():
     parser.add_argument('--body-lift', action='store_true')
     parser.add_argument('--body-config-json')
     parser.add_argument('--lift-speed-mm-s', type=float, default=15.)
+    parser.add_argument('--tools-json')
     add_timing_arguments(parser)
     args = parser.parse_args()
     try:
         Timing.from_args(args)
+        args.tools = validate_runtime(json.loads(args.tools_json)) if args.tools_json else tool_config()
     except ValueError as exc:
         parser.error(str(exc))
     if args.link_check:

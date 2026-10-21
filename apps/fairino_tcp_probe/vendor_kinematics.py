@@ -3,7 +3,8 @@ import ctypes as C
 import math
 from pathlib import Path
 from tcp_core import (ALPHA,THETA,D_MM,BOUNDS_DEG,MODEL_ID,check_arm_limits,
-                      forward_matrix,pose_error,target_matrix,wrist_to_flange,flange_to_wrist)
+                      forward_matrix,pose_error,target_matrix,wrist_to_flange,flange_to_wrist,multiply)
+from tool_frames import tool_config, validate_runtime, for_arm, inverse_rigid
 
 LIBRARY = (Path(__file__).resolve().parents[2]/'vendor/fairino/libkine_FR_7Axis.so')
 D7 = C.c_double*7
@@ -19,7 +20,8 @@ class Limits(C.Structure):
 
 
 class VendorKinematics:
-    def __init__(self, path=LIBRARY):
+    def __init__(self, path=LIBRARY, tools=None):
+        self.tools = validate_runtime(tools if tools is not None else tool_config())
         self.lib = C.CDLL(str(path))
         self.lib.forwardKinematic.argtypes = [DH,DH,C.POINTER(C.c_double),C.c_int,
                                              C.POINTER(C.c_double*4),C.POINTER(C.c_double)]
@@ -66,22 +68,23 @@ class VendorKinematics:
         if error > .01:raise ValueError('当前姿态正逆解不连续，拒绝使能')
         return {'matrix':matrix,'arm_angle':arm_angle,'roundtrip_deg':error}
 
-    def forward_tcp(self,q):
+    def forward_tcp(self,q,arm=None):
         wrist,arm_angle = self.forward(q)
-        return wrist_to_flange(wrist),arm_angle
+        return multiply(wrist_to_flange(wrist), for_arm(self.tools, arm)),arm_angle
 
-    def inverse_tcp(self,flange,arm_angle,reference):
+    def inverse_tcp(self,tcp,arm_angle,reference,arm=None):
+        flange = multiply(tcp, inverse_rigid(for_arm(self.tools, arm)))
         q = self.inverse(flange_to_wrist(flange),arm_angle,reference)
-        mm,deg = pose_error(flange,self.forward_tcp(q)[0])
+        mm,deg = pose_error(tcp,self.forward_tcp(q,arm)[0])
         if mm > .02 or deg > .01:
-            raise ValueError('法兰中心逆解校验失败')
+            raise ValueError('所选 TCP 逆解校验失败')
         return q
 
-    def verify_tcp(self,q):
-        matrix,arm_angle = self.forward_tcp(q)
-        restored = self.inverse_tcp(matrix,arm_angle,q)
+    def verify_tcp(self,q,arm=None):
+        matrix,arm_angle = self.forward_tcp(q,arm)
+        restored = self.inverse_tcp(matrix,arm_angle,q,arm)
         error = max(abs(math.degrees(a-b)) for a,b in zip(q,restored))
-        if error > .01:raise ValueError('法兰中心正逆解不连续，拒绝使能')
+        if error > .01:raise ValueError('所选 TCP 正逆解不连续，拒绝使能')
         return {'matrix':matrix,'arm_angle':arm_angle,'roundtrip_deg':error}
 
     def step(self,q,axis,direction,amount):

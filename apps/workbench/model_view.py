@@ -9,8 +9,9 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gdk, Gtk
 import numpy as np
 
-from .mesh_geometry import load_visuals, look_at, perspective
+from .mesh_geometry import load_visuals, load_tool_visuals, tool_local, jaw_transform, look_at, perspective
 from .model import RobotModel
+from apps.fairino_tcp_probe.tool_frames import load_geometry, validate_geometry
 
 
 VERTEX = '''#version 330 core
@@ -59,8 +60,11 @@ class ModelView(Gtk.Box):
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.model = RobotModel()
-        self.visuals = load_visuals()
+        self.tool_geometry = load_geometry()
+        self.visuals = load_visuals()+load_tool_visuals(self.tool_geometry)
         self.positions = {}
+        self.gripper_positions = {'left': 1., 'right': 1.}
+        self.gripper_fresh = set()
         self.fresh = False
         self.program = None
         self.buffers = []
@@ -102,16 +106,55 @@ class ModelView(Gtk.Box):
         self.tint.connect('toggled', lambda *_: self.area.queue_render())
         bar.pack_start(self.tint, False, False, 0)
         self.pack_start(bar, False, False, 0)
+        tool_bar = Gtk.Box(spacing=6)
+        self.show_grippers = Gtk.CheckButton(label='显示夹爪 / 转接件')
+        self.show_grippers.set_active(True)
+        self.show_grippers.set_can_focus(False)
+        self.show_grippers.connect('toggled', lambda *_: self.area.queue_render())
+        tool_bar.pack_start(self.show_grippers, False, False, 0)
+        tool_bar.pack_start(Gtk.Label(label='绿点：夹爪参考 TCP'), False, False, 0)
+        self.pack_start(tool_bar, False, False, 0)
+        self.tool_note = Gtk.Label(xalign=0)
+        self.tool_note.set_line_wrap(True)
+        self.pack_start(self.tool_note, False, False, 0)
+        self.set_tool_geometry(self.tool_geometry)
         self.reset_camera()
+
+    def set_tool_geometry(self, data):
+        self.tool_geometry = validate_geometry(data)
+        for visual in self.visuals:
+            if visual.tool_part:
+                visual.local = tool_local(data, visual.side, visual.tool_part)
+        self.update_tool_note()
+        self.area.queue_render()
+
+    def update_tool_note(self):
+        values = []
+        for side, title in [('left', '左爪'), ('right', '右爪')]:
+            if self.tool_geometry['arms'][side]['installed']:
+                values.append(f'{title}实测 {self.gripper_positions[side]*100:.1f}%'
+                              if side in self.gripper_fresh else title+'开度未更新 · 灰色参考')
+        pending = any(s['installed'] and not s['confirmed'] for s in self.tool_geometry['arms'].values())
+        self.tool_note.set_text('；'.join(values)+'。\n开度来自夹爪反馈，指节几何为近似；绿色固定 TCP 不随开合移动。'
+                               + (' 工具 TCP 待核对。' if pending else ''))
+
+    def visual_local(self, visual):
+        return visual.local @ jaw_transform(visual, self.gripper_positions.get(visual.side, 1.))
+
+    def visible(self, visual):
+        return (not visual.tool_part or (self.show_grippers.get_active()
+                and self.tool_geometry['arms'][visual.side]['installed']))
 
     def reset_camera(self, *_):
         self.azimuth, self.elevation = -65., 12.
         transforms, _ = self.model.transforms(self.positions)
         corners = []
         for visual in self.visuals:
+            if not self.visible(visual):
+                continue
             low, high = visual.vertices[:, :3].min(axis=0), visual.vertices[:, :3].max(axis=0)
             local = np.array([[x,y,z,1.] for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])])
-            corners.extend((transforms[visual.link] @ visual.local @ local.T).T[:, :3])
+            corners.extend((transforms[visual.link] @ self.visual_local(visual) @ local.T).T[:, :3])
         points = np.asarray(corners)
         self.target = (points.min(axis=0)+points.max(axis=0))/2
         a, e = math.radians(self.azimuth), math.radians(self.elevation)
@@ -208,7 +251,7 @@ class ModelView(Gtk.Box):
                 self.upload(visual.vertices)
             transforms, _ = self.model.transforms({})
             floor = min((transforms[v.link] @ v.local @ np.c_[v.vertices[:, :3], np.ones(len(v.vertices))].T)[2].min()
-                        for v in self.visuals) - .003
+                        for v in self.visuals if not v.tool_part) - .003
             points = [(-8,-8), (8,-8), (8,8), (-8,-8), (8,8), (-8,8)]
             self.upload(np.array([[x,y,floor,0,0,1] for x,y in points], dtype=np.float32))
             GL.glBindVertexArray(0)
@@ -251,15 +294,19 @@ class ModelView(Gtk.Box):
             GL.glUniform3fv(self.uniforms['eye'], 1, eye.astype(np.float32))
             transforms, _ = self.model.transforms(self.positions)
             for visual, (vao, _, count) in zip(self.visuals, self.buffers):
-                self.matrix('model', transforms[visual.link] @ visual.local)
+                if not self.visible(visual):
+                    continue
+                self.matrix('model', transforms[visual.link] @ self.visual_local(visual))
                 color = np.array(visual.color[:3])
-                if self.tint.get_active() and self.fresh:
+                if self.tint.get_active() and self.fresh and not visual.tool_part:
                     if visual.link.startswith('left_'):
                         color = np.array([.16, .66, .76])
                     elif visual.link.startswith('right_'):
                         color = np.array([.96, .48, .19])
-                if not self.fresh:
+                if not self.fresh and not visual.tool_part:
                     color = np.array([.48, .54, .62])
+                if visual.tool_part and visual.tool_part != 'tcp' and visual.side not in self.gripper_fresh:
+                    color = np.array([.39, .42, .46])
                 GL.glUniform3fv(self.uniforms['color'], 1, color.astype(np.float32))
                 GL.glUniform1i(self.uniforms['floor_mode'], 0)
                 GL.glBindVertexArray(vao)
@@ -276,7 +323,10 @@ class ModelView(Gtk.Box):
             self.fail(exc)
         return True
 
-    def update(self, hardware, live_arms=True):
+    def update(self, hardware, live_arms=True, grippers=None):
+        self.gripper_fresh = set(grippers or {})
+        self.gripper_positions.update(grippers or {})
+        self.update_tool_note()
         self.fresh = hardware is not None and live_arms
         if self.fresh:
             self.positions = self.model.measured_positions(hardware)

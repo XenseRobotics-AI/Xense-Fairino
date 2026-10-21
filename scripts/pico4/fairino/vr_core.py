@@ -1,6 +1,7 @@
 """Robot-side, standard-library-only validation of bimanual IK requests."""
 import math
-from tcp_core import MODEL_ID, ARMS, check_arm_limits, finite_vector, tcp_forward_matrix, pose_error
+from tcp_core import MODEL_ID, ARMS, check_arm_limits, finite_vector, tcp_forward_matrix, pose_error, multiply
+from tool_frames import tool_config, validate_runtime, for_arm
 from tcp_jog import LEASE
 from vr_lift import lift_axis
 
@@ -33,9 +34,12 @@ def matrix(value):
     return t
 
 
-def validate(hw, request, now):
+def validate(hw, request, now, tools=None):
     if not isinstance(request, dict) or request.get("kind") != KIND or request.get("model") != MODEL_ID:
         raise ValueError("双臂协议或运动学模型不匹配")
+    tools = validate_runtime(tools if tools is not None else tool_config())
+    if request.get('tool_id', 'flange') != tools['id']:
+        raise ValueError('客户端与机器人端 TCP 工具配置不一致')
     if type(request.get("id")) is not int or request["id"] <= 0:
         raise ValueError("无效遥操请求序号")
     created = request.get("created")
@@ -52,9 +56,9 @@ def validate(hw, request, now):
         check_arm_limits(entry.get("reference"))
         target = check_arm_limits(entry.get("target"))
         tcp = matrix(entry.get("tcp"))
-        mm, deg = pose_error(tcp, tcp_forward_matrix(target))
+        mm, deg = pose_error(tcp, multiply(tcp_forward_matrix(target), for_arm(tools, side)))
         if mm > .02 or deg > .01:
-            raise ValueError("双臂目标未通过机器人端独立法兰正解校验")
+            raise ValueError("双臂目标未通过机器人端独立 TCP 正解校验")
         targets[side] = target
     return targets
 

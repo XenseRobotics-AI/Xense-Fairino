@@ -100,7 +100,7 @@ class CartesianInput:
             clutch.reset()
 
     def goals(self, frame, hw, kin, hands, sensitivity, freeze_buttons, now):
-        current = {s: kin.forward_tcp([hw["command_position"][j-1] for j in js])[0]
+        current = {s: kin.forward_tcp([hw["command_position"][j-1] for j in js], s)[0]
                    for s, js in ARMS.items()}
         for sample in frame.get("samples", [frame]):
             stamp = sample.get("received_monotonic", now)
@@ -121,7 +121,12 @@ class CartesianInput:
                         reset_rotation=not previous[0] or fr != previous[2])
         return self.buffer.sample(now)
 
-    def accepted_plan(self, packet):
+    def accepted_plan(self, packet, frame=None, hands=None):
         # Previous solution is the IK reference to favor the same branch. This
         # is a planned position, not a claim that the robot already reached it.
         self.references = {s: v["target"][:] for s, v in packet["arms"].items()}
+        if frame is not None and hands is not None:
+            for side, value in packet["arms"].items():
+                if value.get("wrist_scale", 1.) < 1.:
+                    self.clutches[side].rebase(frame[hands[side]], np.asarray(value["tcp"]).reshape(4, 4))
+                    self.buffer.clear(side)

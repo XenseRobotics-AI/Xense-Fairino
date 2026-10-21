@@ -313,6 +313,7 @@ class RobotLoopTests(PlanningTests):
             if ticks[0] > 90: raise EndSimulation()
             if ticks[0] < 22:
                 r = request(self.kin, p.hw, self.targets(p.hw), ticks[0], clock[0])
+                r["_wrist_guard"] = p.wrist.active
                 last_request[0] = r; p.packet["request"] = r
             elif mode == "release": p.packet["request"] = None
             elif mode == "stale": pass
@@ -320,6 +321,7 @@ class RobotLoopTests(PlanningTests):
             elif mode == "one_release":
                 if ticks[0] < 55:
                     p.packet["request"] = request(self.kin, p.hw, self.targets(p.hw, side_names=("right",)), ticks[0], clock[0])
+                    p.packet["request"]["_wrist_guard"] = p.wrist.active
                     if ticks[0] > 40:
                         self.assertLess(max(abs(x) for x in p.hw["velocity"][:7]), 1e-6)
                         self.assertGreater(max(abs(x) for x in p.hw["velocity"][7:14]), .0001)

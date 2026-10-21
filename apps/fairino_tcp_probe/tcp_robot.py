@@ -10,11 +10,15 @@ import robot_probe as rp
 from probe_core import StepCancelled,fresh_request
 from tcp_core import MODEL_ID,ARMS,finite_vector,validate_plan
 from tcp_jog import (PERIOD, LEASE, validate_velocity, sample, trajectory, braking)
+from wrist_guard import WristBlocked
 
 
 class TCPProbe(rp.Probe):
     moving_speed_limit = 8.0
     allow_unfocused = True  # Pause the stream on focus loss; keep position hold.
+
+    def kinematics_matches(self, proof):
+        return isinstance(proof, dict) and proof.get('model') == MODEL_ID
 
     def report(self, force=False, **extra):
         super().report(force, jogging=bool(getattr(self,'moving_joints',None)), **extra)
@@ -38,7 +42,7 @@ class TCPProbe(rp.Probe):
             self.pump()
             with self.input_lock:
                 proof = self.packet.get('kinematics')
-            if isinstance(proof,dict) and proof.get('model') == MODEL_ID:
+            if self.kinematics_matches(proof):
                 ref = finite_vector(proof.get('reference'),14,'运动学校验参考角度')
                 if max(abs(math.degrees(a-b)) for a,b in zip(ref,self.hw['position'][:14])) <= .05:
                     break
@@ -49,6 +53,7 @@ class TCPProbe(rp.Probe):
     def perform_tcp_step(self,request):
         self.stationary_enabled()
         plan = validate_plan(self.hw,self.hold_positions,request)
+        self.wrist.guard.segment(plan['start'], plan['target'])
         self.ready = False
         self.moving_joints = plan['joints']
         self.goal = self.pending_goal = None
@@ -77,6 +82,7 @@ class TCPProbe(rp.Probe):
         self.hold_positions=plan['target'][:]
 
     def publish_points(self, points, now):
+        self.wrist.guard.trajectory(points)
         msg=rp.JointTrajectory();msg.joint_names=rp.JOINTS
         # A robot-clock stamp aligns the explicit t=0 desired state with JTC.
         msg.header.stamp=self.node.get_clock().now().to_msg()
@@ -124,7 +130,7 @@ class TCPProbe(rp.Probe):
             self.pump(PERIOD)
             with self.input_lock:packet=self.packet.copy()
             # Even a queued nonzero request must not continue while unfocused.
-            request=packet.get('request') if packet.get('focused') else None
+            request=self.wrist_request(packet if packet.get('focused') else {**packet, 'request': None})
             now=time.monotonic()
             if request is None:
                 if self.path is not None:self.stop_stream('已松键' if packet.get('focused') else '窗口失焦，暂停运动')
@@ -149,7 +155,11 @@ class TCPProbe(rp.Probe):
                 if now-accepted['created'] > LEASE:raise ValueError('连续指令超过 0.25 秒未更新')
                 if self.path is None:q,v=self.hold_positions[:],[0.]*20
                 else:q,v=sample(self.path,now-self.path_time)
-                points=trajectory(q,v,desired,self.moving_joints,self.hold_positions)
+                points, scale = guarded_trajectory(self.wrist.guard, q, v, desired,
+                                                   self.moving_joints, self.hold_positions)
+                self.wrist.message = ('腕部接近边界：已减速 / 保持，可向内收腕'
+                                      if scale < 1 else ('腕部联合限位已启用'
+                                      if self.wrist.guard.enabled else '腕部联合限位已停用'))
                 if self.path is None:self.emit(jog_started={'arm':accepted['arm'],'axis':accepted['axis'],
                     'direction':accepted['direction'],'joint_speed':accepted['joint_speed'],
                     'model':MODEL_ID,'tcp_definition':'flange_face_center',
@@ -161,6 +171,26 @@ class TCPProbe(rp.Probe):
             except ValueError as exc:
                 self.emit(jog_rejected=str(exc))
                 self.stop_stream(str(exc));accepted=None;blocked=True
+
+
+def guarded_trajectory(guard, q, v, desired, joints, held):
+    """Retain the TCP IK velocity direction and reduce its speed as a whole."""
+    scale = 1.
+    for offset in (0, 7):
+        projected = [a+b*.28 for a, b in zip(q[offset:offset+7], desired[offset:offset+7])]
+        scale = min(scale, guard.approach_scale(q[offset:offset+7], projected))
+    for factor in (1., .5, .25, .125, .0625, 0.):
+        candidate = trajectory(q, v, [d*scale*factor for d in desired], joints, held)
+        try:
+            guard.trajectory(candidate)
+            return candidate, scale*factor
+        except WristBlocked:
+            continue
+    # The previously accepted curve included a complete braking tail. If a
+    # replacement cannot fit, use minimum-acceleration braking from its state.
+    stop = braking(q, v)
+    guard.trajectory(stop)
+    return stop, 0.
 
 
 def load_ros():

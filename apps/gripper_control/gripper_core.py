@@ -5,6 +5,8 @@ SIDES = ('left', 'right')
 LEASE = .25
 DEFAULT_TORQUE = 1.1  # Nm, bounded again against the connected motor's spec.
 DEFAULT_SPEED = .25  # shaft rad/s
+TELEOP_SPEED = .75  # shaft rad/s; PICO default, independent of slow manual debugging.
+TARGET_PERIOD = .01  # 100 Hz latest-target transport; the SDK motor stream is 100 Hz.
 
 
 def diagnostic_snapshot(fault, audit, firmware='未知'):
@@ -132,7 +134,11 @@ def healthy_sample(position, velocity, torque, temperature, status):
 
 class TriggerMapping:
     """An explicit press starts tracking; neutral input on startup never opens a jaw."""
-    def __init__(self):
+    def __init__(self, max_openings=None):
+        values = max_openings if max_openings is not None else dict.fromkeys(SIDES, 1.)
+        if not isinstance(values, dict) or set(values) != set(SIDES):
+            raise ValueError('最大开度必须包含左右夹爪')
+        self.max_openings = {side: opening(values[side]) for side in SIDES}
         self.reset()
 
     def reset(self):
@@ -153,5 +159,5 @@ class TriggerMapping:
             if trigger > .02:
                 self.engaged.add(side)
             if side in self.engaged:
-                result[side] = 1.-trigger
+                result[side] = self.max_openings[side]*(1.-trigger)
         return result

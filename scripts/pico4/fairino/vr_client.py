@@ -18,31 +18,38 @@ import zlib
 from pathlib import Path
 
 from paths import ROOT, TCP, SHARED
+sys.path.insert(0, str(ROOT))
+from apps.gripper_control.gripper_core import TELEOP_SPEED, number
+from apps.fairino_keyboard.control_core import (DEFAULT_LINEAR, DEFAULT_ANGULAR,
+                                                MIN_SPEED, MAX_LINEAR, MAX_ANGULAR, check_speeds)
 from upper_keyboard import Connection
 from tcp_keyboard import verify_both
 from tcp_core import ARMS, MODEL_ID
 from vendor_kinematics import VendorKinematics
+from tool_frames import DEFAULT_CONFIG, load_geometry, tool_config, packet_tool_id
 from vr_core import validate, KIND
 from vr_lift import LiftInput
 from vr_input import Clutch, Stream, MAPPING_ID, POSE_FRAMES, controller_sides, rotation_mapping
 from vr_controls import JoystickControls, sensitivity_step
-from vr_home import DEFAULT_HOME, load_home, HomeMotion
+from vr_home import DEFAULT_HOME, load_home, HomeMotion, HOME_PRESETS, resolve_home
 from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
 from mounts import tcp_in_chest
 from vr_plan import request
 from vr_cartesian import CartesianInput
+from vr_exit import ExitLog, connection_state, exit_notice
 
 HERE = Path(__file__).resolve().parent
 
 
 def remote_command(args):
-    bundle = {name: (SHARED/(name+".py")).read_text() for name in ("probe_core", "robot_probe")}
-    bundle.update({name: (TCP/(name+".py")).read_text() for name in ("tcp_core", "tcp_frames", "tcp_jog", "tcp_robot")})
+    bundle = {name: (SHARED/(name+".py")).read_text() for name in ("wrist_guard", "probe_core", "robot_probe")}
+    bundle.update({name: (TCP/(name+".py")).read_text() for name in ("tcp_core", "tool_frames", "tcp_frames", "tcp_jog", "tcp_robot")})
     bundle.update({name: (HERE/(name+".py")).read_text() for name in ("vr_timing", "vr_core", "vr_link_check", "vr_robot")})
     bundle['body_core'] = (SHARED/'body_control/body_core.py').read_text()
     bundle['vr_lift'] = (HERE/'vr_lift.py').read_text()
     encoded = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
     argv = ["vr_robot.py", *Timing.from_args(args).argv()]
+    argv.extend(['--tools-json', json.dumps(getattr(args, 'tools', tool_config()), allow_nan=False)])
     if getattr(args, "link_check", False):
         argv.extend(["--link-check", "--duration", str(args.duration)])
         if getattr(args, "observe_ros", False):
@@ -55,7 +62,7 @@ def remote_command(args):
                      '--lift-speed-mm-s', str(getattr(args, 'lift_speed_mm_s', 15.))])
     loader = ("import base64,zlib,json,sys,types;"
         f"bundle=json.loads(zlib.decompress(base64.b64decode({encoded!r})));\n"
-        "for name in ('probe_core','robot_probe','tcp_core','tcp_frames','tcp_jog','tcp_robot','body_core','vr_lift','vr_timing','vr_core','vr_link_check'):\n"
+        "for name in ('wrist_guard','probe_core','robot_probe','tcp_core','tool_frames','tcp_frames','tcp_jog','tcp_robot','body_core','vr_lift','vr_timing','vr_core','vr_link_check'):\n"
         " m=types.ModuleType(name);sys.modules[name]=m;exec(compile(bundle[name],name+'.py','exec'),m.__dict__)\n"
         f"sys.argv={argv!r}\n"
         "exec(compile(bundle['vr_robot'],'vr_robot.py','exec'),{'__name__':'__main__'})")
@@ -86,7 +93,8 @@ def key():
     return ""
 
 
-def wait_for_input(stream, duration=30., require_triggers=False, require_lift=False):
+def wait_for_input(stream, duration=30., require_triggers=False, require_lift=False,
+                   require_chassis=False):
     deadline = time.monotonic()+duration
     previous = None
     while time.monotonic() < deadline:
@@ -96,11 +104,17 @@ def wait_for_input(stream, duration=30., require_triggers=False, require_lift=Fa
                                                        and frame[s]['trigger'] <= .02 for s in ARMS)
             lift_ready = not require_lift or (frame['right'].get('joystick_available')
                          and abs(frame['right']['axis_y']) <= .2 and not frame['right']['axis_click'])
-            if all(frame[s]["grip"] <= .3 for s in ARMS) and triggers_ready and lift_ready:
+            chassis_ready = not require_chassis or (
+                all(frame[s].get('joystick_available') and not frame[s]['axis_click'] for s in ARMS)
+                and math.hypot(frame['left']['axis_x'], frame['left']['axis_y']) <= .2
+                and abs(frame['right']['axis_x']) <= .2)
+            if all(frame[s]["grip"] <= .3 for s in ARMS) and triggers_ready and lift_ready and chassis_ready:
                 return frame
             message = "启动前请松开左右 Grip" + (' 和 Trigger，确认扳机数据可用。' if require_triggers else '。')
             if require_lift:
                 message += '右摇杆需回中并松开按压。'
+            if require_chassis:
+                message += '左摇杆及右摇杆横轴需回中，两侧摇杆松开按压。'
         except ValueError as exc:
             message = str(exc)
         if message != previous:
@@ -121,10 +135,11 @@ def operate(args, kin, stream, connection):
     clutches = {side: Clutch(side, mode=control_mode, rotation_mode=rotation_mode) for side in ARMS}
     cartesian = CartesianInput(clutches, timing.interpolation_delay_ms)
     joysticks = JoystickControls()
-    home = load_home(getattr(args, "home_file", DEFAULT_HOME)) if args.execute else None
+    home = load_home(resolve_home(getattr(args, 'home_preset', 'default'),
+                                 getattr(args, 'home_file', None))) if args.execute else None
     if home:
-        for q in home["target"].values():
-            kin.verify_tcp(q)
+        for side, q in home["target"].items():
+            kin.verify_tcp(q, side)
     home_pending = args.execute and not getattr(args, "no_auto_home", False)
     home_motion = None
     sensitivity = args.sensitivity
@@ -133,33 +148,43 @@ def operate(args, kin, stream, connection):
     sequence = 0
     outgoing = None
     last_sides = ()
-    last_x = False
     last_message = None
     last_display = 0.
+    last_gripper_display = 0.
     last_input_stop = None
     stream_bad_since = None
     checked = False
     startup = time.monotonic()
     grippers = getattr(args, 'gripper_control', None)
+    chassis = getattr(args, 'chassis_control', None)
     lift_input = LiftInput() if getattr(args, 'body_lift', False) else None
     lift_value = 0.
     last_lift_value, last_lift_log = 0., 0.
     action_path = connection.log_path.with_suffix(".actions.jsonl")
     print("日志：", connection.log_path, flush=True)
+    tools = getattr(kin, 'tools', tool_config())
+    print('TCP：'+('法兰中心' if tools['mode'] == 'flange' else '夹爪固定指尖中心')+
+          ' · '+tools['id'], flush=True)
     if args.execute:
+        print('所选起始位姿：'+home.get('description', home['name']), flush=True)
         print("即将使能 J1–J20；" + ("先自动回双臂 Home，完成后握 Grip 遥操。" if home_pending else "保持当前姿态，握 Grip 遥操。"), flush=True)
-        print("左摇杆上/下：灵敏度增/减一档；右摇杆按压：回 Home（再按中止）；左摇杆按压：暂停。", flush=True)
+        print("左手 X 双击降低灵敏度、Y 双击提高；右摇杆按压：回 Home（再按中止）；左摇杆按压：暂停。", flush=True)
+        if chassis:
+            print(f'底盘将回正并使能：左摇杆全向平移（机器人自身方向），右摇杆左右旋转；'
+                  f'最高 {args.chassis_linear:g} m/s、{args.chassis_angular:g} rad/s。回中停止，暂停后先回中。', flush=True)
         if lift_input:
             print(f'右摇杆上/下：身体竖直升降，回中保持；最高 {args.lift_speed_mm_s:g} mm/s，沿用身体高低标定。', flush=True)
         if grippers:
             print('夹爪遥操已显式启用：控制某臂的 Trigger 连续控制同侧夹爪；Grip 仍控制手臂跟随。', flush=True)
+            print(f'夹爪速度 {grippers.speed:g} rad/s（电机轴），目标传输最多 100 Hz；力矩 1.1 Nm。', flush=True)
         print("Home 仅移动双臂；请松开两侧 Grip，途中握任一 Grip 或按空格可中止。", flush=True)
         if freeze_buttons:
             print("按住 A/X 冻结旋转（只平移）；按住 B/Y 冻结位移（只旋转）；同时按住冻结两者。", flush=True)
             print("按键仅影响该手柄控制的手臂；松开不补走；仍须握 Grip。+/- 调灵敏度，空格暂停。", flush=True)
         else:
-            print("X 切换灵敏度 0.25/0.5/1；B/Y 或空格暂停。", flush=True)
+            print("双击 X/Y 或 +/- 调灵敏度 0.25/0.5/1；左摇杆按压或空格暂停。", flush=True)
         print("Esc/Ctrl+C 退出并全部下使能。", flush=True)
+        print("腕部联合限位默认开启；g 启用 / G 停用，切换暂停并保持使能，松开 Grip 后重握。", flush=True)
         labels = {"left": "左", "right": "右"}
         print(f"位移 {control_mode} / 旋转 {rotation_mode}；" + "，".join(
             f"{labels[hand]}手柄 → 机器人{labels[arm]}臂" for arm, hand in hands.items()), flush=True)
@@ -170,6 +195,7 @@ def operate(args, kin, stream, connection):
         print("保留模型关节限位、厂家逆解检查、急停和断流停止。", flush=True)
     with action_path.open("a", buffering=1) as log, keyboard():
         log.write(json.dumps({"local_time": time.time(), "event": "timing_config", **timing.payload()})+"\n")
+        log.write(json.dumps({"local_time": time.time(), "event": "tcp_tool_config", **tools})+"\n")
         while True:
             now = time.monotonic()
             stop_reason = None
@@ -214,7 +240,13 @@ def operate(args, kin, stream, connection):
                 raise RuntimeError("机器人状态反馈超过 0.25 秒未更新")
             character = args.gui_input.key() if getattr(args, "gui_input", None) else key()
             if character in ("\x1b", "q", "Q"):
+                args.exit_reason = 'keyboard_stop'
                 return 0
+            if character in ("g", "G"):
+                connection.wrist.switch(character == "g")
+                stop_reason = "切换腕部模块：暂停并等待静止；确认后松开 Grip 再重握"
+            wrist_state = status.get("wrist_guard", {})
+            wrist_ready = connection.wrist.ready(wrist_state) and connection.wrist.released
             frame = None
             try:
                 frame = stream.read()
@@ -227,20 +259,14 @@ def operate(args, kin, stream, connection):
                 elif now-stream_bad_since > 3.:
                     raise RuntimeError("PICO 数据中断超过 3 秒，结束本次控制")
             if frame:
-                controls = joysticks.update(frame)
-                x = frame["left"]["primary"]
+                controls = joysticks.update(frame, now)
                 if controls["sensitivity"]:
                     sensitivity = sensitivity_step(sensitivity, controls["sensitivity"])
                     stop_reason = f"灵敏度已改为 {sensitivity:g}，请松开两侧 Grip"
-                elif (not freeze_buttons and x and not last_x) or character in ("+", "=", "-"):
-                    levels = (.25, .5, 1.)
-                    if character == "-":
-                        sensitivity = next((v for v in reversed(levels) if v < sensitivity-1e-6), levels[-1])
-                    else:
-                        sensitivity = next((v for v in levels if v > sensitivity+1e-6), levels[0])
+                elif character in ("+", "=", "-"):
+                    sensitivity = sensitivity_step(sensitivity, -1 if character == "-" else 1)
                     stop_reason = f"灵敏度已改为 {sensitivity:g}，请松开两侧 Grip"
-                last_x = x
-                if (not freeze_buttons and any(frame[s]["secondary"] for s in ARMS)) or character == " " or controls["pause"]:
+                if character == " " or controls["pause"]:
                     stop_reason = "用户暂停，请松开两侧 Grip 后重握"
                 if (controls["home"] or character == "h") and not stop_reason:
                     if home_motion is not None or home_pending:
@@ -261,18 +287,19 @@ def operate(args, kin, stream, connection):
                 outgoing = None
                 last_sides = ()
                 cartesian.reset()
+                joysticks.reset()
                 if stop_reason != last_message:
                     print(stop_reason, flush=True)
                     log.write(json.dumps({"local_time": time.time(), "event": "input_paused", "reason": stop_reason,
                         "input": {s: {k: v for k, v in frame[s].items() if k != "pose"} for s in ARMS} if frame else None}, ensure_ascii=False)+"\n")
                     last_message = stop_reason
-            elif frame and status.get("ready") and (home_pending or home_motion is not None):
+            elif frame and status.get("ready") and wrist_ready and (home_pending or home_motion is not None):
                 try:
                     if home_pending:
                         outgoing, last_sides = None, ()
                         if (all(frame[s]["grip"] <= .3 for s in ARMS)
                                 and max(abs(v) for v in hw["velocity"]) < .005):
-                            home_motion = HomeMotion(home, hw, now)
+                            home_motion = HomeMotion(home, hw, now, connection.wrist.guard())
                             home_pending = False
                             print(f"双臂回 Home，预计 {home_motion.duration:.1f} 秒；头腰保持。", flush=True)
                             log.write(json.dumps({"local_time": time.time(), "event": "home_started",
@@ -294,7 +321,7 @@ def operate(args, kin, stream, connection):
                     paused, outgoing, last_sides = True, None, ()
                     print(f"Home 已中止：{exc}", flush=True)
                     log.write(json.dumps({"local_time": time.time(), "event": "home_aborted", "reason": str(exc)}, ensure_ascii=False)+"\n")
-            elif frame and status.get("ready"):
+            elif frame and status.get("ready") and wrist_ready:
                 if paused:
                     if (all(frame[s]["grip"] <= .3 for s in ARMS)
                             and max(abs(x) for x in hw["velocity"][:14]) < .005):
@@ -317,10 +344,11 @@ def operate(args, kin, stream, connection):
                             last_input_stop = None
                             sequence += 1
                             ik_started = time.monotonic()
-                            outgoing = request(kin, hw, goals, sequence, status["stamp"], cartesian.references)
+                            outgoing = request(kin, hw, goals, sequence, status["stamp"],
+                                               cartesian.references, connection.wrist.guard())
                             ik_ms = 1000*(time.monotonic()-ik_started)
-                            validate(hw, outgoing, status["stamp"])
-                            cartesian.accepted_plan(outgoing)
+                            validate(hw, outgoing, status["stamp"], tools)
+                            cartesian.accepted_plan(outgoing, frame, hands)
                             targets_rate.mark(now)
                             log.write(json.dumps({"local_time": time.time(), "plan_monotonic": now, "vr_stamp": frame["stamp"],
                                 "sensitivity": sensitivity, "mapping": MAPPING_ID,
@@ -341,19 +369,23 @@ def operate(args, kin, stream, connection):
                         outgoing = None
                         last_sides = ()
                         cartesian.reset()
+                        joysticks.reset()
                         print(f"已停止：{exc}；请松开两侧 Grip 后重试", flush=True)
             else:
                 paused = True
                 outgoing = None
                 cartesian.reset()
-            auxiliary_active = bool(frame and status.get('ready') and not paused
+            auxiliary_active = bool(frame and status.get('ready') and wrist_ready and not paused
                                     and not home_pending and home_motion is None and not stop_reason)
+            if chassis is not None:
+                chassis.update(frame, auxiliary_active)
             if lift_input is not None:
                 lift_value = lift_input.value(frame, auxiliary_active)
                 if lift_value:
                     if outgoing is None:
                         sequence += 1
-                        outgoing = dict(kind=KIND, model=MODEL_ID, id=sequence, created=status['stamp'], arms={})
+                        outgoing = dict(kind=KIND, model=MODEL_ID, id=sequence, created=status['stamp'],
+                                        arms={}, tool_id=packet_tool_id(kin))
                         targets_rate.mark(now)
                     outgoing = {**outgoing, 'lift': lift_value}
                 if ((lift_value and now-last_lift_log >= .1)
@@ -366,6 +398,10 @@ def operate(args, kin, stream, connection):
             if grippers is not None:
                 grippers.update(frame, hands, auxiliary_active)
             connection.send(request=outgoing, kinematics=proof if frame else None)
+            if grippers is not None and getattr(args, 'gui_input', None) and now-last_gripper_display >= .1:
+                from vr_gui_ipc import gripper_status
+                gripper_status(grippers.snapshot())
+                last_gripper_display = now
             if now-last_display > 1.:
                 sides = "/".join(last_sides) if outgoing else "保持"
                 frozen = "; ".join(f"{s}:" + "/".join(name for name, active in
@@ -388,12 +424,25 @@ def operate(args, kin, stream, connection):
                     gs = grippers.snapshot()
                     units = ' / '.join(f'{s}: {u["position"]*100:.1f}%' for s,u in gs['devices'].items())
                     print(f'夹爪：{gs["message"]}'+(' · '+units if units else ''), flush=True)
+                chassis_state = chassis.snapshot() if chassis is not None else None
+                if chassis_state:
+                    log.write(json.dumps({'local_time': time.time(), 'event': 'chassis_state',
+                                          **chassis_state}, allow_nan=False)+'\n')
+                    vx, vy, wz = chassis_state['command']
+                    print(f'底盘：{chassis_state["message"]} · 使能 {chassis_state["enabled"]}/8 · '
+                          f'vx {vx:+.3f} / vy {vy:+.3f} m/s / wz {wz:+.3f} rad/s', flush=True)
                 if getattr(args, "gui_input", None):
                     from vr_gui_ipc import status as gui_status
                     gui_status(phase=phase, sensitivity=sensitivity, sides=sides,
+                        wrist_guard=wrist_state, wrist_pending=not wrist_ready,
+                        wrist_limited=any(a.get('wrist_scale', 1.) < 1.
+                                          for a in (outgoing or {}).get('arms', {}).values()),
+                        tcp_tool=tools['mode'], tool_id=tools['id'],
+                        home_name=home['name'] if home else '',
                         grips={s: frame[s]["grip"] for s in ARMS} if frame else {},
                         triggers={s: frame[s].get('trigger') for s in ARMS} if frame else {},
                         grippers=grippers.snapshot() if grippers is not None else None,
+                        chassis=chassis_state,
                         body=status.get('body'), lift_axis=lift_value,
                         body_lift_enabled=bool(lift_input),
                         enabled=sum(hw.get("enabled", [])), **rate_data)
@@ -422,6 +471,8 @@ def main(argv=None):
     add_timing_arguments(parser)
     parser.add_argument("--host", default="192.168.58.1")
     parser.add_argument("--user", default="fairino")
+    parser.add_argument("--no-wrist-guard", action="store_true",
+                        help="显式停用腕部联合限位模块；运行中 g 启用、G 停用")
     parser.add_argument("--sensitivity", type=positive, default=.25, help="位移和旋转灵敏度")
     parser.add_argument("--mode", choices=tuple(POSE_FRAMES), default="first_person",
                         help="first_person 同向；mirror 面对面镜像；mirror_same_direction 面对面且保持房间方向")
@@ -430,77 +481,182 @@ def main(argv=None):
     parser.add_argument("--hand-mapping", choices=("auto", "same", "crossed"), default="auto",
                         help="手柄到手臂：auto 在面对面模式交换左右；same 同侧；crossed 交叉")
     parser.add_argument("--freeze-buttons", action="store_true",
-                        help="A/X 按住冻结旋转，B/Y 按住冻结位移；灵敏度用左摇杆或 +/-，暂停用左摇杆按压或空格")
-    parser.add_argument("--home-file", type=Path, default=DEFAULT_HOME, help="双臂 Home 七轴配置文件")
+                        help="A/X 按住冻结旋转，B/Y 按住冻结位移；双击 X 降/Y 升灵敏度，暂停用左摇杆按压或空格")
+    parser.add_argument('--home-preset', choices=tuple(HOME_PRESETS), default='default',
+                        help='可选起始位姿；right_mirrored 为 10-20 右臂实测及左臂镜像')
+    parser.add_argument("--home-file", type=Path, help="自定义双臂 Home 七轴配置文件，覆盖 --home-preset")
     parser.add_argument("--no-auto-home", action="store_true", help="本次启动保持姿态，不自动回 Home；右摇杆回 Home 仍可用")
     parser.add_argument('--grippers', action=argparse.BooleanOptionalAction, default=False,
                         help='显式使能 TacCap 夹爪遥操；控制某臂的 Trigger 连续控制对应夹爪，Grip 仍控制双臂跟随')
     parser.add_argument('--left-gripper-sn', default='', help='可选：机器人左爪固件 SN；留空按 SDK Left')
     parser.add_argument('--right-gripper-sn', default='', help='可选：机器人右爪固件 SN；留空按 SDK Right')
+    parser.add_argument('--gripper-speed-rad-s', type=float, default=TELEOP_SPEED,
+                        help='夹爪电机轴开合速度 0.01–1.0 rad/s，默认 0.75；仅 --grippers 时使用')
+    for side in ('left', 'right'):
+        parser.add_argument(f'--{side}-gripper-max-open-percent', type=float, default=100.,
+                            help=f'{side} 夹爪最大开度 0–100%%；Trigger 从该上限线性映射至闭合')
+    parser.add_argument('--tcp-tool', choices=('flange', 'taccap'), default='flange',
+                        help='TCP：法兰中心或夹爪固定指尖中心；夹爪开合控制另用 --grippers')
+    parser.add_argument('--tool-config', type=Path, default=DEFAULT_CONFIG,
+                        help='左右夹爪安装角度和固定指尖中心配置')
     parser.add_argument('--body-lift', action=argparse.BooleanOptionalAction, default=False,
                         help='显式启用右摇杆上下控制身体竖直升降，回中保持')
     parser.add_argument('--lift-speed-mm-s', type=positive, default=15., help='身体竖直速度；关节速度沿用身体配置的默认值')
+    parser.add_argument('--chassis', action=argparse.BooleanOptionalAction, default=False,
+                        help='同时回正并使能底盘：左摇杆全向平移，右摇杆左右旋转；回中停止')
+    parser.add_argument('--chassis-host', default='192.168.58.3', help='底盘 SSH 主机，与上半身共用用户和密码')
+    parser.add_argument('--chassis-linear', type=positive, default=DEFAULT_LINEAR,
+                        help=f'底盘最大平移速度 m/s，范围 {MIN_SPEED:g}–{MAX_LINEAR:g}')
+    parser.add_argument('--chassis-angular', type=positive, default=DEFAULT_ANGULAR,
+                        help=f'底盘最大旋转速度 rad/s，范围 {MIN_SPEED:g}–{MAX_ANGULAR:g}')
+    parser.add_argument('--chassis-rotation-priority', action='store_true',
+                        help='右摇杆左右偏转时只旋转、停止平移；默认允许同时平移旋转')
     parser.add_argument("--gui-stdio", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.observe_ros and not args.link_check:
         parser.error("--observe-ros 只能与 --link-check 一起使用")
     try:
         Timing.from_args(args)
-    except ValueError as exc:
+        try:
+            check_speeds(args.chassis_linear, args.chassis_angular)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        number(args.gripper_speed_rad_s, .01, 1., '夹爪速度 rad/s')
+        for side in ('left', 'right'):
+            number(getattr(args, side+'_gripper_max_open_percent'), 0., 100., side+' 夹爪最大开度 %')
+        args.home_file = resolve_home(args.home_preset, args.home_file)
+        if args.execute:
+            load_home(args.home_file)
+        args.tools = tool_config(args.tcp_tool,
+            load_geometry(args.tool_config) if args.tcp_tool == 'taccap' else None,
+            require_confirmed=args.execute)
+    except (ValueError, OSError) as exc:
         parser.error(str(exc))
-    stream = connection = grippers = None
+    stream = connection = grippers = chassis = None
     code = 0
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    logs = ROOT/".local/pico4/fairino-logs"
+    exit_log = ExitLog(logs)
+    exit_log.write('started', execute=args.execute, link_check=args.link_check,
+                   grippers_requested=args.grippers, body_lift_requested=args.body_lift,
+                   chassis_requested=args.chassis)
+    termination = dict(reason='completed')
+    signal_reason = {}
+    def interrupted(signum, _frame):
+        signal_reason['signal'] = signal.Signals(signum).name
+        raise KeyboardInterrupt()
+    previous_sigterm = signal.signal(signal.SIGTERM, interrupted)
     try:
         password = None
         if args.gui_stdio:
             from vr_gui_ipc import GuiInput
             args.gui_input = GuiInput()
             password = args.gui_input.authenticate()
-        kin = VendorKinematics()
+        kin = VendorKinematics(tools=args.tools)
         if args.execute:
             stream = Stream()
             stream.open()
-            wait_for_input(stream, require_triggers=args.grippers, require_lift=args.body_lift)
-        if args.grippers and args.execute and password is None:
+            wait_for_input(stream, require_triggers=args.grippers, require_lift=args.body_lift,
+                           require_chassis=args.chassis)
+        if (args.grippers or args.chassis) and args.execute and password is None:
             password = getpass.getpass(f'SSH 密码（{args.user}@{args.host}）：')
-        logs = ROOT/".local/pico4/fairino-logs"
-        logs.mkdir(parents=True, exist_ok=True)
         connection = Connection(args, worker_command=remote_command(args), log_directory=logs, password=password)
+        exit_log.write('connected', connection=connection_state(connection))
         if args.execute and args.grippers:
             from vr_grippers import GripperTeleop
-            grippers = GripperTeleop(args, password).start()
+            grippers = GripperTeleop(args, password)
+            grippers.start()
             args.gripper_control = grippers
+        if args.execute and args.chassis:
+            from vr_chassis import ChassisTeleop
+            chassis = ChassisTeleop(args, password)
+            chassis.start()
+            args.chassis_control = chassis
         password = None
         if args.link_check:
             from vr_link_check import run_client
             code = run_client(args, kin, connection)
         else:
             code = operate(args, kin, stream, connection)
+        termination['reason'] = getattr(args, 'exit_reason', 'completed')
     except KeyboardInterrupt:
-        print("正在结束通信压测。" if args.link_check else "正在退出并等待机器人确认下使能。", flush=True)
+        gui = getattr(args, 'gui_input', None)
+        termination = dict(reason=getattr(gui, 'exit_reason', None) or
+                           ('signal' if signal_reason else 'keyboard_interrupt'),
+                           **signal_reason)
+        if gui is not None:
+            termination['gui_exit_monotonic'] = getattr(gui, 'exit_monotonic', None)
+        exit_notice("正在结束通信压测。" if args.link_check else "正在退出并等待机器人确认下使能。")
     except Exception as exc:
-        print("停止："+str(exc), file=sys.stderr, flush=True)
+        termination = dict(reason='exception', error_type=type(exc).__name__, error=str(exc))
+        exit_notice("停止："+str(exc), error=True)
         code = 1
     finally:
+        # Record the first cause before any blocking or failing cleanup calls.
+        exit_log.write('stopping', **termination, return_code=code,
+                       connection=connection_state(connection))
+        cleanup_errors = {}
+        def cleanup(name, action):
+            try:
+                return action()
+            except (Exception, KeyboardInterrupt) as exc:
+                cleanup_errors[name] = dict(error_type=type(exc).__name__, error=str(exc))
+                exit_notice(f'{name} 清理异常：{exc}', error=True)
+                return None
+        if chassis is not None:
+            cleanup('chassis_stop', chassis.close)
         if grippers is not None:
-            grippers.close()
+            cleanup('grippers_stop', grippers.close)
+        upper_confirmed = None
         if connection is not None:
-            connection.finish()
+            cleanup('upper_connection', connection.finish)
             if args.execute:
-                if connection.latest.get("disabled_confirmed"):
-                    print("已确认上半身全部下使能。", flush=True)
+                upper_confirmed = bool(connection.latest.get("disabled_confirmed"))
+                if upper_confirmed:
+                    exit_notice("已确认上半身全部下使能。")
                 else:
-                    print("未收到全部下使能确认，请现场检查。", file=sys.stderr, flush=True)
+                    exit_notice("未收到全部下使能确认，请现场检查。", error=True)
                     code = 1
+        grippers_confirmed = None
         if grippers is not None:
-            if not grippers.finish():
-                print('夹爪退出或下使能未确认，请查看夹爪状态与 logs/gripper。', file=sys.stderr, flush=True)
+            grippers_confirmed = bool(cleanup('grippers_finish', grippers.finish))
+            if not grippers_confirmed:
+                exit_notice('夹爪退出或下使能未确认，请查看夹爪状态与 logs/gripper。', error=True)
                 code = 1
             else:
-                print('已确认本会话夹爪下使能。', flush=True)
+                exit_notice('已确认本会话夹爪下使能。')
+        chassis_confirmed = None
+        chassis_disabled = None
+        chassis_final = None
+        if chassis is not None:
+            chassis_confirmed = bool(cleanup('chassis_finish', chassis.finish))
+            state = cleanup('chassis_final_state', chassis.snapshot)
+            chassis_final = state if isinstance(state, dict) else None
+            chassis_disabled = (bool(chassis_final.get('disabled_confirmed'))
+                                if chassis_final is not None else chassis_confirmed)
+            if chassis_final and chassis_final.get('error'):
+                exit_notice('底盘退出记录：'+str(chassis_final['error']), error=True)
+                code = 1
+            if chassis_disabled and not chassis_confirmed:
+                exit_notice('底盘已确认下使能，但控制器或里程计清理未确认，请查看底盘日志。', error=True)
+                code = 1
+            elif not chassis_confirmed:
+                exit_notice('底盘退出或下使能未确认，请查看底盘状态与 apps/fairino_keyboard/logs。', error=True)
+                code = 1
+            else:
+                exit_notice('已确认本会话底盘下使能。')
         if stream is not None:
-            stream.close()
+            cleanup('pico_stream', stream.close)
+        if cleanup_errors:
+            code = 1
+        exit_log.write('cleanup_finished', first_reason=termination['reason'], return_code=code,
+                       upper_disabled_confirmed=upper_confirmed,
+                       grippers_disabled_confirmed=grippers_confirmed,
+                       chassis_disabled_confirmed=chassis_disabled,
+                       chassis_cleanup_confirmed=chassis_confirmed, chassis=chassis_final,
+                       cleanup_errors=cleanup_errors,
+                       connection=connection_state(connection))
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        exit_notice('退出日志：'+str(exit_log.path))
     return code
 
 

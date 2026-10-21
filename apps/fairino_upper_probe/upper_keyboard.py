@@ -13,6 +13,7 @@ import threading
 import time
 import zlib
 from pathlib import Path
+from wrist_guard import GuardClient
 from probe_core import (JOINT_GROUPS, SPEED_DEG_S, MIN_SPEED_DEG_S, MAX_SPEED_DEG_S,
                         TARGET_SPEED_DEG_S, MAX_TARGET_SPEED_DEG_S, step_duration, target_duration)
 
@@ -23,7 +24,7 @@ GROUP_LABELS = {"left": "左臂 · J1–J7", "right": "右臂 · J8–J14",
 
 
 def remote_command(args):
-    bundle = {n: (HERE/n).read_text() for n in ("probe_core.py", "robot_probe.py")}
+    bundle = {n: (HERE/n).read_text() for n in ("wrist_guard.py", "probe_core.py", "robot_probe.py")}
     encoded = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
     argv = ["robot_probe.py"]
     if args.check:
@@ -32,6 +33,8 @@ def remote_command(args):
         argv.append("--prepare-check")
     loader = ("import base64,zlib,json,sys,types;"
               f"bundle=json.loads(zlib.decompress(base64.b64decode({encoded!r})));"
+              "w=types.ModuleType('wrist_guard');sys.modules['wrist_guard']=w;"
+              "exec(compile(bundle['wrist_guard.py'],'wrist_guard.py','exec'),w.__dict__);"
               "m=types.ModuleType('probe_core');sys.modules['probe_core']=m;"
               "exec(compile(bundle['probe_core.py'],'probe_core.py','exec'),m.__dict__);"
               f"sys.argv={argv!r};"
@@ -46,13 +49,23 @@ def remote_command(args):
 
 
 class Connection:
-    def __init__(self, args, worker_command=None, log_directory=None, password=None, feedback_timeout=.5):
+    def __init__(self, args, worker_command=None, log_directory=None, password=None, feedback_timeout=.5,
+                 *, request_protocol="upper"):
+        if request_protocol not in ("upper", "gripper"):
+            raise ValueError("未知控制协议："+str(request_protocol))
+        if request_protocol == "gripper" and worker_command is None:
+            raise ValueError("夹爪协议必须使用独立的夹爪 worker")
         import pexpect
         self.pexpect = pexpect
         self.events = queue.Queue()
         self.latest = {}
         self.last_status = 0.0
         self.feedback_timeout = feedback_timeout
+        # Joint/TCP/PICO-arm peers must acknowledge the wrist policy, even when
+        # protection is toggled off. The separate SDK gripper peer has no wrists.
+        self.wrist = (GuardClient(not getattr(args, "no_wrist_guard", False))
+                      if request_protocol == "upper" else None)
+        self.link_check = bool(getattr(args, "link_check", False))
         self.done = threading.Event()
         self.write_lock = threading.Lock()
         self.child = pexpect.spawn("ssh", ["-T", "-o", "ConnectTimeout=5",
@@ -114,6 +127,15 @@ class Connection:
         stale = self.last_status != 0 and time.monotonic()-self.last_status > self.feedback_timeout
         data = {"request": request, "cancel": cancel, "focused": focused,
                 "exit": bool(exit or stale), "ack": self.latest.get("stamp", 0)}
+        if data["exit"]:
+            data["exit_reason"] = "client_exit" if exit else "feedback_timeout"
+        if self.wrist is not None:
+            data["wrist_guard"] = self.wrist.wanted
+            # A dedicated --link-check peer never creates a control publisher.
+            # Keep synthetic traffic measurable; ordinary peers must acknowledge
+            # the guard policy and still reject untagged requests themselves.
+            if not (self.link_check and self.latest.get("link_check") is True):
+                data["request"] = self.wrist.filter(request, self.latest.get("wrist_guard", {}))
         if kinematics is not None:
             data["kinematics"] = kinematics
         with self.write_lock:
@@ -156,6 +178,10 @@ class Window:
         self.window.set_border_width(20)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.window.add(box)
+        from wrist_guard_ui import GuardControls
+        self.wrist_controls = GuardControls(self.switch_wrist)
+        self.wrist_controls.toggle.set_sensitive(connection is not None)
+        box.pack_start(self.wrist_controls, False, False, 0)
         title = Gtk.Label()
         title.set_markup('<span size="18000" weight="bold">双臂与上半身关节调节</span>')
         box.pack_start(title, False, False, 0)
@@ -430,6 +456,13 @@ class Window:
         self.phase.set_text("正在中止运动，保持使能；使能阶段按空格则取消启动" if not self.args.demo else "演示：已中止")
         self.send()
 
+    def switch_wrist(self, enabled):
+        if self.connection:
+            self.connection.wrist.switch(enabled)
+            self.cancel()
+            self.ready = False
+            self.motion_controls()
+
     def focus_in(self, *_):
         self.had_focus = True
         self.input_suspended = False
@@ -480,7 +513,9 @@ class Window:
                     self.stopped = True; self.ready = False
                 if "phase" in data:
                     self.phase.set_text(data["phase"])
-                    self.ready = data.get("ready", False) and not self.stopped
+                    self.ready = (data.get("ready", False) and not self.stopped
+                                  and self.connection.wrist.ready(data.get("wrist_guard", {}))
+                                  and self.connection.wrist.released)
                     if data.get("last_request", 0) >= self.sequence and self.ready:
                         self.pending = False
                     hw = data.get("hardware")
@@ -502,6 +537,8 @@ class Window:
                     if not self.connection.latest.get("disabled_confirmed"):
                         self.error.set_text("连接已关闭，未收到最终下使能确认，请检查机器人")
             self.motion_controls()
+            state = self.connection.latest.get("wrist_guard", {})
+            self.wrist_controls.update(state, not self.connection.wrist.ready(state))
             self.target_changed()
             self.send()
         return True

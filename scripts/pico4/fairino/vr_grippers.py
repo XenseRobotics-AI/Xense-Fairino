@@ -4,14 +4,16 @@ import sys
 from paths import ROOT
 sys.path.insert(0, str(ROOT))
 from apps.gripper_control.client import Session
-from apps.gripper_control.gripper_core import TriggerMapping, DEFAULT_TORQUE, DEFAULT_SPEED
+from apps.gripper_control.gripper_core import TriggerMapping, DEFAULT_TORQUE, TELEOP_SPEED, number
 
 
 class GripperTeleop:
     def __init__(self, args, password, session_factory=Session):
+        self.speed = number(getattr(args, 'gripper_speed_rad_s', TELEOP_SPEED), .01, 1., '夹爪速度 rad/s')
+        self.mapping = TriggerMapping({s: number(getattr(args, s+'_gripper_max_open_percent', 100.),
+            0., 100., s+' 夹爪最大开度 %')/100. for s in ('left', 'right')})
         self.session = session_factory(args.host, args.user, password,
             left_sn=getattr(args, 'left_gripper_sn', ''), right_sn=getattr(args, 'right_gripper_sn', ''))
-        self.mapping = TriggerMapping()
         self.enable_requested = False
         self.note = '等待夹爪连接'
 
@@ -42,7 +44,7 @@ class GripperTeleop:
                        and frame[hands[s]]['trigger'] <= .02 for s in connected):
                 self.note = '请松开夹爪对应 Trigger，等待有效扳机数据'
                 return
-            self.session.command('enable', 'both', torque=DEFAULT_TORQUE, speed=DEFAULT_SPEED)
+            self.session.command('enable', 'both', torque=DEFAULT_TORQUE, speed=self.speed)
             self.enable_requested = True
             self.note = '夹爪使能并保持当前位置'
             return
@@ -56,11 +58,13 @@ class GripperTeleop:
             self.note = str(exc)
             return
         self.session.set_targets(targets)
-        self.note = 'Trigger 连续开度：松开张开，压到底闭合' if targets else '保持当前开度，按 Trigger 开始'
+        self.note = 'Trigger 连续开度：松开到设定上限，压到底闭合' if targets else '保持当前开度，按 Trigger 开始'
 
     def snapshot(self):
         state = self.session.snapshot()
-        return dict(message=self.note, devices=state.get('devices', {}))
+        return dict(message=self.note, speed_rad_s=self.speed, devices=state.get('devices', {}),
+                    received=state.get('received'), error=state.get('error'),
+                    max_openings=self.mapping.max_openings)
 
     def close(self):
         self.session.close()

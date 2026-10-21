@@ -89,6 +89,32 @@ class ContinuousMathTests(unittest.TestCase):
 class EndSimulation(Exception):pass
 
 
+class WristTrajectoryTests(unittest.TestCase):
+    def test_slow_at_boundary_braking_tail_remains_clear_and_reverse_can_retreat(self):
+        from wrist_guard import WristGuard
+        from tcp_robot import guarded_trajectory
+        guard = WristGuard()
+        q = hardware()['position']
+        q[5], q[6] = math.radians(52), math.radians(32)
+        held = q[:]; v = [0.]*20; desired = [0.]*20; desired[6] = math.radians(4.)
+        scales = []
+        for i in range(250):
+            if i == 180:
+                before_retreat = q[6]
+                desired[6] *= -1
+            points, scale = guarded_trajectory(guard, q, v, desired, ARMS['left'], held)
+            guard.trajectory(points)
+            for t in (0., .02, .08, .15, points[-1][0]):
+                stopped_q, stopped_v = sample(points, t)
+                guard.trajectory(braking(stopped_q, stopped_v))
+            q, v = sample(points, PERIOD)
+            self.assertGreaterEqual(guard.clearance(q[5:7]), -1e-7)
+            scales.append(scale)
+        self.assertLess(min(scales[:180]), .5)
+        self.assertLess(q[6], before_retreat-math.radians(1.))
+        self.assertEqual(scales[-1], 1.)
+
+
 class RobotLoopTests(unittest.TestCase):
     def test_active_arm_speed_margin_does_not_relax_held_body_or_tracking(self):
         p=probe();rp.Probe.enable_all(p);p.moving_joints=ARMS['left']
@@ -119,7 +145,7 @@ class RobotLoopTests(unittest.TestCase):
                 if steps[0]%4==1 or stream_request[0] is None:
                     r=make_request(kin,p.hw,'left',axis,1,8,2,4,
                         rotation_anchor=(stream_request[0] or {}).get('rotation_anchor'))
-                    r.update(id=steps[0],created=clock[0]);stream_request[0]=r
+                    r.update(id=steps[0],created=clock[0],_wrist_guard=p.wrist.active);stream_request[0]=r
                 p.packet['request']=copy.deepcopy(stream_request[0])
             elif mode=='release':p.packet['request']=None
             elif mode=='unfocused':p.packet['focused']=False # deliberately retain queued motion

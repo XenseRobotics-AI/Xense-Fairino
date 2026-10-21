@@ -29,7 +29,10 @@ def snapshot(raw):
         raise RuntimeError("当前硬件不是已核对的 J1–J20 上半身")
     order = [names.index(j) for j in JOINTS]
     out = {"error": int(raw["hexerrorcode_curerrcode"])}
-    for field in ("position", "velocity", "command_position", "stateword", "errorcode"):
+    fields = ("position", "velocity", "command_position", "stateword", "errorcode")
+    if "command_velocity" in raw:
+        fields += ("command_velocity",)
+    for field in fields:
         values = list(raw[field])
         if len(values) != 20 or not all(math.isfinite(v) for v in values):
             raise RuntimeError("无效的反馈：" + field)
