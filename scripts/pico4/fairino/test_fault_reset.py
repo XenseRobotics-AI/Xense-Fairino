@@ -46,11 +46,19 @@ class Guards(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'FATAL'):
             worker.require_resettable(state)
 
-    def test_stationary_failure_identifies_axis_and_keeps_existing_threshold(self):
+    def test_stationary_tolerance_accepts_observed_jitter_and_boundary(self):
         msg = message()
-        msg.velocity[7] = -.012658
-        with self.assertRaisesRegex(RuntimeError, r'J8=-0.012658.*0.005'):
-            worker.require_resettable(worker.snapshot(msg, 8))
+        for velocity in (-.05, -.012658473668773167, .012658473668773167, .05):
+            with self.subTest(velocity=velocity):
+                msg.velocity[7] = velocity
+                state = worker.snapshot(msg, 8)
+                worker.require_resettable(state)
+                worker.require_idle(state)
+        for velocity in (-.050001, .050001):
+            with self.subTest(velocity=velocity):
+                msg.velocity[7] = velocity
+                with self.assertRaisesRegex(RuntimeError, r'J8=-?0.050001.*阈值 0.05 rad/s'):
+                    worker.require_resettable(worker.snapshot(msg, 8))
 
     def test_invalid_feedback_rejected(self):
         for key, value in (("joint_names", ["j1"] * 8), ("stateword", [0]),
@@ -76,9 +84,11 @@ class Guards(unittest.TestCase):
 
     def test_nonzero_command_velocity_blocks_even_when_stationary(self):
         m = message()
-        m.command_velocity[0] = .1
-        with self.assertRaises(RuntimeError):
-            worker.require_stationary(worker.snapshot(m, 8))
+        for velocity in (-.01, .01, .1):
+            with self.subTest(velocity=velocity):
+                m.command_velocity[0] = velocity
+                with self.assertRaisesRegex(RuntimeError, r'非零速度指令.*阈值 0.005 rad/s'):
+                    worker.require_stationary(worker.snapshot(m, 8))
 
 
 class SingleShot(unittest.TestCase):

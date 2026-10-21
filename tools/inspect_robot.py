@@ -3,15 +3,11 @@ import argparse,base64,json,shlex,subprocess
 from pathlib import Path
 from datetime import datetime
 from ssh_read import run
+from ros_environment import feedback_environment
 ROOT=Path(__file__).resolve().parents[1]
 
 def setup(host):
-    prefix='source /opt/ros/humble/setup.bash\n'
-    if host.endswith('.1'):
-        prefix+='source /opt/fairino_art_plugin/plugin/install/setup.bash\nexport ROS_DOMAIN_ID=0\n'
-    else:
-        prefix+='source /opt/fairino_AMR_project_B/reference_chassis_runtime/install/hardware_state_broadcaster_msgs/share/hardware_state_broadcaster_msgs/local_setup.bash\nexport ROS_DOMAIN_ID=1\n'
-    return prefix+'export RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_LOCALHOST_ONLY=0\nunset FASTRTPS_DEFAULT_PROFILES_FILE\n'
+    return feedback_environment('upper' if host.endswith('.1') else 'base')
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--part',choices=['all','upper','base'],default='all');p.add_argument('--user',default='fairino');a=p.parse_args()

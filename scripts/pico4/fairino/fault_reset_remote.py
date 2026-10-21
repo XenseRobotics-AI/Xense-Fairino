@@ -13,7 +13,8 @@ ALLOWED_CONTROLLERS = {
     "joint_state_broadcaster",
 }
 BASE_CONTROLLER = "eight_dof_chassis_controller"
-STATIONARY_LIMIT = .005
+STATIONARY_LIMIT = .05  # Measured speed tolerance, rad/s.
+COMMAND_VELOCITY_LIMIT = .005  # Commands do not have encoder zero-speed jitter.
 
 
 def drive_state(word):
@@ -51,14 +52,15 @@ def snapshot(msg, count):
 
 
 def require_stationary(state):
-    for field, maximum, title in (
-        ('velocity', 'max_abs_velocity_rad_s', '速度反馈未满足静止条件'),
-        ('command_velocity', 'max_abs_command_velocity_rad_s', '仍有非零速度指令；先退出控制程序'),
+    for field, maximum, limit, title in (
+        ('velocity', 'max_abs_velocity_rad_s', STATIONARY_LIMIT, '速度反馈未满足静止条件'),
+        ('command_velocity', 'max_abs_command_velocity_rad_s', COMMAND_VELOCITY_LIMIT,
+         '仍有非零速度指令；先退出控制程序'),
     ):
-        if state[maximum] > STATIONARY_LIMIT:
+        if state[maximum] > limit:
             values = ', '.join(f'{name.upper()}={value:.6f}' for name, value in
-                              zip(state['joint_names'], state[field]) if abs(value) > STATIONARY_LIMIT)
-            raise RuntimeError(f'{title}：{values or state[maximum]} rad/s；阈值 {STATIONARY_LIMIT:g} rad/s')
+                              zip(state['joint_names'], state[field]) if abs(value) > limit)
+            raise RuntimeError(f'{title}：{values or state[maximum]} rad/s；阈值 {limit:g} rad/s')
 
 
 def require_resettable(state):

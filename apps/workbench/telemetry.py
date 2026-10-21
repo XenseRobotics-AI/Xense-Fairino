@@ -6,6 +6,7 @@ import threading
 import time
 
 import pexpect
+from tools.ros_environment import feedback_environment
 
 
 class Feedback:
@@ -23,17 +24,11 @@ class Feedback:
     def run(self):
         child = None
         try:
-            setup = ['set -e', 'source /opt/ros/humble/setup.bash']
-            if self.part == 'upper':
-                setup += ['source /opt/fairino_art_plugin/plugin/install/setup.bash', 'export ROS_DOMAIN_ID=0']
-            else:
-                setup += ['source /opt/fairino_AMR_project_B/reference_chassis_runtime/install/hardware_state_broadcaster_msgs/share/hardware_state_broadcaster_msgs/local_setup.bash', 'export ROS_DOMAIN_ID=1']
-            setup += ['export RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_LOCALHOST_ONLY=0',
-                      'unset FASTRTPS_DEFAULT_PROFILES_FILE',
-                      'exec python3 -u -c ' + shlex.quote(Path(__file__).with_name('telemetry_remote.py').read_text())]
+            command = feedback_environment(self.part) + 'exec python3 -u -c ' + shlex.quote(
+                Path(__file__).with_name('telemetry_remote.py').read_text())
             child = pexpect.spawn('ssh', ['-tt', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=2',
                 '-o', 'ServerAliveCountMax=2', '-o', 'StrictHostKeyChecking=accept-new',
-                self.user+'@'+self.host, 'bash -c '+shlex.quote('\n'.join(setup))],
+                self.user+'@'+self.host, 'bash -c '+shlex.quote(command)],
                 encoding='utf-8', echo=False, timeout=1, maxread=65536)
             asked = False
             tail = ''
