@@ -46,6 +46,7 @@ class SpeedProtocolTests(unittest.TestCase):
         c = desktop.Connection.__new__(desktop.Connection)
         c.done = threading.Event()
         c.last_status = 0
+        c.last_send = 0
         c.write_lock = threading.Lock()
         c.speeds = (.06, .10)
         c.latest = {"stamp": time.monotonic()}

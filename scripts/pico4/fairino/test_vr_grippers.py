@@ -66,12 +66,13 @@ class GripperTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'lost hardware'):
             self.control.update(frame(), self.hands, True)
 
-    def test_selected_speed_reaches_shared_worker_and_does_not_raise_torque(self):
+    def test_selected_speed_reaches_worker_with_device_max_continuous_torque(self):
         control = GripperTeleop(NS(host='unused', user='unused', gripper_speed_rad_s=.9), None, FakeSession)
         control.update(frame(), self.hands, True)
         fields = control.session.commands[0][1]
-        self.assertEqual(fields, dict(torque=1.1, speed=.9))
+        self.assertEqual(fields, dict(torque_mode='max_continuous', speed=.9))
         self.assertEqual(control.snapshot()['speed_rad_s'], .9)
+        self.assertEqual(control.snapshot()['torque_mode'], 'max_continuous')
         for speed in (0., 1.01, float('nan'), True):
             with self.assertRaises(ValueError):
                 GripperTeleop(NS(host='unused', user='unused', gripper_speed_rad_s=speed), None, FakeSession)

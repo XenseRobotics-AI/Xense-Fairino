@@ -126,6 +126,85 @@ class FreezeTests(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(moving[:3, 3]), 20.)
 
 
+class HeadingMappingTests(unittest.TestCase):
+    def test_heading_applies_to_translation_and_rotation_in_all_modes_on_both_arms(self):
+        # Rotate the complete operator setup in the room. Calibration must make
+        # the same operator-relative gestures yield exactly the same robot goals.
+        for yaw_deg in (0., 90., -90., 180.):
+            turn = Rotation.from_rotvec(np.array([0., np.radians(yaw_deg), 0.])).as_matrix()
+            for mode in ('first_person', 'mirror', 'mirror_same_direction'):
+                rot_mode = 'first_person' if mode == 'first_person' else 'mirror'
+                for side in ARMS:
+                    for axis in range(3):
+                        for sign in (-1., 1.):
+                            with self.subTest(yaw=yaw_deg, mode=mode, side=side, axis=axis, sign=sign):
+                                base, calibrated = Clutch(side, mode, rot_mode), Clutch(side, mode, rot_mode)
+                                calibrated.set_heading(turn.T)
+                                tcp = np.eye(4); tcp[:3, 3] = [20., 30., 40.]
+                                initial = hand((.1, .2, -.3), (.1, -.2, .3))
+                                moved = copy.deepcopy(initial)
+                                moved['pose'][axis] += sign*.04
+                                initial_rotation = Rotation.from_quat(initial['pose'][3:]).as_matrix()
+                                delta = Rotation.from_rotvec(sign*.2*np.eye(3)[axis]).as_matrix()
+                                moved['pose'][3:] = Rotation.from_matrix(delta @ initial_rotation).as_quat().tolist()
+                                def turned(source):
+                                    packet = copy.deepcopy(source)
+                                    packet['pose'][:3] = (turn @ source['pose'][:3]).tolist()
+                                    packet['pose'][3:] = Rotation.from_matrix(
+                                        turn @ Rotation.from_quat(source['pose'][3:]).as_matrix()).as_quat().tolist()
+                                    return packet
+                                base.target(initial, tcp, .5)
+                                calibrated.target(turned(initial), tcp, .5)
+                                expected = base.target(moved, tcp, .5)
+                                actual = calibrated.target(turned(moved), tcp, .5)
+                                np.testing.assert_allclose(actual, expected, atol=1e-8)
+
+    def test_calibration_discards_old_anchor_and_survives_grip_release(self):
+        c = Clutch('left')
+        c.target(hand(), np.eye(4), 1.)
+        c.target(hand((.1, .2, .3)), np.eye(4), 1.)
+        alignment = Rotation.from_rotvec(np.array([0., -np.pi/2, 0.])).as_matrix()
+        c.set_heading(alignment)
+        tcp = np.eye(4); tcp[:3, 3] = [5., 8., 13.]
+        np.testing.assert_allclose(c.target(hand((.5, .3, .2)), tcp, 1.), tcp, atol=1e-9)
+        self.assertIsNone(c.target(hand(grip=0.), tcp, 1.))
+        np.testing.assert_allclose(c.heading, alignment)
+        np.testing.assert_allclose(c.target(hand((.7, .5, .1)), tcp, 1.), tcp, atol=1e-9)
+
+    def test_invalid_or_tilted_frame_cannot_replace_calibration(self):
+        c = Clutch('right')
+        for invalid in (np.ones((3, 3)), np.diag([-1., 1., 1.]), np.full((3, 3), np.nan),
+                        np.eye(4), Rotation.from_rotvec(np.array([.1, 0., 0.])).as_matrix()):
+            with self.assertRaises(ValueError): c.set_heading(invalid)
+            np.testing.assert_allclose(c.heading, np.eye(3))
+
+    def test_limited_target_rebase_uses_calibrated_position_and_rotation_without_jump(self):
+        for mode in ('first_person', 'mirror', 'mirror_same_direction'):
+            for side in ARMS:
+                with self.subTest(mode=mode, side=side):
+                    rot_mode = 'first_person' if mode == 'first_person' else 'mirror'
+                    alignment = Rotation.from_rotvec(np.array([0., -np.pi/2, 0.])).as_matrix()
+                    clutch = Clutch(side, mode, rot_mode)
+                    clutch.set_heading(alignment)
+                    start = np.eye(4)
+                    clutch.target(hand(), start, .5)
+                    controller = hand((.2, -.1, .3), (.3, .2, -.1))
+                    clutch.target(controller, start, .5)
+                    accepted = np.eye(4)
+                    accepted[:3, 3] = [12., 23., 34.]
+                    accepted[:3, :3] = Rotation.from_rotvec(np.array([.1, -.2, .3])).as_matrix()
+                    clutch.rebase(controller, accepted)
+                    np.testing.assert_allclose(clutch.target(controller, accepted, .5), accepted, atol=1e-9)
+                    # Resuming from an accepted limited pose must be equivalent
+                    # to a fresh clutch anchored there in the calibrated frame.
+                    fresh = Clutch(side, mode, rot_mode)
+                    fresh.set_heading(alignment)
+                    fresh.target(controller, accepted, .5)
+                    moved = hand((.202, -.1, .3), (.302, .2, -.1))
+                    np.testing.assert_allclose(clutch.target(moved, accepted, .5),
+                                               fresh.target(moved, accepted, .5), atol=1e-9)
+
+
 class DoubleTapTests(unittest.TestCase):
     def frame(self, stamp, x=False, y=False, left_click=False, right_click=False, axis_y=0.):
         return dict(received_monotonic=stamp,
@@ -144,7 +223,7 @@ class DoubleTapTests(unittest.TestCase):
             controls = JoystickControls()
             results = self.feed(controls, *self.tap_pair(button))
             self.assertEqual([r['sensitivity'] for r in results], [0, 0, 0, 0, direction])
-            self.assertTrue(all(not r['home'] and not r['pause'] for r in results))
+            self.assertTrue(all(not r['home'] and not r['calibrate_heading'] for r in results))
 
     def test_explicit_loop_clock_fallback_and_repeated_frame_are_supported(self):
         controls = JoystickControls()
@@ -215,7 +294,7 @@ class DoubleTapTests(unittest.TestCase):
         controls = JoystickControls()
         self.feed(controls, self.frame(0.), self.frame(.02, y=True), self.frame(.06))
         result = controls.update(self.frame(.1, left_click=True), now=.1)
-        self.assertTrue(result['pause'])
+        self.assertTrue(result['calibrate_heading'])
         self.assertEqual(result['sensitivity'], 0)
         result = self.feed(controls, self.frame(.12), self.frame(.14, y=True), self.frame(.18))
         self.assertTrue(all(r['sensitivity'] == 0 for r in result))
@@ -224,12 +303,25 @@ class DoubleTapTests(unittest.TestCase):
         self.assertTrue(controls.update(self.frame(.32, right_click=True), now=.32)['home'])
         self.assertFalse(controls.update(self.frame(.34, right_click=True), now=.34)['home'])
 
-    def test_batched_pause_has_priority_over_tap_and_clears_history(self):
+    def test_batched_calibration_has_priority_over_tap_and_clears_history(self):
         controls = JoystickControls()
         samples = [self.frame(0.), self.frame(.02, left_click=True), *self.tap_pair('y', .04)[1:]]
         result = controls.update(dict(samples[-1], samples=samples), now=.22)
-        self.assertTrue(result['pause'])
+        self.assertTrue(result['calibrate_heading'])
         self.assertEqual(result['sensitivity'], 0)
+
+    def test_calibration_in_batch_overrides_home_and_never_retriggers_from_old_or_held_sample(self):
+        controls = JoystickControls()
+        samples = [self.frame(0.), self.frame(.02, right_click=True),
+                   self.frame(.04), self.frame(.06, left_click=True)]
+        batch = dict(samples[-1], samples=samples)
+        self.assertEqual(controls.update(batch, now=.06),
+                         {'calibrate_heading': True, 'home': False, 'sensitivity': 0})
+        for now in (.08, .1):
+            self.assertFalse(controls.update(batch, now=now)['calibrate_heading'])
+        self.assertFalse(controls.update(self.frame(.12, left_click=True), now=.12)['calibrate_heading'])
+        controls.update(self.frame(.14), now=.14)
+        self.assertTrue(controls.update(self.frame(.16, left_click=True), now=.16)['calibrate_heading'])
 
 
 class EndClient(Exception): pass

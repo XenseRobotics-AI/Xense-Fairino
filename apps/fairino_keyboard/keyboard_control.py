@@ -27,6 +27,8 @@ def remote_command(args):
                          ("control_core.py", "robot_worker.py")}).encode()
     encoded = base64.b64encode(zlib.compress(bundle)).decode()
     argv = ["robot_worker.py", "--linear", str(args.linear), "--angular", str(args.angular)]
+    if getattr(args, "navigation", False):
+        argv.append("--navigation")
     if args.check:
         argv.append("--check")
     if args.prepare_check:
@@ -53,7 +55,9 @@ class Connection:
         self.pexpect = pexpect
         self.events = queue.Queue()
         self.latest = {}
+        self.last_error = ''
         self.last_status = 0.0
+        self.last_send = 0.0
         self.write_lock = threading.Lock()
         self.speeds = check_speeds(args.linear, args.angular)
         self.done = threading.Event()
@@ -80,8 +84,8 @@ class Connection:
         except BaseException:
             self.child.close(force=True)
             raise
-        logs = HERE / "logs"
-        logs.mkdir(exist_ok=True)
+        logs = Path(getattr(args, "log_directory", HERE / "logs"))
+        logs.mkdir(parents=True, exist_ok=True)
         self.log_path = logs / (time.strftime("%Y%m%d-%H%M%S") + ".jsonl")
         self.log = self.log_path.open("a", buffering=1)
         threading.Thread(target=self.reader, daemon=True).start()
@@ -101,6 +105,8 @@ class Connection:
                         data = json.loads(line[len(PREFIX):])
                     except ValueError:
                         continue
+                    if data.get("error") and not self.last_error:
+                        self.last_error = str(data["error"])
                     if "stamp" in data:
                         self.latest = data
                         self.last_status = time.monotonic()
@@ -118,11 +124,15 @@ class Connection:
         if self.done.is_set():
             return
         # No replay after a delayed feedback stream: stop is latched robot-side.
-        stale = self.last_status != 0 and time.monotonic() - self.last_status > 0.5
+        now = time.monotonic()
+        stale = self.last_status != 0 and now - self.last_status > 0.5
         linear, angular = check_speeds(*(self.speeds if speeds is None else speeds))
         packet = {"keys": sorted(keys), "focused": bool(focused),
                   "stop": bool(stop or stale), "ack": self.latest.get("stamp", 0),
-                  "linear": linear, "angular": angular}
+                  "linear": linear, "angular": angular,
+                  "client_status_age": now-self.last_status if self.last_status else None,
+                  "client_send_gap": now-self.last_send if self.last_send else None}
+        self.last_send = now
         if axes is not None:
             if packet['keys']:
                 raise RuntimeError('底盘摇杆与键盘指令不能混发')

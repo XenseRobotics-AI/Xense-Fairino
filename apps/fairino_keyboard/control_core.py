@@ -124,7 +124,8 @@ def check_input(packet, received, now):
         raise RuntimeError("键控心跳中断")
     ack = packet.get("ack")
     if not isinstance(ack, (int, float)) or not math.isfinite(ack) or not 0 <= now - ack <= LINK_TIMEOUT:
-        raise RuntimeError("往返通信超时，拒绝滞留指令")
+        age = f"{(now-ack)*1000:.0f} ms" if isinstance(ack, (int, float)) and math.isfinite(ack) else "无有效 ACK"
+        raise RuntimeError(f"往返通信超时，拒绝滞留指令（ACK {age}；阈值 {LINK_TIMEOUT*1000:.0f} ms）")
     if packet.get("stop"):
         raise RuntimeError("已停止：用户停止")
     keys = packet.get("keys")
@@ -153,3 +154,14 @@ def flatten_parameters(tree, prefix=""):
         else:
             result[name] = value
     return result
+
+
+def limit_planar_twist(values, linear=DEFAULT_LINEAR, angular=DEFAULT_ANGULAR):
+    """Bound the XY norm, not each axis separately; accept only planar commands."""
+    if len(values) != 6 or not all(math.isfinite(v) for v in values):
+        raise ValueError('无效的导航速度')
+    x, y, z, roll, pitch, yaw = values
+    if any(abs(v) > 1e-9 for v in (z, roll, pitch)):
+        raise ValueError('导航只接受二维速度')
+    scale = min(1., linear/max(math.hypot(x, y), 1e-12))
+    return x*scale, y*scale, max(-angular, min(angular, yaw))

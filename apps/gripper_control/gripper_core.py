@@ -2,6 +2,9 @@
 import math
 
 SIDES = ('left', 'right')
+# SDK Left/Right is inferred from SN parity, not the installed arm. These two
+# grippers are physically mounted on the opposite sides (confirmed 2026-10-22).
+INSTALLATION_SERIALS = {'left': 'TCGU01A28Z0018s', 'right': 'TCGU01A28Z0015s'}
 LEASE = .25
 DEFAULT_TORQUE = 1.1  # Nm, bounded again against the connected motor's spec.
 DEFAULT_SPEED = .25  # shaft rad/s
@@ -92,15 +95,18 @@ def opening(value):
 
 
 def select_devices(endpoints, assignments=None):
-    """SDK sides unless a firmware SN is explicitly assigned; never pick by USB order."""
+    """Explicit SN > known installation side > SDK side; never use USB order."""
     assignments = assignments or {}
     reserved = {sn for sn in assignments.values() if sn}
+    installed_sides = {sn: side for side, sn in INSTALLATION_SERIALS.items()}
     selected = {}
     for side in SIDES:
         sn = assignments.get(side, '')
         matches = [ep for ep in endpoints if ep['role'] == 'Follower'
                    and not ep.get('in_use') and ep['sn']
-                   and (ep['sn'] == sn if sn else ep['side'].lower() == side and ep['sn'] not in reserved)]
+                   and (ep['sn'] == sn if sn else
+                        installed_sides.get(ep['sn'], ep['side'].lower()) == side
+                        and ep['sn'] not in reserved)]
         if len(matches) > 1:
             raise ValueError(f'{side} 匹配多个夹爪，请按固件 SN 指定')
         if sn and not matches:

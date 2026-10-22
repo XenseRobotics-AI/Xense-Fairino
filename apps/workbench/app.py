@@ -262,7 +262,8 @@ class Workbench:
             stream = Stream(SimpleNamespace(host=host, user=user, check=False, duration=0), password)
             for child in self.map_container.get_children():
                 child.destroy()
-            self.map_panel = MapPanel(stream, ROOT/'logs/map-viewer', compact=True)
+            self.map_panel = MapPanel(stream, ROOT/'logs/map-viewer', compact=True,
+                                      acquire=self.acquire, release=self.release)
             self.map_container.pack_start(self.map_panel, True, True, 0)
             self.map_container.show_all()
         self.message.set_text('只读状态连接中；控制功能需分别显式启动')
@@ -496,11 +497,21 @@ class Workbench:
         self.retired_threads = [t for t in self.retired_threads if t.is_alive()]
         return True
 
+    def retry_close(self):
+        if self.closing:
+            self.close_pending = False
+            return False
+        self.close()
+        return not self.closing
+
     def close(self, *_):
         if self.closing:
             return True
         if self.map_panel and not self.map_panel.close():
-            self.message.set_text('地图操作正在进行，完成后再关闭工作台')
+            self.message.set_text('等待地图操作及导航停止、下使能完成后关闭工作台')
+            if not getattr(self, 'close_pending', False):
+                self.close_pending = True
+                GLib.timeout_add(300, self.retry_close)
             return True
         self.closing = True
         self.message.set_text('正在结束本工作台启动的控制，等待下使能及连接退出…')

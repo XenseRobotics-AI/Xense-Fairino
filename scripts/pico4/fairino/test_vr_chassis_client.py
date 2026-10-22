@@ -38,13 +38,14 @@ def frame(now, x=0., y=0., yaw=0., lift=0., left_click=False, right_click=False,
 
 
 class ChassisClientTests(unittest.TestCase):
-    def simulate(self, steps, body_lift=False):
+    def simulate(self, steps, body_lift=False, mode='first_person', hand_mapping='auto'):
         """Advance the real AxisSession gate once per sent upper-body heartbeat."""
         clock, sent = [10.], []
         session = AxisSession('unused', 'unused', None)
         session.latest = dict(ready=True, hardware={'enabled': [True]*8}, command=ZERO)
         args = NS(execute=True, sensitivity=.25, no_auto_home=True, body_lift=body_lift,
-                  lift_speed_mm_s=15., chassis_linear=.06, chassis_angular=.10, user='unused')
+                  lift_speed_mm_s=15., chassis_linear=.06, chassis_angular=.10, user='unused',
+                  mode=mode, hand_mapping=hand_mapping)
         chassis = ChassisTeleop(args, None, session_factory=lambda *_, **__: session)
         args.chassis_control = chassis
         hw = hardware()
@@ -98,6 +99,30 @@ class ChassisClientTests(unittest.TestCase):
             self.assertAlmostEqual(actual, expected)
         self.assertEqual(mixed['request']['arms'], {})
         self.assertEqual(mixed['request']['lift'], .6)
+
+    def test_modes_use_fixed_physical_sticks_and_do_not_reverse_or_swap_body_lift(self):
+        # The arms may exchange controllers, but base translation stays on the
+        # physical left stick and yaw/lift stay on physical right X/Y.
+        expected = {
+            'first_person': ((.06, 0., 0.), (.048, -.036, -.0625)),
+            'mirror_same_direction': ((-.06, 0., 0.), (-.048, .036, -.0625)),
+            'mirror': ((.06, 0., 0.), (.048, .036, .0625)),
+        }
+        for mode, (forward, mixed) in expected.items():
+            for hand_mapping in ('auto', 'same', 'crossed'):
+                with self.subTest(mode=mode, hand_mapping=hand_mapping):
+                    sent, _ = self.simulate(
+                        [{}, {'y': 1.}, {'lift': 1.},
+                         {'x': .6, 'y': .8, 'yaw': .7, 'lift': -.6}],
+                        body_lift=True, mode=mode, hand_mapping=hand_mapping)
+                    self.assertEqual(sent[1]['command'], forward)
+                    self.assertIsNone(sent[1]['request'])  # Left Y is never the lift input.
+                    self.assertEqual(sent[2]['command'], ZERO)  # Right Y never translates the base.
+                    self.assertEqual(sent[2]['request']['lift'], 1.)
+                    for actual, wanted in zip(sent[3]['command'], mixed):
+                        self.assertAlmostEqual(actual, wanted)
+                    self.assertEqual(sent[3]['request']['arms'], {})
+                    self.assertEqual(sent[3]['request']['lift'], -.6)
 
     def test_space_pauses_base_until_a_new_neutral_sample(self):
         sent, events = self.simulate([{}, {'y': 1.}, {'y': 1.}, {'y': 1., 'key': ' '},

@@ -19,7 +19,7 @@ import zlib
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gripper_core import TriggerMapping, select_devices, healthy_sample
+from gripper_core import INSTALLATION_SERIALS, TriggerMapping, select_devices, healthy_sample
 from worker import Device, Worker, LinkFailure, check_link
 from apps.gripper_control.client import Session, remote_command
 
@@ -119,18 +119,50 @@ def fake_sdk(events):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_known_installation_overrides_sdk_sides_and_usb_scan_order(self):
+        original_left = endpoint(sn='TCGU01A28Z0015s', side='Left', port='/dev/usb-a')
+        original_right = endpoint(sn='TCGU01A28Z0018s', side='Right', port='/dev/usb-b')
+        for endpoints in ([original_left, original_right], [original_right, original_left]):
+            with self.subTest(order=[ep['sn'] for ep in endpoints]):
+                selected = select_devices(endpoints)
+                self.assertEqual({side: ep['sn'] for side, ep in selected.items()},
+                                 {'left': 'TCGU01A28Z0018s', 'right': 'TCGU01A28Z0015s'})
+                self.assertIs(selected['left'], original_right)
+                self.assertIs(selected['right'], original_left)
+
     def test_missing_side_never_reuses_the_other_device(self):
-        self.assertEqual(set(select_devices([endpoint()])), {'left'})
+        self.assertEqual(set(select_devices([endpoint()])), {'right'})
+        self.assertEqual(set(select_devices([endpoint(sn=INSTALLATION_SERIALS['left'], side='Right')])),
+                         {'left'})
         self.assertFalse(select_devices([endpoint(role='Leader')]))
-        self.assertFalse(select_devices([endpoint(side='Unknown')]))
+        self.assertFalse(select_devices([endpoint(sn='OTHERs', side='Unknown')]))
+        self.assertFalse(select_devices([{**endpoint(), 'in_use': True}]))
+
+    def test_unknown_serial_keeps_sdk_side_and_known_serial_resolves_unknown_sdk_side(self):
+        selected = select_devices([endpoint(sn='OTHERs')])
+        self.assertEqual(set(selected), {'left'})
+        self.assertEqual(set(select_devices([endpoint(side='Unknown')])), {'right'})
 
     def test_duplicate_identity_requires_explicit_sn_and_override_is_exact(self):
-        endpoints = [endpoint(), endpoint(sn='OTHERs', port='/dev/other')]
+        endpoints = [endpoint(), endpoint(sn='OTHERs', side='Right', port='/dev/other')]
         with self.assertRaises(ValueError):
             select_devices(endpoints)
-        chosen = select_devices([endpoint()], {'right': endpoint()['sn']})
-        self.assertEqual(set(chosen), {'right'})
-        self.assertEqual(chosen['right']['sn'], endpoint()['sn'])
+        chosen = select_devices([endpoint()], {'left': endpoint()['sn']})
+        self.assertEqual(set(chosen), {'left'})
+        self.assertEqual(chosen['left']['sn'], endpoint()['sn'])
+
+    def test_explicit_serials_override_both_installation_bindings(self):
+        original_left = endpoint(sn='TCGU01A28Z0015s')
+        original_right = endpoint(sn='TCGU01A28Z0018s', side='Right', port='/dev/right')
+        selected = select_devices([original_left, original_right],
+                                  {'left': original_left['sn'], 'right': original_right['sn']})
+        self.assertIs(selected['left'], original_left)
+        self.assertIs(selected['right'], original_right)
+
+    def test_explicit_assignment_never_bypasses_role_or_ownership(self):
+        for ep in (endpoint(role='Leader'), {**endpoint(), 'in_use': True}):
+            with self.subTest(endpoint=ep), self.assertRaises(ValueError):
+                select_devices([ep], {'left': ep['sn']})
 
     def test_explicit_missing_or_repeated_assignment_is_rejected(self):
         for assignments in ({'left': 'missing'}, {'left': endpoint()['sn'], 'right': endpoint()['sn']}):
@@ -203,6 +235,76 @@ class DeviceTests(unittest.TestCase):
             self.device.snapshot()
         self.device.close()
         self.assertFalse(self.device.gripper.motor.enabled)
+
+    def test_max_continuous_uses_fresh_device_and_envelope_limits(self):
+        for stall, envelope, expected in ((1.1, 1.1, 1.1), (1.1, .8, .8),
+                                           (.7, 1.1, .7), (3.6, 3.6, 3.6)):
+            with self.subTest(stall=stall, envelope=envelope):
+                events = []
+                device = Device(fake_sdk(events), endpoint())
+                device.gripper.audit.effective.cont_torque_nm = envelope
+                # This changes the device readback after connecting, not the cached spec.
+                with patch.object(device.gripper.motor, 'get_spec',
+                                  return_value=NS(stall_cont_torque_nm=stall, v_max_rad_s=10.)) as read_spec:
+                    device.enable(None, .75, torque_mode='max_continuous')
+                read_spec.assert_called()
+                self.assertEqual(device.snapshot()['grasp_torque_nm'], expected)
+                self.assertEqual(device.controller.cfg.close_speed_radps, .75)
+                self.assertEqual(events, ['start_at_measured_position', 'enable'])
+                device.close()
+
+    def test_max_continuous_rejects_each_invalid_limit_before_controller_start(self):
+        for source in ('spec', 'envelope'):
+            for invalid in (float('nan'), float('inf'), -float('inf'), 0., -.1,
+                            .009, None, True, False):
+                with self.subTest(source=source, limit=invalid):
+                    events = []
+                    device = Device(fake_sdk(events), endpoint())
+                    spec = NS(stall_cont_torque_nm=1.1, v_max_rad_s=10.)
+                    if source == 'spec':
+                        spec.stall_cont_torque_nm = invalid
+                    else:
+                        device.gripper.audit.effective.cont_torque_nm = invalid
+                    with patch.object(device.gripper.motor, 'get_spec', return_value=spec):
+                        with self.assertRaises(ValueError):
+                            device.enable(None, .75, torque_mode='max_continuous')
+                    self.assertIsNone(device.controller)
+                    self.assertFalse(events)
+
+    def test_max_continuous_preserves_supported_range_and_diagnostic_guards(self):
+        for fault, audit_ok, stall, envelope in ((0, True, 6., 6.),
+                                                (1, True, 1.1, 1.1),
+                                                (0, False, 1.1, 1.1)):
+            with self.subTest(fault=fault, audit_ok=audit_ok, stall=stall):
+                events = []
+                device = Device(fake_sdk(events), endpoint())
+                device.gripper.motor.fault.motor_fault_code = fault
+                device.gripper.audit.ok = audit_ok
+                device.gripper.audit.effective.cont_torque_nm = envelope
+                with patch.object(device.gripper.motor, 'get_spec',
+                                  return_value=NS(stall_cont_torque_nm=stall, v_max_rad_s=10.)):
+                    with self.assertRaises(ValueError):
+                        device.enable(None, .75, torque_mode='max_continuous')
+                self.assertIsNone(device.controller)
+                self.assertFalse(events)
+
+    def test_unknown_torque_modes_never_fall_back_to_manual_or_maximum(self):
+        for mode in ('peak', 'max', '', None, True, 1):
+            with self.subTest(mode=mode):
+                with self.assertRaises(ValueError):
+                    self.device.enable(1.1, .75, torque_mode=mode)
+                self.assertIsNone(self.device.controller)
+                self.assertFalse(self.events)
+
+    def test_manual_torque_stays_explicit_and_cannot_exceed_refreshed_limit(self):
+        with patch.object(self.device.gripper.motor, 'get_spec',
+                          return_value=NS(stall_cont_torque_nm=.7, v_max_rad_s=10.)):
+            with self.assertRaises(ValueError):
+                self.device.enable(.8, .25, torque_mode='manual')
+            self.assertFalse(self.events)
+            self.device.enable(.6, .25, torque_mode='manual')
+        self.assertEqual(self.device.snapshot()['grasp_torque_nm'], .6)
+        self.device.close()
 
     def test_right_gripper_capture_reports_each_gate_without_sending_enable(self):
         self.device.firmware = 'FirmwareVersion(1.2.6.0)'
@@ -290,6 +392,68 @@ class DeviceTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_max_continuous_command_selects_each_connected_grippers_own_limit(self):
+        worker = Worker(fake_sdk([]))
+        all_events = {}
+        for side, stall, envelope in (('left', 1.1, 1.1), ('right', .7, .6)):
+            events = all_events[side] = []
+            device = Device(fake_sdk(events), endpoint(port='/dev/'+side))
+            device.gripper.audit.effective.cont_torque_nm = envelope
+            device.gripper.motor.get_spec = lambda stall=stall: NS(
+                stall_cont_torque_nm=stall, v_max_rad_s=10.)
+            worker.devices[side] = device
+        worker.command(dict(id=1, created=10., action='enable', side='both',
+                            torque_mode='max_continuous', speed=.75), 10.1)
+        self.assertEqual({side: device.snapshot()['grasp_torque_nm']
+                          for side, device in worker.devices.items()}, {'left': 1.1, 'right': .6})
+        for side, device in worker.devices.items():
+            self.assertEqual(all_events[side], ['start_at_measured_position', 'enable'])
+            self.assertEqual(device.controller.cfg.close_speed_radps, .75)
+            device.close()
+
+    def test_conflicting_or_unknown_torque_mode_command_enables_neither_gripper(self):
+        fields = [dict(torque_mode='max_continuous', torque=torque)
+                  for torque in (None, 1.1, 1.8)]
+        fields += [dict(torque_mode=mode) for mode in ('peak', 'max', '', None, True)]
+        for options in fields:
+            with self.subTest(options=options):
+                events = []
+                worker = Worker(fake_sdk(events))
+                worker.devices = {side: Device(worker.sdk, endpoint(port='/dev/'+side))
+                                  for side in ('left', 'right')}
+                with self.assertRaises(ValueError):
+                    worker.command(dict(id=1, created=10., action='enable', side='both',
+                                        **options), 10.1)
+                self.assertFalse(events)
+                self.assertTrue(all(device.controller is None for device in worker.devices.values()))
+
+    def test_enable_command_without_torque_mode_preserves_manual_value_and_default(self):
+        for fields, expected in (({}, 1.1), ({'torque': .4}, .4)):
+            with self.subTest(fields=fields):
+                worker = Worker(fake_sdk([]))
+                device = worker.devices['left'] = Device(worker.sdk, endpoint())
+                worker.command(dict(id=1, created=10., action='enable', side='left', **fields), 10.1)
+                self.assertEqual(device.snapshot()['grasp_torque_nm'], expected)
+                device.close()
+
+    def test_connect_and_feedback_share_installed_side_binding_without_motion(self):
+        endpoints = [endpoint(sn='TCGU01A28Z0015s', port='/dev/sdk-left'),
+                     endpoint(sn='TCGU01A28Z0018s', side='Right', port='/dev/sdk-right')]
+        sdk = NS(scan_grippers=lambda: [NS(side=NS(name=ep['side']), role=NS(name=ep['role']),
+                    firmware_sn=ep['sn'], mcu_device=ep['port'], in_use=False) for ep in endpoints])
+        def device_factory(_sdk, ep):
+            return NS(endpoint=ep, diagnostics=lambda: {},
+                      snapshot=lambda: {'position': .18 if ep['sn'].endswith('0018s') else .15})
+        worker = Worker(sdk)
+        with patch('worker.Device', side_effect=device_factory), patch('worker.emit') as output:
+            worker.connect()
+            worker.report()
+        devices = output.call_args.kwargs['devices']
+        self.assertEqual(devices['left']['sn'], INSTALLATION_SERIALS['left'])
+        self.assertEqual(devices['right']['sn'], INSTALLATION_SERIALS['right'])
+        self.assertEqual(devices['left']['position'], .18)
+        self.assertEqual(devices['right']['position'], .15)
+
     def test_whole_stream_validated_before_any_jaw_moves(self):
         events = []
         worker = Worker(fake_sdk(events))

@@ -1,4 +1,4 @@
-# 地图查看与按需建图
+# 地图查看、按需建图与定位
 
 在仓库根目录运行，SSH 密码在终端输入：
 
@@ -58,9 +58,9 @@ bash run.sh mapping use --name room_01
 bash run.sh map --check --duration 12
 ```
 
-可用 `--host`、`--user` 改 SSH 端点，`--output` 改截图目录，`MAP_PYTHON` 指定带 Tk、matplotlib、numpy 和 pexpect 的 Python。默认优先项目环境，缺 Tk 时尝试项目 PICO 环境。启动脚本会优先使用项目 `.local/map-gui/root/` 中支持 Xft 的 Tk；窗口使用 Noto Sans CJK SC，避免旧 Tk 的点阵字体缺字问题。
+可用 `--host`、`--user` 改 SSH 端点，`--output` 改截图目录，`MAP_PYTHON` 指定 Python 环境。默认优先项目 `.venv`，独立窗口与工作台共用 GTK 3 地图面板，需要 GTK/Cairo、matplotlib、numpy 和 pexpect；可运行 `bash setup.sh console` 安装。`--check` 使用 Agg 离线绘图后端，不要求 GTK 或桌面显示。图中使用 Noto Sans CJK SC 显示中文。
 
-若 PICO 环境缺绘图库，可在仓库根目录执行 `.local/pico4/env/bin/python -m pip install -r requirements/diagnostics.txt`。本机已补齐并完成实时连接与图形显示检查。
+建议在仓库根目录通过 `bash run.sh map` 或 `bash run.sh console` 启动，复用本机项目环境。复制仓库到另一台电脑后仍需安装对应依赖，历史连接记录不代表新电脑已完成联调。
 
 ## 开始新地图前
 
@@ -71,3 +71,64 @@ bash run.sh map --check --duration 12
 先低速建一个小范围地图，检查静止时墙面是否稳定、直线/转向后是否出现重影，最后回到起点检查闭环。此前 1 米测试的 0.9916 米仅为编码器重算结果，不能代替完整位姿验证。
 
 需要对照定位偏差时，可单独执行 `.venv/bin/python tools/record_odometry.py --duration 120`。它同时记录厂家原始 odom、建图 `/odom`、`map → odom` / `odom → base_footprint` TF、SLAM `/pose` 成功匹配以及键控指令；按一次 Ctrl+C 提前结束并保存。该采集器只读，不启动或停止控制。
+
+## 已有地图定位（AMCL）
+
+定位代码与建图代码同属本模块，共用工作台地图面板。默认仍为查看地图；打开窗口不会启动 AMCL。当前允许默认地图为空，程序不会自动选旧地图，也不会假定机器人在地图原点。
+
+完成新地图后，在“建图与底盘”页依次操作：
+
+1. **另存地图**，然后**结束建图 / 返回底图**。
+2. **刷新地图库**，从列表明确选择刚保存的地图，点击**选用地图**。刷新列表本身不选择、不加载地图。
+3. 确认底盘里程计和双雷达正在更新，点击**启动定位**。
+4. 点击**设置初始位姿**。可以输入地图中的 X/Y（米）与朝向（度，地图 +X 为 0°，逆时针为正），或选择“地图拖拽”，在左侧地图从机器人当前位置拖向机器人正前方，核对数值后发送。
+5. 等待本次初始位姿之后的雷达匹配。检查地图上墙体与实时雷达是否重合；随后低速前进、横移、转向并回到起点，检查位置、朝向和重合情况。初始位姿设置不产生运动。
+
+命令行共用现有 `mapping` 入口，避免另建重复的地图控制链路：
+
+```bash
+bash run.sh mapping maps
+bash run.sh mapping use --name room_01
+bash run.sh mapping localize --wait 90
+# 此处必须使用机器人在所选地图中的实际位置；不要直接照抄示例数值。
+bash run.sh mapping initial-pose --x 1.2 --y -0.4 --yaw 1.5707963268
+bash run.sh mapping status
+bash run.sh mapping stop-localization
+```
+
+**CLI 的 yaw 单位是弧度，界面朝向单位是度。** 初始分布默认 XY 标准差 0.5 m、朝向标准差 15°。服务请求送达只说明 AMCL 收到请求，不代表匹配已正确。
+
+定位输入为选用的静态地图、合并 `/scan` 和 `odom → base_footprint` TF；输出为 `/amcl_pose` 及 `map → odom`。专用参数在 [localization.yaml](localization.yaml)，使用全向模型 `nav2_amcl::OmniMotionModel`，适配底盘横移。定位不改变轮速里程计、不更新地图。机器人已有 AMCL 和 map_server 节点必须可用；只管理这两个节点的生命周期，不启动 Nav2 导航控制器。
+
+[localization.py](localization.py) 管理定位会话和初始位姿；`map_control_remote.py` 对地图/定位修改加互斥锁。准备新建图、切换/清空地图库或返回底图会先停用 AMCL。定位启动拒绝正在运行的 SLAM，以免两个模块同时发布 `map → odom`。切换地图或重新启动定位都必须重新设置初始位姿。
+
+`fairino-localization.service` 是显式启动的输入监视服务，持续检查轮速、直通/滤波里程计、TF、雷达及里程计会话。输入持续异常约 1.5 秒或里程计会话变化后停用定位，不自动恢复。会话状态保存在机器人 `~/.local/share/fairino-map-control/localization.json`，不是地图数据。关闭工作台窗口不停止定位；需要时显式点击“停止定位”。
+
+界面只接受本次地图/初始位姿会话的 AMCL 估计，并检查活动节点、监视服务心跳、输入新鲜度、TF 和协方差。静止时允许使用本次会话的历史估计；移动累计约 10 cm 或 5° 后超过 2 秒没有新估计会标记不可用。位置最大主轴标准差超过 0.5 m、朝向标准差超过 20° 时提示不确定度较大。这些是初始监视阈值，不能证明真实定位正确，仍需检查雷达与地图重合。监视异常时不在静态地图上显示机器人和映射后的雷达，右侧本体雷达仍可查看。
+
+### 文件、部署与验证范围
+
+- 定位业务及参数：`apps/map_viewer/localization.py`、`localization.yaml`。
+- GUI：共用 `apps/map_viewer/panel.py`；遥测：`remote_stream.py`。
+- 运维入口：`tools/map_mode.py`、`tools/install_map_mode.py`。
+- 后续导航轮廓接口：[`apps/navigation/footprint.py`](../navigation/footprint.py)，固定底盘轮廓已实现，上半身动态投影仍预留；详见 [二维导航说明](../navigation/README.md)。
+- 地图仍保存到机器人 `/home/fairino/maps/manual/<名称>/`，日志保存到仓库 `logs/`；不把地图、运行状态或生成文件放到源码目录。
+
+部署沿用 `tools/install_map_mode.py`：备份并安装定位代码、参数、监视服务，执行 systemd daemon-reload，不重启底盘、不自动启动定位。已有安装需要更新，否则工作台新按钮会报告机器人端尚不支持。仅更新 `install_control_stack.py` 不会创建定位监视服务，完整定位部署仍需运行地图安装器。
+
+2026-10-22 从另一台控制电脑同步定位与导航集成代码，地图模块 42 项离线测试通过，并在本机项目环境中用假数据完成 GTK 地图/定位/导航面板实例化与按钮状态检查（未连接机器人）。远端保存的 2026-10-20 记录显示定位与导航代码已部署到机器人，并核对了文件哈希；这些是历史部署记录，不能据此推断当前服务状态或定位精度。本次代码同步不执行机器人部署、不加载地图、不启动定位或运动；实际定位精度仍需用当前地图和雷达重合、直线/转向及回到起点验证。
+
+实现依据：[Nav2 Humble AMCL 源码](https://github.com/ros-navigation/navigation2/blob/humble/nav2_amcl/src/amcl_node.cpp)。使用标准 `/set_initial_pose` 服务，兼容 AMCL 的 `/initialpose` 话题；重启后重新初始化，不沿用旧会话位姿。
+
+地图下方新增导航栏：接入导航底盘、启动导航、输入目标、预览路径、开始/取消目标及结束下使能。输入目标后显示红色 ❌ 和目标朝向，尚未点击“开始导航”时不会移动。地图或定位会话变化会清除目标，具体步骤见 [工作台导航操作](../navigation/README.md#工作台操作)。
+
+
+## 初始位姿后的定位估计
+
+拖拽设置的是大致搜索起点和朝向，不是最终位置。2026-10-20 起，定位监视服务在输入健康且机器人静止时，对新雷达数据额外请求最多 6 次 AMCL 更新（间隔至少 1 秒，窗口最多 12 秒），随后回到常规运动触发更新。不会为定位自动移动或旋转底盘。请求失败保留已发送的初始位姿并显示失败原因，不再将已接受的初始化一并抹掉。
+
+初始化期间和不确定度较大时，地图显示橙色候选机器人箭头及雷达投影；这是待核对的估计，不代表可以导航。界面同时显示 AMCL 估计的 X/Y/朝向、本次观察到的位姿更新次数。位置/朝向标准差表示估计不确定度，并不是与真实位置的实测误差。定位、TF、里程计或雷达失效时仍隐藏候选位置；初始化期间导航保持禁用。
+
+静止更新次数完成不等于位置正确，也不等于全局定位。默认初始分布仍为位置 σ=0.5 m、朝向 σ=15°；大致位姿偏差过大、地图不一致或场景重复时可能无法定位到正确位置。需核对雷达与地图墙面重合，再开始导航。当前全局定位按钮仍未实现。
+
+对应代码为 localization.py（有限静止更新）、remote_stream.py（候选显示与导航就绪分离）、panel.py/viewer.py（坐标、不确定度和橙色候选箭头）。新界面与观察进程需重开工作台加载，已有控制会话不会热替换。

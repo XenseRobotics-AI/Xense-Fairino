@@ -55,7 +55,7 @@ class JoystickControls:
 
     def update(self, frame, now=None):
         now = time.monotonic() if now is None else now
-        result = {"sensitivity": 0, "home": False, "pause": False}
+        result = {"sensitivity": 0, "home": False, "calibrate_heading": False}
         # Consume real receive timestamps so buffered press/release edges survive
         # a slower IK tick. Repeated 450 Hz reads of one SDK frame add no taps.
         for sample in frame.get('samples') or [frame]:
@@ -78,7 +78,7 @@ class JoystickControls:
                 self.armed = not lc and not rc
             else:
                 result['home'] |= rc and not self.right_click
-                result['pause'] |= lc and not self.left_click
+                result['calibrate_heading'] |= lc and not self.left_click
             self.left_click, self.right_click = lc, rc
             x, y = left.get('primary', False), left.get('secondary', False)
             if lc or rc or (x and y):
@@ -97,7 +97,10 @@ class JoystickControls:
                         result['sensitivity'] = direction
                     for tap in self.taps.values():
                         tap.reset()
-        if result['pause'] or result['home']:
+        # Calibration wins even if the same batch contains a Home or tap edge.
+        if result['calibrate_heading']:
+            result['home'] = False
+        if result['calibrate_heading'] or result['home']:
             result['sensitivity'] = 0
             for tap in self.taps.values():
                 tap.reset()

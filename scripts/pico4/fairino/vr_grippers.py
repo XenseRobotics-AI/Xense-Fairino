@@ -4,7 +4,7 @@ import sys
 from paths import ROOT
 sys.path.insert(0, str(ROOT))
 from apps.gripper_control.client import Session
-from apps.gripper_control.gripper_core import TriggerMapping, DEFAULT_TORQUE, TELEOP_SPEED, number
+from apps.gripper_control.gripper_core import TriggerMapping, TELEOP_SPEED, number
 
 
 class GripperTeleop:
@@ -44,7 +44,7 @@ class GripperTeleop:
                        and frame[hands[s]]['trigger'] <= .02 for s in connected):
                 self.note = '请松开夹爪对应 Trigger，等待有效扳机数据'
                 return
-            self.session.command('enable', 'both', torque=DEFAULT_TORQUE, speed=self.speed)
+            self.session.command('enable', 'both', torque_mode='max_continuous', speed=self.speed)
             self.enable_requested = True
             self.note = '夹爪使能并保持当前位置'
             return
@@ -64,7 +64,7 @@ class GripperTeleop:
         state = self.session.snapshot()
         return dict(message=self.note, speed_rad_s=self.speed, devices=state.get('devices', {}),
                     received=state.get('received'), error=state.get('error'),
-                    max_openings=self.mapping.max_openings)
+                    max_openings=self.mapping.max_openings, torque_mode='max_continuous')
 
     def close(self):
         self.session.close()

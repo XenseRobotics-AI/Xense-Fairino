@@ -88,7 +88,9 @@ class Device:
                     status=int(sample.status), state='未使能' if not sample.status & 1 else '已使能（未接管）',
                     controlled=False, age_ms=0.)
 
-    def enable(self, torque, speed):
+    def enable(self, torque, speed, *, torque_mode='manual'):
+        if torque_mode not in ('manual', 'max_continuous'):
+            raise ValueError('未知夹持力矩模式')
         if self.controller is not None:
             raise ValueError('夹爪已由本会话使能；修改参数前先下使能')
         sample = self.read_idle()
@@ -99,11 +101,21 @@ class Device:
         self.fault = self.gripper.motor.fault_report()
         # 0x0303 is recorded host-deadline history, as reviewed in umi/xtac_grip.py.
         self.audit = self.gripper.audit_envelope()
+        self.spec = self.gripper.motor.get_spec()
+        # Validate each source before min(): NaN must not silently select the
+        # other source. Peak torque is never a sustained grasp target.
+        limits = (getattr(self.spec, 'stall_cont_torque_nm', None),
+                  getattr(self.audit.effective, 'cont_torque_nm', None))
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value < .01
+               for value in limits):
+            raise ValueError('夹爪最大持续力矩上限无效，拒绝使能')
         issues = self.diagnostics()['issues']
         if issues:
             raise ValueError('夹爪使能检查未通过（未发送使能）：\n'+'\n'.join(issues))
-        limit = min(self.spec.stall_cont_torque_nm, self.audit.effective.cont_torque_nm)
-        number(torque, .01, limit, '夹持力矩 Nm')
+        limit = min(limits)
+        if torque_mode == 'max_continuous':
+            torque = limit
+        torque = number(torque, .01, min(limit, 5.), '夹持力矩 Nm')
         number(speed, .01, min(1., self.spec.v_max_rad_s), '夹爪速度 rad/s')
         cfg = self.sdk.ForcePositionConfig.for_spec(self.spec)
         cfg.grasp_torque_nm = torque
@@ -239,8 +251,12 @@ class Worker:
         for side in sides:
             device = self.devices[side]
             if action == 'enable':
-                device.enable(number(request.get('torque', DEFAULT_TORQUE), .01, 5., '夹持力矩'),
-                              number(request.get('speed', DEFAULT_SPEED), .01, 1., '速度'))
+                torque_mode = request.get('torque_mode', 'manual')
+                if torque_mode == 'max_continuous' and 'torque' in request:
+                    raise ValueError('最大持续力矩模式不能同时指定固定力矩')
+                device.enable(request.get('torque', DEFAULT_TORQUE),
+                              number(request.get('speed', DEFAULT_SPEED), .01, 1., '速度'),
+                              torque_mode=torque_mode)
             elif action == 'target':
                 device.target(request.get('opening'))
             elif action == 'hold':

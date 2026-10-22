@@ -2,6 +2,8 @@
 """Explicit map mode changes. No motor, controller or navigation goal commands."""
 import argparse
 import datetime
+import fcntl
+from contextlib import contextmanager
 import json
 import math
 import os
@@ -21,6 +23,16 @@ MAPPING_EPOCH = RUNTIME / 'odometry-epoch'
 ODOMETRY_STATUS = ODOMETRY_EPOCH.with_name('status.json')
 MAPPING_PROFILE = RUNTIME / 'mapping.yaml'
 SLAM_RUNTIME = RUNTIME / 'slam/current'
+LOCALIZATION_UNIT = 'fairino-localization.service'
+
+
+@contextmanager
+def mode_lock():
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    with (RUNTIME / 'mode.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
 
 
 def mapping_command():
@@ -140,6 +152,15 @@ class ROS:
         response = self.call(GetParameters, node + '/get_parameters', request)
         fields = {1: 'bool_value', 2: 'integer_value', 3: 'double_value', 4: 'string_value'}
         return {k: getattr(v, fields[v.type]) if v.type in fields else None for k, v in zip(names, response.values)}
+
+    def set_params(self, node, values):
+        from rcl_interfaces.srv import SetParametersAtomically
+        from rclpy.parameter import Parameter
+        request = SetParametersAtomically.Request()
+        request.parameters = [Parameter(key, value=value).to_parameter_msg() for key, value in values.items()]
+        result = self.call(SetParametersAtomically, node + '/set_parameters_atomically', request).result
+        if not result.successful:
+            raise RuntimeError('参数更新失败：' + node + '：' + result.reason)
 
     def refresh_source(self):
         from nav_msgs.msg import Odometry
@@ -288,6 +309,8 @@ def clear_libraries(ros):
     if ros.slam_present():
         ros.save('archive-before-clear-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         stop_slam()
+    from localization import Localization
+    Localization(ros).stop('清理地图库，定位已停止')
     ros.map_server(False)
     archive = RUNTIME / 'cleared-libraries' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     archive.mkdir(parents=True)
@@ -365,25 +388,72 @@ def serve_mapping():
 
 
 def main():
+    from localization import Localization, read_session, watch
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['status', 'check', 'start', 'pause', 'resume', 'view', 'save', 'use', 'clear', 'serve'])
+    parser.add_argument('action', choices=['status', 'check', 'start', 'pause', 'resume', 'view', 'save', 'use', 'clear', 'serve', 'maps', 'localize', 'stop-localization', 'initial-pose', 'watch-localization'])
     parser.add_argument('--name')
     parser.add_argument('--wait', type=float, default=0)
+    parser.add_argument('--session-id')
+    parser.add_argument('--x', type=float)
+    parser.add_argument('--y', type=float)
+    parser.add_argument('--yaw', type=float, help='map frame yaw, radians')
+    parser.add_argument('--xy-std', type=float, default=.5)
+    parser.add_argument('--yaw-std', type=float, default=math.radians(15))
     args = parser.parse_args()
+    if not math.isfinite(args.wait) or not 0 <= args.wait <= 300:
+        parser.error('--wait 必须在 0 到 300 秒之间')
+    if args.action == 'initial-pose' and any(v is None for v in (args.x, args.y, args.yaw)):
+        parser.error('initial-pose requires --x --y --yaw')
+
     if args.action == 'serve':
         serve_mapping()
         return
     ros = ROS()
+    lock = None
     try:
+        if args.action == 'watch-localization':
+            watch(ros, mode_lock)
+            return
+        if args.action not in ('status', 'maps', 'check'):
+            lock = mode_lock()
+            try:
+                lock.__enter__()
+            except BlockingIOError:
+                lock = None
+                raise RuntimeError('另一项地图/定位操作正在进行，请稍后再试')
         ros.spin(2)
         result = {'action': args.action}
         if args.action == 'status':
             result['map_publishers'] = [p.node_name for p in ros.node.get_publishers_info_by_topic('/map')]
             result['slam_present'] = ros.slam_present()
             result['map_server_state'] = ros.state('/map_server')
+            result['localization'] = read_session()
+            result['amcl_state'] = ros.state('/amcl')
             result['has_saved_map'] = (PROJECT / 'maps/active/map.yaml').is_file()
             if result['slam_present']:
                 result.update(ros.params('/slam_toolbox', ['mode', 'paused_new_measurements']))
+        elif args.action == 'maps':
+            result['maps'] = [p.name for p in sorted(MAPS.iterdir())
+                              if p.is_dir() and (p/'map.yaml').is_file() and (p/'map.pgm').is_file()] if MAPS.is_dir() else []
+            active = PROJECT / 'maps/active/map.yaml'
+            result['selected'] = str(active.resolve()) if active.is_file() else None
+        elif args.action == 'localize':
+            # Verify the watchdog has been installed before lifecycle changes.
+            run('systemctl', 'cat', LOCALIZATION_UNIT)
+            result['localization'] = Localization(ros).start(PROJECT/'maps/active/map.yaml', args.wait)
+            try:
+                run('sudo', '-n', 'systemctl', 'restart', LOCALIZATION_UNIT)
+                run('systemctl', 'is-active', '--quiet', LOCALIZATION_UNIT)
+            except Exception:
+                Localization(ros).stop('定位监视服务启动失败')
+                raise
+            result['message'] = 'AMCL 已启动，请在地图上设置初始位置与朝向'
+        elif args.action == 'stop-localization':
+            Localization(ros).stop()
+            result['message'] = '定位已停止，保留静态底图'
+        elif args.action == 'initial-pose':
+            result['initial_pose'] = Localization(ros).set_pose(args.x, args.y, args.yaw, args.xy_std, args.yaw_std, args.session_id)
+            result['message'] = '初始位姿请求已送达；请等待雷达匹配，并检查墙面与地图是否重合'
         elif args.action == 'check':
             ros.require_good_input(args.wait)
             result['message'] = '建图输入正在更新；精度仍需实际运动验证'
@@ -392,6 +462,7 @@ def main():
                 raise RuntimeError('已有建图会话，请暂停/继续或保存后返回已有地图')
             mapping_command()  # Fail before changing map mode if deployment is incomplete.
             ros.require_good_input(args.wait)
+            Localization(ros).stop('已切换到建图')
             ros.map_server(False)
             try:
                 run('sudo', '-n', 'systemctl', 'start', UNIT)
@@ -415,6 +486,7 @@ def main():
             result['saved_directory'] = ros.save(args.name or datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
             result['message'] = '地图和位姿图已另存；建图保持暂停，未覆盖默认地图'
         elif args.action == 'view':
+            Localization(ros).stop('已返回静态底图')
             if ros.slam_present():
                 result['archived_directory'] = ros.save('archive-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
                 stop_slam()
@@ -432,6 +504,7 @@ def main():
             if ros.slam_present():
                 result['archived_directory'] = ros.save('archive-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
                 stop_slam()
+            Localization(ros).stop('地图已切换，请重新启动定位并设置初始位姿')
             ros.map_server(False)
             active = PROJECT / 'maps/active'
             backup = RUNTIME / 'replaced-defaults' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -439,11 +512,14 @@ def main():
             if active.exists() or active.is_symlink():
                 shutil.move(str(active), str(backup))
             active.symlink_to(selected, target_is_directory=True)
+            ros.set_params('/map_server', {'yaml_filename': str(active/'map.yaml')})
             ros.map_server(True)
             result.update(message='已明确选用该地图作为固定默认底图', selected=str(selected), previous_default=str(backup))
         print('MAP_CONTROL ' + json.dumps(result, ensure_ascii=False), flush=True)
     finally:
         ros.close()
+        if lock is not None:
+            lock.__exit__(None, None, None)
 
 
 if __name__ == '__main__':

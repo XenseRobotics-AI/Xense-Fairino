@@ -38,6 +38,7 @@ class AxisProtocolTests(unittest.TestCase):
         c = desktop.Connection.__new__(desktop.Connection)
         c.done, c.write_lock = threading.Event(), threading.Lock()
         c.last_status, c.speeds = 0., (.06, .10)
+        c.last_send = 0.
         c.latest = {'stamp': time.monotonic()}
         sent = []
         c.child = NS(sendline=lambda value: sent.append(json.loads(value)))
@@ -134,6 +135,7 @@ class SessionGateTests(unittest.TestCase):
                 self.events, self.speeds = queue.Queue(), (args.linear, args.angular)
                 self.latest = dict(stamp=time.monotonic(), ready=True, hardware={'enabled': [True]*8})
                 self.last_status = time.monotonic()
+                self.last_send = 0.
                 self.child = NS(sendline=self.receive)
                 connected.set()
             def receive(self, line):

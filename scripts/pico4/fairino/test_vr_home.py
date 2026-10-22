@@ -94,7 +94,18 @@ class JoystickTests(unittest.TestCase):
         j.reset(); self.assertFalse(j.update(click)['home'])
         j.update(frame()); self.assertTrue(j.update(click)['home'])
         j.update(frame())
-        self.assertTrue(j.update(frame(left={**hand(grip=0.), 'axis_click': True}))['pause'])
+        self.assertTrue(j.update(frame(left={**hand(grip=0.), 'axis_click': True}))['calibrate_heading'])
+
+    def test_heading_click_is_edge_triggered_and_overrides_home_and_stick_deflection(self):
+        j = JoystickControls()
+        click = frame(left={**hand(grip=0.), 'axis_click': True, 'axis_y': .9},
+                      right={**hand(grip=0.), 'axis_click': True})
+        self.assertFalse(j.update(click)['calibrate_heading'])
+        j.update(frame())
+        self.assertEqual(j.update(click), {'calibrate_heading': True, 'sensitivity': 0, 'home': False})
+        self.assertFalse(j.update(click)['calibrate_heading'])
+        j.reset()
+        self.assertFalse(j.update(click)['calibrate_heading'])
 
 
 class HomeTests(unittest.TestCase):

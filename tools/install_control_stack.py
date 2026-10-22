@@ -18,7 +18,9 @@ def remote_script(execute=False, mode='raw'):
     files = {'odom_guard.py': ROOT/'apps/workbench/odom_guard.py',
              'raw_odometry.py': ROOT/'apps/workbench/raw_odometry.py',
              'map_control_remote.py': ROOT/'apps/map_viewer/map_control_remote.py',
-             'mapping.yaml': ROOT/'apps/map_viewer/mapping.yaml'}
+             'mapping.yaml': ROOT/'apps/map_viewer/mapping.yaml',
+             'localization.py': ROOT/'apps/map_viewer/localization.py',
+             'localization.yaml': ROOT/'apps/map_viewer/localization.yaml'}
     payload = {name: base64.b64encode(path.read_bytes()).decode() for name, path in files.items()}
     core = (ROOT/'apps/fairino_keyboard/control_core.py').read_text()
     script = r'''

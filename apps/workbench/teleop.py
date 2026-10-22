@@ -11,14 +11,19 @@ import threading
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
-from apps.gripper_control.gripper_core import TELEOP_SPEED
+from apps.gripper_control.gripper_core import TELEOP_SPEED, INSTALLATION_SERIALS
 from apps.fairino_tcp_probe.tool_frames import load_geometry, tool_config
 from scripts.pico4.fairino.home_presets import HOME_PRESETS
+from scripts.pico4.fairino.control_modes import MODE_LABELS, CHASSIS_DIRECTIONS
 from apps.fairino_upper_probe.wrist_guard_ui import GuardControls
 from apps.fairino_keyboard.control_core import (DEFAULT_LINEAR, DEFAULT_ANGULAR,
                                                 MIN_SPEED, MAX_LINEAR, MAX_ANGULAR)
 
 ROOT = Path(__file__).resolve().parents[2]
+TELEOP_MODES = {
+    'mirror_same_direction': '右手柄 → 左臂 / 左爪，左手柄 → 右臂 / 右爪',
+    'first_person': '左手柄 → 左臂 / 左爪，右手柄 → 右臂 / 右爪',
+}
 
 
 class TeleopPanel(Gtk.Box):
@@ -42,11 +47,26 @@ class TeleopPanel(Gtk.Box):
         self.settings_scroll.add(settings)
         self.pack_start(self.settings_scroll, True, True, 0)
         settings.pack_start(Gtk.Label(label='PICO 遥操 · 双臂 / 夹爪 / 身体 / 底盘', xalign=0), False, False, 0)
-        text = ('右手柄 → 左臂，左手柄 → 右臂；握 Grip 跟随，松开保持。\n'
+        mode_row = Gtk.Box(spacing=8)
+        mode_row.pack_start(Gtk.Label(label='遥操方式'), False, False, 0)
+        self.teleop_mode = Gtk.ComboBoxText()
+        for name in TELEOP_MODES:
+            self.teleop_mode.append(name, MODE_LABELS[name])
+        self.teleop_mode.set_active_id('mirror_same_direction')
+        mode_row.pack_start(self.teleop_mode, False, False, 0)
+        settings.pack_start(mode_row, False, False, 0)
+        self.mode_help = Gtk.Label(xalign=0)
+        self.mode_help.set_line_wrap(True)
+        settings.pack_start(self.mode_help, False, False, 0)
+        self.teleop_mode.connect('changed', self.mode_changed)
+        self.mode_changed()
+        text = ('握 Grip 跟随，松开保持；Trigger 控制对应手臂的夹爪。\n'
                 '按住 A/X 冻结旋转、B/Y 冻结位移；双击 X 降低、双击 Y 提高灵敏度。\n'
-                '左杆 XY 平移、右杆 X 旋转；右杆 Y 升降。左杆按下暂停，右杆按下回 Home。\n'
+                '左杆 XY 平移、右杆 X 旋转；右杆 Y 升降。右杆按下回 Home；空格或「暂停 / 保持」暂停。\n'
+                '左杆按下校准双臂正前方；正常转头不改变校准，底盘方向仍由所选遥操方式决定。\n'
+                '校准前松开两侧 Grip、两摇杆回中并松开右杆按键，确认双臂、身体和底盘停止；平视希望的正前方。\n'
                 '底盘与升降需分别勾选；450 Hz 手臂控制由独立进程执行。\n'
-                '先启动接收服务，在头显选择电脑 IP 并打开 Controller / Send。')
+                '先启动接收服务，在头显选择电脑 IP 并打开 Head / Controller / Send。')
         label = Gtk.Label(label=text, xalign=0)
         label.set_line_wrap(True)
         settings.pack_start(label, False, False, 0)
@@ -84,7 +104,8 @@ class TeleopPanel(Gtk.Box):
         for side, title in [('left', '左爪 SN'), ('right', '右爪 SN')]:
             gripper_row.pack_start(Gtk.Label(label=title), False, False, 0)
             entry = Gtk.Entry()
-            entry.set_placeholder_text('留空按 SDK 左右识别')
+            entry.set_placeholder_text('留空按安装侧绑定')
+            entry.set_tooltip_text('当前安装绑定：'+INSTALLATION_SERIALS[side]+'；填写 SN 可覆盖')
             entry.set_width_chars(23)
             self.gripper_serials[side] = entry
             gripper_row.pack_start(entry, False, False, 0)
@@ -95,7 +116,7 @@ class TeleopPanel(Gtk.Box):
         self.gripper_speed.set_digits(2)
         self.gripper_speed.set_value(TELEOP_SPEED)
         speed_row.pack_start(self.gripper_speed, False, False, 0)
-        speed_row.pack_start(Gtk.Label(label='启动时生效；0.75 约为原速度的 3 倍，力矩不变'), False, False, 0)
+        speed_row.pack_start(Gtk.Label(label='启动时生效；夹持力矩自动取各爪最大持续值'), False, False, 0)
         settings.pack_start(speed_row, False, False, 0)
         limits_row = Gtk.Box(spacing=8)
         self.gripper_limits = {}
@@ -157,6 +178,10 @@ class TeleopPanel(Gtk.Box):
         self.status = Gtk.Label(label='遥操未启动', xalign=0)
         self.status.set_line_wrap(True)
         self.pack_start(self.status, False, False, 0)
+        self.heading_status = Gtk.Label(label='双臂正前方未校准 · 沿用原有追踪方向', xalign=0)
+        self.heading_status.set_line_wrap(True)
+        self.heading_status.set_max_width_chars(100)
+        self.pack_start(self.heading_status, False, False, 0)
         self.gripper_status = Gtk.Label(label='夹爪遥操未启用', xalign=0)
         self.gripper_status.set_line_wrap(True)
         self.pack_start(self.gripper_status, False, False, 0)
@@ -171,6 +196,12 @@ class TeleopPanel(Gtk.Box):
         scroll.add(self.log)
         self.pack_start(scroll, False, True, 0)
         GLib.timeout_add(100, self.tick)
+
+    def mode_changed(self, *_):
+        mode = self.teleop_mode.get_active_id()
+        value = TELEOP_MODES.get(mode)
+        self.mode_help.set_text((value+'。\n'+CHASSIS_DIRECTIONS[mode]+
+            '。\n启动后需先结束遥操才能切换方式。') if value else '请选择遥操方式')
 
     def tool_changed(self, *_):
         if self.tcp_tool.get_active_id() == 'taccap':
@@ -231,6 +262,8 @@ class TeleopPanel(Gtk.Box):
             self.append('上一会话正在退出，等待控制占用释放后再启动')
             return
         try:
+            if self.teleop_mode.get_active_id() not in TELEOP_MODES:
+                raise ValueError('请选择有效的遥操方式')
             mode = self.tcp_tool.get_active_id()
             tool_config(mode, load_geometry() if mode == 'taccap' else None, require_confirmed=True)
         except (ValueError, OSError) as exc:
@@ -258,6 +291,8 @@ class TeleopPanel(Gtk.Box):
                     return
                 setattr(self, part+'_lease', True)
             argv = ['bash', str(ROOT/'run.sh'), 'vr', '--gui-stdio', '--host', host, '--user', user]
+            argv.extend(['--mode', self.teleop_mode.get_active_id(), '--rotation-mode', 'auto',
+                         '--hand-mapping', 'auto'])
             argv.extend(['--tcp-tool', self.tcp_tool.get_active_id()])
             argv.extend(['--home-preset', self.home_preset.get_active_id()])
             if not self.wrist_controls.toggle.get_active():
@@ -281,6 +316,7 @@ class TeleopPanel(Gtk.Box):
             self.process.stdin.write(json.dumps({'password': password}) + '\n')
             self.process.stdin.flush()
             self.status.set_text('等待双手柄新鲜数据及 Grip 释放…')
+            self.heading_status.set_text('双臂正前方未校准 · 沿用原有追踪方向')
             self.chassis_status.set_text('等待底盘回正并使能；请保持摇杆回中' if self.chassis.get_active()
                                          else '底盘遥操未启用')
             self.update_options()
@@ -305,7 +341,7 @@ class TeleopPanel(Gtk.Box):
     def update_options(self):
         running = self.process is not None and self.process.poll() is None
         editable = not running and not self.closed
-        for widget in (self.home, self.home_preset, self.grippers, self.tcp_tool,
+        for widget in (self.teleop_mode, self.home, self.home_preset, self.grippers, self.tcp_tool,
                        self.tool_settings, self.body_lift, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable)
         for widget in (self.gripper_speed, *self.gripper_limits.values()):
@@ -331,6 +367,7 @@ class TeleopPanel(Gtk.Box):
                 self.gripper_feedback = {}
                 self.release_leases()
                 self.status.set_text(f'遥操已退出，返回码 {data}；下使能结果见下方日志')
+                self.heading_status.set_text('方向校准仅对本次遥操有效；下次启动需重新校准')
                 self.chassis_status.set_text('底盘遥操已结束；下使能结果见下方日志' if self.chassis.get_active()
                                              else '底盘遥操未启用')
                 if self.process:
@@ -353,6 +390,14 @@ class TeleopPanel(Gtk.Box):
                         + ('TCP：夹爪固定指尖中心 · ' if state.get('tcp_tool') == 'taccap' else 'TCP：法兰中心 · ')+
                         f'Grip 左 {grips.get("left", 0):.2f} / 右 {grips.get("right", 0):.2f} · '
                         f'使能 {state["enabled"]}/20 · 下发 {state["send_hz"]:.0f} / 接收 {state["accepted_hz"]:.0f} Hz')
+                    heading = '双臂正前方已校准' if state.get('heading_calibrated') else '双臂正前方未校准 · 沿用原有追踪方向'
+                    heading_yaw = state.get('heading_yaw_deg')
+                    if (state.get('heading_calibrated') and type(heading_yaw) in (int, float)
+                            and math.isfinite(heading_yaw)):
+                        heading += f' · 水平朝向 {heading_yaw:+.1f}°'
+                    if state.get('heading_message'):
+                        heading += '\n' + str(state['heading_message'])
+                    self.heading_status.set_text(heading)
                     grippers = state.get('grippers')
                     self.gripper_feedback = grippers or {}
                     if grippers:
@@ -361,6 +406,8 @@ class TeleopPanel(Gtk.Box):
                         for side, label in [('left', '左爪'), ('right', '右爪')]:
                             unit = units.get(side)
                             text = f'{label} {unit["position"]*100:.1f}% / {unit["state"]}' if unit else f'{label}未连接'
+                            if unit and unit.get('controlled') and 'grasp_torque_nm' in unit:
+                                text += f' · 夹持设定 {unit["grasp_torque_nm"]:.2f} Nm（最大持续）'
                             if unit and unit.get('open_span_rad'):
                                 maximum = grippers.get('max_openings', {}).get(side, 1.)
                                 text += f' · 映射上限 {maximum*100:g}% ≈ {math.degrees(maximum*unit["open_span_rad"]):.1f}° 电机转角'

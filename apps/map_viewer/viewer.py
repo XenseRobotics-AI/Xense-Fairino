@@ -135,6 +135,10 @@ def health(state):
     if frame.get('map_mode') == 'saved':
         if 'map' not in state:
             return '已有地图模式 · 等待静态地图', '#8b5d0e'
+        localization = frame.get('localization') or {}
+        if localization.get('active'):
+            return ('已有地图定位 · ' + localization.get('reason', '等待定位状态'),
+                    '#34745c' if localization.get('ready') else '#8b5d0e')
         if frame.get('tf_error'):
             return '已有地图保持不变 · 定位未就绪；右侧雷达在机器人坐标系中实时显示', '#8b5d0e'
         return '已有地图保持不变 · 仅更新定位和实时雷达', '#34745c'
@@ -208,6 +212,15 @@ class MapPlot:
         self.front = self.ax.scatter([], [], s=3, c='#168caf', label='前雷达', zorder=3)
         self.back = self.ax.scatter([], [], s=3, c='#ef852b', label='后雷达', zorder=3)
         self.robot, = self.ax.plot([], [], 'o', color='#c53451', markersize=6, label='TF 估计位置', zorder=4)
+        self.navigation_pose = None
+        self.goal_marker, = self.ax.plot([], [], marker='x', linestyle='none', color='#dc2626',
+                                        markersize=15, markeredgewidth=3, zorder=7, label='导航目标')
+        self.path_artist, = self.ax.plot([], [], '--', color='#7c3aed', linewidth=1.8,
+                                        zorder=5, label='预览路径')
+        self.goal_arrow = None
+        self.goal_text = self.ax.text(0, 0, '', color='#b91c1c', fontsize=9, zorder=8)
+        self.pose_note = self.ax.text(0, 0, '', fontsize=9, color='#b7790c', zorder=6)
+        self.pose_note.set_visible(False)
         self.ax.legend(loc='upper right', fontsize=9)
 
     def update(self, state, follow=False):
@@ -251,10 +264,16 @@ class MapPlot:
             self.arrow = None
         pose = frame.get('pose') if fresh else None
         self.robot.set_data([pose[0]] if pose else [], [pose[1]] if pose else [])
+        candidate = frame.get('map_mode') == 'saved' and not (frame.get('localization') or {}).get('ready')
+        pose_color = '#d18a16' if candidate else '#c53451'
+        self.robot.set_color(pose_color)
+        self.pose_note.set_visible(bool(pose and candidate))
         if pose:
             x, y, angle = pose
+            self.pose_note.set_position((x+.15, y+.15))
+            self.pose_note.set_text('候选定位 · 未就绪' if candidate else '')
             self.arrow = self.ax.annotate('', xy=(x + .6 * math.cos(angle), y + .6 * math.sin(angle)),
-                                          xytext=(x, y), arrowprops={'arrowstyle': '-|>', 'color': '#c53451', 'lw': 2}, zorder=4)
+                                          xytext=(x, y), arrowprops={'arrowstyle': '-|>', 'color': pose_color, 'lw': 2}, zorder=4)
             if follow:
                 self.ax.set_xlim(x - 5, x + 5)
                 self.ax.set_ylim(y - 5, y + 5)
@@ -262,9 +281,28 @@ class MapPlot:
         mode = {'saved': '已有地图（固定底图）', 'mapping': '工作地图', 'empty': '无底图', 'unknown': '等待地图模式'}.get(frame.get('map_mode'), '地图')
         self.title.set_text(f'{mode} · {stamp}' + ('\n'+health(state)[0] if self.show_status_in_plot else ''))
 
+    def set_navigation(self, pose=None, points=(), label=''):
+        self.navigation_pose = dict(pose) if pose else None
+        self.goal_marker.set_data([pose['x']] if pose else [], [pose['y']] if pose else [])
+        self.path_artist.set_data([p[0] for p in points], [p[1] for p in points])
+        if self.goal_arrow is not None:
+            self.goal_arrow.remove()
+            self.goal_arrow = None
+        self.goal_text.set_visible(bool(pose))
+        if pose:
+            x, y, yaw = pose['x'], pose['y'], pose['yaw']
+            self.goal_text.set_position((x+.12, y+.12))
+            self.goal_text.set_text(f"目标 ({x:.2f}, {y:.2f}) · {label}")
+            self.goal_arrow = self.ax.annotate('', xy=(x+.45*math.cos(yaw), y+.45*math.sin(yaw)),
+                                              xytext=(x, y), zorder=6,
+                                              arrowprops={'arrowstyle': '->', 'color': '#dc2626'})
+
     def fit(self):
         if self.bounds:
             x0, x1, y0, y1 = self.bounds
+            if self.navigation_pose:
+                x, y = self.navigation_pose['x'], self.navigation_pose['y']
+                x0, x1, y0, y1 = min(x0, x), max(x1, x), min(y0, y), max(y1, y)
             self.ax.set_xlim(x0 - .5, x1 + .5)
             self.ax.set_ylim(y0 - .5, y1 + .5)
 

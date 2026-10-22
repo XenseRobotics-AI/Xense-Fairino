@@ -18,11 +18,12 @@ case "$COMMAND" in
   tcp) exec bash "$ROOT/apps/fairino_tcp_probe/start.sh" "$@" ;;
   lidar) exec bash "$ROOT/apps/lidar_viewer/start.sh" "$@" ;;
   map) exec bash "$ROOT/apps/map_viewer/start.sh" "$@" ;;
+  navigation) exec "$FAIRINO_PYTHON" "$ROOT/tools/navigation_mode.py" "$@" ;;
   mapping) exec "$FAIRINO_PYTHON" "$ROOT/tools/map_mode.py" "$@" ;;
   pico) exec bash "$ROOT/scripts/pico4/run.sh" "$@" ;;
   vr)
     exec bash "$ROOT/scripts/pico4/run.sh" fairino --execute \
-      --mode mirror_same_direction --rotation-mode mirror --hand-mapping crossed \
+      --mode mirror_same_direction --rotation-mode auto --hand-mapping auto \
       --freeze-buttons --sensitivity 0.25 --interpolation-hz 450 --receiver-hz 500 \
       --interpolation-delay-ms 12 "$@" ;;
   errors) exec "$FAIRINO_PYTHON" "$ROOT/scripts/pico4/fairino/clear_errors.py" "$@" ;;
@@ -56,8 +57,15 @@ case "$COMMAND" in
   bash run.sh body                      身体高度/姿态联动
   bash run.sh tcp --arm left            胸部坐标 TCP 键控，窗口可切臂
   bash run.sh lidar                     双雷达实时扫描图
-  bash run.sh map                       地图窗口：默认查看，按需建图/暂停/另存
-  bash run.sh mapping status            查看建图/静态地图模式
+  bash run.sh map                       地图窗口：建图、地图库、已有地图定位
+  bash run.sh navigation status         二维导航状态；start 启动规划，drive 显式使能执行
+  bash run.sh navigation plan --x X --y Y --yaw R   只规划，不移动
+  bash run.sh navigation goal --x X --y Y --yaw R   发送导航目标（米/弧度）
+  bash run.sh navigation cancel         取消导航目标
+  bash run.sh mapping status            查看建图/静态地图/定位状态
+  bash run.sh mapping maps              列出已保存地图（不自动选用）
+  bash run.sh mapping localize --wait 90 启动已有地图定位，随后设置初始位姿
+  bash run.sh mapping stop-localization 停止定位，保留底图
   bash run.sh mapping start --wait 90    显式准备新建图，等待有效里程计输入
   bash run.sh mapping pause             暂停建图，保留工作地图
   bash run.sh mapping save --name NAME   地图另存到新目录
@@ -70,6 +78,7 @@ case "$COMMAND" in
   bash run.sh pico fairino --check       机器人/运动学只读检查
   bash run.sh pico latency --duration 25  PICO 时间戳至电脑的链路测量
   bash run.sh vr                        450 Hz 面对面遥操，自动使能并先回 Home
+  bash run.sh vr --mode first_person    第一人称遥操，同侧手柄控制同侧手臂与夹爪
   bash run.sh vr --chassis              同时回正并使能底盘，左杆平移、右杆左右旋转
   bash run.sh diagnostics geometry      雷达机械位置离线分析
   bash run.sh diagnostics lidar         双雷达样例配准与验证
@@ -77,7 +86,7 @@ case "$COMMAND" in
   bash run.sh test                      离线回归测试，不连接机器人
 
 普通 base / joints / body / tcp 启动会使能；vr 会使能并自动回 Home。
-vr：右手柄→左臂，左手柄→右臂；Grip 握住跟随，松开保持。
+vr 默认面对面：右手柄→左臂，左手柄→右臂；first_person 为同侧。Grip 握住跟随，松开保持。
 A/X 按住冻结旋转；B/Y 按住冻结位移；X 双击降灵敏度、Y 双击升灵敏度。
 左摇杆按压暂停；右摇杆按压 Home；--chassis 启用左杆全向平移、右杆左右旋转。
 旧上半身清错兼容入口：bash run.sh reset-upper --execute-reset。

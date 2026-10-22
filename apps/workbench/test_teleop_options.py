@@ -48,12 +48,40 @@ class TeleopOptionsTests(unittest.TestCase):
         self.assertEqual(self.acquired, ['upper'])
         self.assertEqual(argv[argv.index('--home-preset')+1], 'default')
 
+    def test_first_person_and_mirror_select_shared_client_mapping_and_lock_while_running(self):
+        for mode, description in [('first_person', '左手柄 → 左臂 / 左爪'),
+                                  ('mirror_same_direction', '右手柄 → 左臂 / 左爪')]:
+            with self.subTest(mode=mode):
+                self.panel.teleop_mode.set_active_id(mode)
+                self.assertIn(description, self.panel.mode_help.get_text())
+                self.panel.start()
+                argv = self.launch.call_args.args[0]
+                self.assertEqual(argv[argv.index('--mode')+1], mode)
+                self.assertEqual(argv[argv.index('--rotation-mode')+1], 'auto')
+                self.assertEqual(argv[argv.index('--hand-mapping')+1], 'auto')
+                self.assertFalse(self.panel.teleop_mode.get_sensitive())
+                self.panel.process.poll = lambda: 0
+                self.panel.events.put(('vr_exit', 0))
+                self.panel.tick()
+                self.assertTrue(self.panel.teleop_mode.get_sensitive())
+                self.panel.process = None
+                self.launch.return_value = NS(stdin=io.StringIO(), poll=lambda:None)
+
+    def test_default_mode_remains_mirror_and_invalid_selection_cannot_start(self):
+        self.assertEqual(self.panel.teleop_mode.get_active_id(), 'mirror_same_direction')
+        self.panel.teleop_mode.set_active(-1)
+        self.panel.start()
+        self.launch.assert_not_called()
+        self.assertFalse(self.acquired)
+
     def test_scrollable_settings_keep_stop_and_pause_visible_on_an_850px_panel(self):
         window = Gtk.OffscreenWindow()
         self.addCleanup(window.destroy)
         window.set_size_request(1100, 850)
         window.add(self.panel)
         self.panel.status.set_text('遥操就绪 · 使能 20/20\nTCP：法兰中心 · 双手柄已连接')
+        self.panel.heading_status.set_text('双臂正前方已校准 · 水平朝向 +90.0°\n'
+            '正前方校准未执行：请松开两侧 Grip、两摇杆回中并确认底盘停止；本次已有校准继续保留。')
         self.panel.gripper_status.set_text('夹爪反馈\n左爪 50% · 右爪 50%\n身体 50% / 200 mm')
         self.panel.chassis_status.set_text('底盘就绪 · 使能 8/8\n指令 vx 0 / vy 0 m/s · 旋转 0 rad/s\n回中保持使能')
         window.show_all()
@@ -115,6 +143,82 @@ class TeleopOptionsTests(unittest.TestCase):
         self.panel.events.put(('vr_exit', 0))
         self.panel.tick()
         self.assertEqual(self.panel.gripper_feedback, {})
+
+    def test_gripper_status_displays_actual_per_device_continuous_torque_setting(self):
+        units = {side: dict(position=.4, state='HOLDING_POSITION', controlled=True,
+                            grasp_torque_nm=torque)
+                 for side, torque in [('left', 1.1), ('right', .8)]}
+        state = dict(phase='就绪', sides='保持', sensitivity=1., enabled=20,
+                     send_hz=450., accepted_hz=450., grippers=dict(
+                         torque_mode='max_continuous', speed_rad_s=.75, devices=units))
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        text = self.panel.gripper_status.get_text()
+        self.assertIn('夹持设定 1.10 Nm（最大持续）', text)
+        self.assertIn('夹持设定 0.80 Nm（最大持续）', text)
+        # A disconnected/disabled jaw must not advertise the previous setting.
+        units['left']['controlled'] = False
+        units.pop('right')
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertNotIn('夹持设定', self.panel.gripper_status.get_text())
+
+    def test_heading_feedback_preserves_gripper_chassis_and_last_valid_calibration(self):
+        state = dict(phase='就绪', sides='保持', sensitivity=1., enabled=20,
+                     send_hz=450., accepted_hz=450., heading_calibrated=True,
+                     heading_yaw_deg=-90., heading_message='已校准；重新握 Grip 开始跟随',
+                     grippers=dict(speed_rad_s=.75, devices={
+                         'left': dict(position=.4, state='HOLDING_POSITION', controlled=True,
+                                      grasp_torque_nm=1.1)}),
+                     chassis=dict(phase='保持', enabled=8, command=[0., 0., 0.], message='摇杆回中'))
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('双臂正前方已校准', self.panel.heading_status.get_text())
+        self.assertIn('-90.0°', self.panel.heading_status.get_text())
+        self.assertIn('夹持设定 1.10 Nm（最大持续）', self.panel.gripper_status.get_text())
+        self.assertIn('使能 8/8', self.panel.chassis_status.get_text())
+        state['heading_message'] = '正前方校准未执行：底盘尚未停止'
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('已校准', self.panel.heading_status.get_text())
+        self.assertIn('-90.0°', self.panel.heading_status.get_text())
+        self.assertIn('底盘尚未停止', self.panel.heading_status.get_text())
+        for key in ('heading_calibrated', 'heading_yaw_deg', 'heading_message'):
+            state.pop(key)
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('未校准', self.panel.heading_status.get_text())
+        self.assertNotIn('-90.0°', self.panel.heading_status.get_text())
+        self.assertIn('夹持设定', self.panel.gripper_status.get_text())
+
+    def test_heading_state_is_cleared_on_new_session_and_marked_invalid_on_exit(self):
+        self.assertIn('未校准', self.panel.heading_status.get_text())
+        self.panel.heading_status.set_text('上一会话已校准 · +90.0°')
+        self.panel.teleop_mode.set_active_id('first_person')
+        self.panel.start()
+        self.assertIn('未校准', self.panel.heading_status.get_text())
+        self.panel.heading_status.set_text('双臂正前方已校准 · +90.0°')
+        self.panel.process.poll = lambda: 0
+        self.panel.events.put(('vr_exit', 0))
+        self.panel.tick()
+        self.assertIn('下次启动需重新校准', self.panel.heading_status.get_text())
+        self.assertTrue(self.panel.teleop_mode.get_sensitive())
+        self.launch.return_value = NS(stdin=io.StringIO(), poll=lambda:None)
+        self.panel.start()
+        self.assertIn('未校准', self.panel.heading_status.get_text())
+        self.assertEqual(self.panel.teleop_mode.get_active_id(), 'first_person')
+        self.assertNotIn('heading', ' '.join(self.launch.call_args.args[0]))
+
+    def test_heading_status_only_displays_finite_numeric_yaw(self):
+        state = dict(phase='就绪', sides='保持', sensitivity=1., enabled=20,
+                     send_hz=450., accepted_hz=450., heading_calibrated=True)
+        for yaw in (None, '90', True, float('inf')):
+            with self.subTest(yaw=yaw):
+                state['heading_yaw_deg'] = yaw
+                self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+                self.panel.tick()
+                self.assertIn('已校准', self.panel.heading_status.get_text())
+                self.assertNotIn('水平朝向', self.panel.heading_status.get_text())
 
     def test_checked_options_share_one_arm_process_and_acquire_gripper_owner(self):
         self.panel.grippers.set_active(True)

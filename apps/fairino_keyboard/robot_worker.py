@@ -17,10 +17,11 @@ from control_core import (JOINTS, STEER, DRIVE, check_feedback, check_input,
                           input_twist, neutral_duration,
                           normalise_hardware, FEEDBACK_TIMEOUT, check_speeds,
                           check_speed_envelope, DEFAULT_LINEAR, DEFAULT_ANGULAR,
-                          MAX_LINEAR, MAX_ANGULAR, DRIVE_COMMAND_LIMIT, chassis_parameters)
+                          MAX_LINEAR, MAX_ANGULAR, DRIVE_COMMAND_LIMIT, chassis_parameters, limit_planar_twist)
 
 ANGLE = "fairino_keyboard_angle"
 CHASSIS = "eight_dof_chassis_controller"
+TEMP_CONTROLLERS = (ANGLE, "fairino_keyboard_chassis")
 ODOM = "/eight_dof_chassis_controller/odom"
 TOPIC = "/fairino_keyboard/cmd_vel"
 PREFIX = "@KEYCTRL "
@@ -53,10 +54,16 @@ class Worker:
         self.pub = None
         self.homing = False
         self.ready = False
+        self.nav_command = (0., 0., 0.)
+        self.nav_received = 0.
+        self.nav_graph_checked = 0.
         self.subs = [
             self.node.create_subscription(HardwareState, "/hardware_states", self.on_hw, 1),
             self.node.create_subscription(Int32, "/upper_estop_error_code", self.on_upper, 1),
         ]
+        if getattr(args, 'navigation', False):
+            self.subs.append(self.node.create_subscription(
+                Twist, '/fairino_navigation/cmd_vel', self.on_navigation, 1))
         self.action = ActionClient(self.node, StringCommand,
                                    "/fairino_hardware_command_controller/command")
         self.follow = ActionClient(self.node, FollowJointTrajectory,
@@ -81,6 +88,27 @@ class Worker:
                 self.stop.set()
             finally:
                 self.output.task_done()
+
+    def on_navigation(self, msg):
+        try:
+            self.nav_command = limit_planar_twist(
+                [msg.linear.x, msg.linear.y, msg.linear.z,
+                 msg.angular.x, msg.angular.y, msg.angular.z])
+            self.nav_received = time.monotonic()
+        except ValueError as exc:
+            self.input_error = str(exc)
+
+    def navigation_command(self):
+        now = time.monotonic()
+        if now-self.nav_graph_checked > .5:
+            self.nav_graph_checked = now
+            sources = self.node.get_publishers_info_by_topic('/fairino_navigation/cmd_vel')
+            if sources and (len(sources) != 1 or sources[0].node_name != 'velocity_gate'
+                            or sources[0].node_namespace != '/fairino_navigation'):
+                raise RuntimeError('导航速度来源不唯一或不匹配')
+        if now-self.nav_received > .3:
+            return (0., 0., 0.)
+        return self.nav_command
 
     def on_hw(self, msg):
         try:
@@ -108,12 +136,25 @@ class Worker:
         finally:
             self.stop.set()
 
+    def link_status(self, now):
+        with self.input_lock:
+            packet, received = self.packet or {}, self.received
+        ack = packet.get('ack')
+        return {
+            'input_age': now-received if received else None,
+            'ack_age': now-ack if isinstance(ack, (int, float)) and math.isfinite(ack) else None,
+            'client_status_age': packet.get('client_status_age'),
+            'client_send_gap': packet.get('client_send_gap'),
+            'process_nice': os.getpriority(os.PRIO_PROCESS, 0),
+        }
+
     def status(self, force=False, **extra):
         now = time.monotonic()
         if force or now - self.last_status >= 0.1:
             self.emit(phase=self.phase, ready=self.ready, stamp=now, hardware=self.hw,
                       upper_error=self.upper, hw_age=now-self.hw_time,
                       upper_age=now-self.upper_time, command=self.commanded,
+                      link=self.link_status(now),
                       linear_speed=self.args.linear, angular_speed=self.args.angular, **extra)
             self.last_status = now
 
@@ -131,6 +172,11 @@ class Worker:
                                       self.packet.get("angular", self.args.angular))
                 if keys and speeds != (self.args.linear, self.args.angular):
                     raise RuntimeError("调速前请松开全部运动键并将摇杆回中")
+                if getattr(self.args, 'navigation', False):
+                    if self.packet.get('keys') or 'axes' in self.packet:
+                        raise RuntimeError('导航接管期间不接受键盘或摇杆运动输入')
+                    if speeds != (DEFAULT_LINEAR, DEFAULT_ANGULAR):
+                        raise RuntimeError('导航模式固定使用当前底盘默认速度')
                 self.args.linear, self.args.angular = speeds
         else:
             keys = []
@@ -268,6 +314,70 @@ class Worker:
         if any(self.hw["enabled"]) or max(abs(v) for v in self.hw["velocity"]) > 0.03:
             raise RuntimeError("启动要求底盘全部下使能且静止；拒绝接管正在工作的底盘")
 
+    def recovery_guard(self):
+        if self.guard():
+            raise RuntimeError("恢复临时控制器前请松开全部按键并将摇杆回中")
+        self.disabled_stationary()
+        if any(abs(v) > 0.005 for v in self.hw["command_velocity"]):
+            raise RuntimeError("恢复临时控制器要求全部速度指令近零")
+
+    def wait_recovery_feedback(self):
+        # A service reply is not a new hardware sample. Require both feedback
+        # streams to advance before each unload and after the last one.
+        hw_time, upper_time = self.hw_time, self.upper_time
+        deadline = time.monotonic() + 1.0
+        self.recovery_guard()
+        while self.hw_time <= hw_time or self.upper_time <= upper_time:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("恢复临时控制器等待新反馈超时")
+            self.pump(0.02)
+            self.recovery_guard()
+
+    @staticmethod
+    def check_available_controllers(controls):
+        allowed = {"fairino_hardware_state_broadcaster", "fairino_hardware_command_controller",
+                   "joint_state_broadcaster", "angle_controller", "velocity_controller", CHASSIS}
+        for name in TEMP_CONTROLLERS:
+            if name in controls and controls[name] not in ("inactive", "unconfigured"):
+                raise RuntimeError(f"上次临时控制器 {name} 状态为 {controls[name]}，拒绝自动回收；请先结束占用")
+        if any(s == "active" and n not in allowed for n, s in controls.items()):
+            raise RuntimeError("存在未知的活动控制器，拒绝接管")
+
+    def recover_stale_controllers(self):
+        """Called under main's session lock; never enable or stop another owner."""
+        controls = self.controllers()
+        self.check_available_controllers(controls)
+        stale = [name for name in TEMP_CONTROLLERS if name in controls]
+        if not stale:
+            return controls
+        self.phase = "检查并回收上次遗留的已停用临时控制器"
+        self.status(True, recovery_controllers={name: controls[name] for name in stale})
+        for name in stale:
+            # Re-read after any preceding service wait; do not use the snapshot
+            # obtained before waiting for the desktop input to become ready.
+            self.wait_recovery_feedback()
+            controls = self.controllers()
+            self.check_available_controllers(controls)
+            self.recovery_guard()
+            if name not in controls:
+                continue
+            request = UnloadController.Request(); request.name = name
+            result = self.service(UnloadController, "/controller_manager/unload_controller", request)
+            self.emit(recovery_unload=name, recovery_unload_ok=bool(result.ok))
+            if not result.ok:
+                raise RuntimeError("回收上次临时控制器失败：" + name)
+            controls = self.controllers()
+            if name in controls:
+                raise RuntimeError("回收未确认，临时控制器仍存在：" + name)
+        self.wait_recovery_feedback()
+        controls = self.controllers()
+        self.check_available_controllers(controls)
+        if any(name in controls for name in TEMP_CONTROLLERS):
+            raise RuntimeError("恢复期间临时控制器再次出现，拒绝接管")
+        self.recovery_guard()
+        self.status(True, recovery_complete=True, controllers=controls)
+        return controls
+
     def check_private_topic(self):
         subscribers = self.node.get_subscriptions_info_by_topic(TOPIC)
         if not any(s.node_name == CHASSIS for s in subscribers):
@@ -305,10 +415,9 @@ class Worker:
         if config["angle_controller"]["ros__parameters"]["joints"] != ["j1", "j3", "j5", "j7"]:
             raise RuntimeError("转向关节配置发生变化")
         check_speed_envelope(config["eight_dof_chassis_controller"]["ros__parameters"])
-        controls = self.controllers(False)
         if self.args.check:
             self.phase = "只读检查通过（未使能、未回正）"
-            self.status(True, checked=True, controllers=controls)
+            self.status(True, checked=True, controllers=self.controllers(False))
             return
         self.phase = "等待操作界面就绪并松开全部按键"
         deadline = time.monotonic() + 30
@@ -324,18 +433,12 @@ class Worker:
             if time.monotonic() > deadline:
                 raise RuntimeError("等待操作窗口超时")
         self.disabled_stationary()
-        allowed = {"fairino_hardware_state_broadcaster", "fairino_hardware_command_controller",
-                   "joint_state_broadcaster", "angle_controller", "velocity_controller",
-                   "eight_dof_chassis_controller", ANGLE, CHASSIS}
-        if any(s == "active" and n not in allowed for n, s in controls.items()):
-            raise RuntimeError("存在未知的活动控制器，拒绝接管")
-        if ANGLE in controls or 'fairino_keyboard_chassis' in controls:
-            raise RuntimeError("上次键控控制器尚未卸载，需要先检查上次退出状态")
         chassis_params = config[CHASSIS]["ros__parameters"]
         if chassis_params.get('cmd_vel_topic') != TOPIC or chassis_params.get('odom_topic') != ODOM:
             raise RuntimeError('尚未安装统一底盘配置；先运行 tools/install_control_stack.py --execute 并按提示重启')
         if chassis_params != chassis_parameters(chassis_params):
             raise RuntimeError('底盘低速保护参数与共享配置不符；请重新安装统一底盘配置')
+        controls = self.recover_stale_controllers()
         if CHASSIS in controls:
             self.verify_chassis(chassis_params)
         self.odometry('pause')
@@ -399,7 +502,7 @@ class Worker:
         self.wait_condition(lambda: not any(self.hw["enabled"]), 2, "转向下使能未确认")
         self.homing = False
         self.disabled_stationary()
-        self.phase = "回正完成，接入键盘控制"
+        self.phase = "回正完成，接入导航速度" if getattr(self.args, "navigation", False) else "回正完成，接入键盘控制"
         self.switch([CHASSIS], [ANGLE])
         self.zero(); self.pump(0.4)
         self.check_private_topic()
@@ -414,7 +517,7 @@ class Worker:
             self.zero(); self.pump(0.02)
         self.ready = True
         self.odometry('resume')
-        self.phase = "就绪：按住移动，松开停止"
+        self.phase = "导航执行就绪：等待明确的导航目标" if getattr(self.args, "navigation", False) else "就绪：按住移动，松开停止"
         self.status(True)
 
     def run(self):
@@ -424,7 +527,12 @@ class Worker:
         while True:
             self.pump(0.02)
             keys = self.guard()
-            self.commanded = input_twist(keys, self.args.linear, self.args.angular)
+            if getattr(self.args, 'navigation', False):
+                with self.input_lock:
+                    focused = bool((self.packet or {}).get('focused'))
+                self.commanded = self.navigation_command() if focused else (0., 0., 0.)
+            else:
+                self.commanded = input_twist(keys, self.args.linear, self.args.angular)
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = self.commanded
             self.pub.publish(msg)
@@ -432,6 +540,7 @@ class Worker:
     def cleanup(self):
         if not self.owned:
             return True
+        was_ready = self.ready
         reporting_ok = True
 
         def report_cleanup(**values):
@@ -444,9 +553,11 @@ class Worker:
 
         self.ready = False
         self.phase = "停止并下使能"
+        zero_ok = True
         try:
             self.zero()
         except Exception as exc:
+            zero_ok = False
             report_cleanup(cleanup_warning='发送零速度失败，仍继续下使能：' + str(exc))
         # Do not wait for a cancellation result before attempting disable.
         try:
@@ -467,14 +578,35 @@ class Worker:
             except Exception as exc:
                 report_cleanup(error="下使能失败，请使用物理急停：" + str(exc))
         cleanup_ok = True
-        try:
-            self.odometry('pause', guarded=False)
-        except Exception as exc:
-            cleanup_ok = False
-            report_cleanup(error='里程计暂停未确认：' + str(exc))
+        remaining = [name for name in self.loaded if name != CHASSIS]
+        # Keep an already-running, healthy odometry session after confirmed
+        # motor disable. Do not activate or resume anything during cleanup.
+        preserve_odometry = was_ready and disable_ok and zero_ok
+        if preserve_odometry:
+            try:
+                now = time.monotonic()
+                check_feedback(self.hw, now-self.hw_time, self.upper, now-self.upper_time)
+            except RuntimeError:
+                preserve_odometry = False
+        controls = None
         try:
             controls = self.controllers(False)
-            self.switch([], [n for n in set(self.loaded + [CHASSIS]) if controls.get(n) == "active"], False)
+            preserve_odometry = preserve_odometry and controls.get(CHASSIS) == "active"
+        except Exception as exc:
+            preserve_odometry = False
+            cleanup_ok = False
+            report_cleanup(error="读取退出时控制器状态失败：" + str(exc))
+        if not preserve_odometry:
+            try:
+                self.odometry('pause', guarded=False)
+            except Exception as exc:
+                cleanup_ok = False
+                report_cleanup(error='里程计暂停未确认：' + str(exc))
+        try:
+            controls = controls if controls is not None else self.controllers(False)
+            deactivate = [n for n in set(self.loaded + [CHASSIS])
+                          if controls.get(n) == "active" and not (preserve_odometry and n == CHASSIS)]
+            self.switch([], deactivate, False)
             if disable_ok:
                 for name in reversed(self.loaded):
                     if name == CHASSIS or name not in controls:
@@ -483,8 +615,25 @@ class Worker:
                     if not self.service(UnloadController, "/controller_manager/unload_controller", request, False).ok:
                         cleanup_ok = False
                         report_cleanup(error="卸载控制器失败：" + name)
+            elif remaining:
+                cleanup_ok = False
+                report_cleanup(cleanup_warning="未确认全部下使能，保留临时控制器；清错并下使能后，下次启动将检查恢复")
+            controls = self.controllers(False)
+            if preserve_odometry and controls.get(CHASSIS) != "active":
+                preserve_odometry = False
+                cleanup_ok = False
+                report_cleanup(error="退出后厂家控制器状态变化，未确认里程计保留")
+            remaining = [name for name in self.loaded if name != CHASSIS and name in controls]
+            active = [name for name in set(self.loaded + [CHASSIS])
+                      if controls.get(name) == "active" and not (preserve_odometry and name == CHASSIS)]
+            if remaining or active:
+                cleanup_ok = False
+                report_cleanup(error="控制器清理未完成；残留：" + ", ".join(remaining)
+                               + "；仍活动：" + ", ".join(active), remaining_controllers=remaining,
+                               active_controllers=active)
         except Exception as exc:
             cleanup_ok = False
+            preserve_odometry = False
             report_cleanup(error="控制器清理失败：" + str(exc))
         if self.param_dir is not None:
             try:
@@ -492,10 +641,16 @@ class Worker:
             except Exception as exc:
                 cleanup_ok = False
                 report_cleanup(error='临时控制配置清理失败：' + str(exc))
-        self.phase = "已停止并确认下使能" if disable_ok else "停止异常，请检查物理急停"
+        if not disable_ok:
+            self.phase = "停止异常，请检查物理急停"
+        elif not cleanup_ok:
+            self.phase = "已确认下使能，但控制器/里程计清理未完成"
+        else:
+            self.phase = "已停止并确认下使能" + ("；保持里程计更新" if preserve_odometry else "")
         try:
             self.status(True, finished=True, disabled_confirmed=disable_ok,
-                        cleanup_confirmed=cleanup_ok and reporting_ok)
+                        cleanup_confirmed=cleanup_ok and reporting_ok, remaining_controllers=remaining,
+                        odometry_preserved=preserve_odometry)
         except Exception:
             reporting_ok = False
         return disable_ok and cleanup_ok and reporting_ok
@@ -503,6 +658,7 @@ class Worker:
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--navigation", action="store_true", help="显式接入 Nav2；仍使用底盘独占锁、反馈和心跳检查")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--prepare-check", action="store_true")
     parser.add_argument("--linear", type=float, default=DEFAULT_LINEAR)

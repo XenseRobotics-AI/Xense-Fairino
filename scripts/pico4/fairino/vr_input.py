@@ -13,17 +13,13 @@ import numpy as np
 from lerobot.utils.rotation import Rotation
 from paths import ROOT
 from mounts import BASE_FROM_TELEOP, MAPPING_ID
+from vr_heading import decode_head
+from control_modes import POSITION_SIGNS
 
 TIMEOUT = .25
 # PICO tracking (right, up, back) -> teleop (forward, left, up).
 FRAME = np.array([[0., 0., -1.], [-1., 0., 0.], [0., 1., 0.]])
-POSE_FRAMES = {
-    "first_person": FRAME,
-    # Anatomical mirror: reaching forward makes the robot reach forward too.
-    "mirror": np.diag([1., -1., 1.]) @ FRAME,
-    # Face to face, preserve directions in the room rather than mirror depth.
-    "mirror_same_direction": np.diag([-1., -1., 1.]) @ FRAME,
-}
+POSE_FRAMES = {mode: np.diag(signs) @ FRAME for mode, signs in POSITION_SIGNS.items()}
 
 
 def controller_sides(mode="first_person", hand_mapping="auto"):
@@ -52,7 +48,9 @@ def decode_packet(raw):
     stamp = value.get("timeStampNs")
     if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp <= 0:
         raise ValueError("头显时间戳无效")
-    result = {"stamp": stamp}
+    # Head is optional until explicit calibration; an invalid head pose must
+    # not invalidate otherwise healthy controller packets.
+    result = {"stamp": stamp, "head": decode_head(value.get("Head"), stamp)}
     for side in ("left", "right"):
         controller = value["Controller"].get(side)
         if not isinstance(controller, dict):
@@ -163,11 +161,14 @@ class Stream:
             self.opened = False
 
 
-def mapped_pose(pose, side, mode="first_person", rotation_mode=None):
+def mapped_pose(pose, side, mode="first_person", rotation_mode=None, heading=None):
     """Express tracking poses in a side's axes for relative differencing."""
     pose = np.asarray(pose, dtype=float)
     frame = BASE_FROM_TELEOP[side] @ POSE_FRAMES[mode]
     orientation_frame = BASE_FROM_TELEOP[side] @ POSE_FRAMES[rotation_mode or mode]
+    if heading is not None:
+        frame = frame @ heading
+        orientation_frame = orientation_frame @ heading
     return (frame @ pose[:3]*1000.,
             orientation_frame @ Rotation.from_quat(pose[3:]).as_matrix() @ orientation_frame.T)
 
@@ -189,6 +190,18 @@ class Clutch:
         self.start = None
         self.previous = None
         self.frozen_position = self.frozen_rotation = False
+        self.heading = np.eye(3)
+
+    def set_heading(self, alignment):
+        """Replace the fixed horizontal frame and discard all clutch anchors."""
+        alignment = np.asarray(alignment, dtype=float)
+        if (alignment.shape != (3, 3) or not np.isfinite(alignment).all()
+                or not np.allclose(alignment @ alignment.T, np.eye(3), atol=1e-8)
+                or not np.isclose(np.linalg.det(alignment), 1., atol=1e-8)
+                or not np.allclose(alignment @ [0., 1., 0.], [0., 1., 0.], atol=1e-8)):
+            raise ValueError('正前方校准必须是有效的水平旋转')
+        self.reset()
+        self.heading = alignment.copy()
 
     def reset(self):
         self.engaged = False
@@ -197,14 +210,16 @@ class Clutch:
 
     def rebase(self, controller, accepted_tcp):
         """Discard a limited target's excess while keeping Grip engaged."""
-        position, rotation = mapped_pose(controller["pose"], self.side, self.mode, self.rotation_mode)
+        position, rotation = mapped_pose(controller["pose"], self.side, self.mode,
+                                         self.rotation_mode, self.heading)
         self.reference = (position.copy(), rotation.copy())
         self.start = np.asarray(accepted_tcp, dtype=float).copy()
         self.previous = position.copy()
 
     def target(self, controller, current_tcp, sensitivity, stationary=True,
                freeze_position=False, freeze_rotation=False):
-        position, rotation = mapped_pose(controller["pose"], self.side, self.mode, self.rotation_mode)
+        position, rotation = mapped_pose(controller["pose"], self.side, self.mode,
+                                         self.rotation_mode, self.heading)
         if controller["grip"] <= .3:
             self.reset()
             return None

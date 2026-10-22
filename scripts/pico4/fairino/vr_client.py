@@ -19,7 +19,7 @@ from pathlib import Path
 
 from paths import ROOT, TCP, SHARED
 sys.path.insert(0, str(ROOT))
-from apps.gripper_control.gripper_core import TELEOP_SPEED, number
+from apps.gripper_control.gripper_core import TELEOP_SPEED, INSTALLATION_SERIALS, number
 from apps.fairino_keyboard.control_core import (DEFAULT_LINEAR, DEFAULT_ANGULAR,
                                                 MIN_SPEED, MAX_LINEAR, MAX_ANGULAR, check_speeds)
 from upper_keyboard import Connection
@@ -31,12 +31,14 @@ from vr_core import validate, KIND
 from vr_lift import LiftInput
 from vr_input import Clutch, Stream, MAPPING_ID, POSE_FRAMES, controller_sides, rotation_mapping
 from vr_controls import JoystickControls, sensitivity_step
+from vr_heading import heading_alignment
 from vr_home import DEFAULT_HOME, load_home, HomeMotion, HOME_PRESETS, resolve_home
 from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
 from mounts import tcp_in_chest
 from vr_plan import request
 from vr_cartesian import CartesianInput
 from vr_exit import ExitLog, connection_state, exit_notice
+from control_modes import CHASSIS_DIRECTIONS
 
 HERE = Path(__file__).resolve().parent
 
@@ -124,6 +126,20 @@ def wait_for_input(stream, duration=30., require_triggers=False, require_lift=Fa
     raise RuntimeError("未确认新鲜双手柄数据及 Grip 已释放；没有启动机器人控制。")
 
 
+def heading_controls_released(frame, chassis_enabled):
+    """Require a new neutral input after a calibration attempt, even a rejection."""
+    left, right = frame['left'], frame['right']
+    if left.get('axis_click') or right.get('axis_click'):
+        return False
+    if not right.get('joystick_available') or abs(right.get('axis_y', 1.)) > .2:
+        return False
+    if chassis_enabled:
+        return (left.get('joystick_available') is True
+                and math.hypot(left.get('axis_x', 1.), left.get('axis_y', 1.)) <= .2
+                and abs(right.get('axis_x', 1.)) <= .2)
+    return True
+
+
 def operate(args, kin, stream, connection):
     timing = Timing.from_args(args)
     cadence = Deadline(timing.command_hz, time.monotonic())
@@ -135,6 +151,9 @@ def operate(args, kin, stream, connection):
     clutches = {side: Clutch(side, mode=control_mode, rotation_mode=rotation_mode) for side in ARMS}
     cartesian = CartesianInput(clutches, timing.interpolation_delay_ms)
     joysticks = JoystickControls()
+    heading_yaw_deg = None
+    heading_message = '正前方未校准；沿用 PICO 追踪方向'
+    heading_release_required = False
     home = load_home(resolve_home(getattr(args, 'home_preset', 'default'),
                                  getattr(args, 'home_file', None))) if args.execute else None
     if home:
@@ -168,21 +187,23 @@ def operate(args, kin, stream, connection):
     if args.execute:
         print('所选起始位姿：'+home.get('description', home['name']), flush=True)
         print("即将使能 J1–J20；" + ("先自动回双臂 Home，完成后握 Grip 遥操。" if home_pending else "保持当前姿态，握 Grip 遥操。"), flush=True)
-        print("左手 X 双击降低灵敏度、Y 双击提高；右摇杆按压：回 Home（再按中止）；左摇杆按压：暂停。", flush=True)
+        print("左手 X 双击降低灵敏度、Y 双击提高；右摇杆按压：回 Home（再按中止）；左摇杆按压：校准双臂正前方。", flush=True)
+        print("方向校准：头显打开 Head / Controller / Send，松开两侧 Grip、两摇杆回中，机器人停稳后面向正前方按左摇杆；空格暂停。", flush=True)
         if chassis:
-            print(f'底盘将回正并使能：左摇杆全向平移（机器人自身方向），右摇杆左右旋转；'
+            print(f'底盘将回正并使能：{CHASSIS_DIRECTIONS[control_mode]}；'
                   f'最高 {args.chassis_linear:g} m/s、{args.chassis_angular:g} rad/s。回中停止，暂停后先回中。', flush=True)
         if lift_input:
             print(f'右摇杆上/下：身体竖直升降，回中保持；最高 {args.lift_speed_mm_s:g} mm/s，沿用身体高低标定。', flush=True)
         if grippers:
             print('夹爪遥操已显式启用：控制某臂的 Trigger 连续控制同侧夹爪；Grip 仍控制手臂跟随。', flush=True)
-            print(f'夹爪速度 {grippers.speed:g} rad/s（电机轴），目标传输最多 100 Hz；力矩 1.1 Nm。', flush=True)
+            print(f'夹爪速度 {grippers.speed:g} rad/s（电机轴），目标传输最多 100 Hz；'
+                  '自动使用各爪允许的最大持续力矩（当前 EL05 为 1.1 Nm）。', flush=True)
         print("Home 仅移动双臂；请松开两侧 Grip，途中握任一 Grip 或按空格可中止。", flush=True)
         if freeze_buttons:
             print("按住 A/X 冻结旋转（只平移）；按住 B/Y 冻结位移（只旋转）；同时按住冻结两者。", flush=True)
             print("按键仅影响该手柄控制的手臂；松开不补走；仍须握 Grip。+/- 调灵敏度，空格暂停。", flush=True)
         else:
-            print("双击 X/Y 或 +/- 调灵敏度 0.25/0.5/1；左摇杆按压或空格暂停。", flush=True)
+            print("双击 X/Y 或 +/- 调灵敏度 0.25/0.5/1；左摇杆按压校准双臂正前方，空格暂停。", flush=True)
         print("Esc/Ctrl+C 退出并全部下使能。", flush=True)
         print("腕部联合限位默认开启；g 启用 / G 停用，切换暂停并保持使能，松开 Grip 后重握。", flush=True)
         labels = {"left": "左", "right": "右"}
@@ -266,8 +287,40 @@ def operate(args, kin, stream, connection):
                 elif character in ("+", "=", "-"):
                     sensitivity = sensitivity_step(sensitivity, -1 if character == "-" else 1)
                     stop_reason = f"灵敏度已改为 {sensitivity:g}，请松开两侧 Grip"
-                if character == " " or controls["pause"]:
+                if character == " ":
                     stop_reason = "用户暂停，请松开两侧 Grip 后重握"
+                if controls["calibrate_heading"]:
+                    # Change only the arms' tracking frame. Both success and
+                    # rejection enter the shared hold path for every actuator.
+                    heading_release_required = True
+                    try:
+                        if stop_reason:
+                            raise ValueError('当前正在暂停，请停止后重新按左摇杆校准')
+                        if home_pending or home_motion is not None:
+                            raise ValueError('已中止 Home；等待机器人停止后重新按左摇杆校准')
+                        if (not status.get('ready') or not wrist_ready
+                                or max(abs(v) for v in hw['velocity']) >= .005):
+                            raise ValueError('请等待机器人停止并就绪后重新按左摇杆校准')
+                        calibration_now = time.monotonic()
+                        alignment, yaw_deg = heading_alignment(
+                            frame, calibration_now, require_chassis_neutral=chassis is not None)
+                        if chassis is not None:
+                            chassis.require_stationary(calibration_now)
+                        cartesian.reset()
+                        for clutch in clutches.values():
+                            clutch.set_heading(alignment)
+                        heading_yaw_deg = yaw_deg
+                        heading_message = f'已校准正前方（{yaw_deg:+.1f}°）；松开左摇杆按键后重新握 Grip'
+                        log.write(json.dumps({'local_time': time.time(), 'event': 'heading_calibrated',
+                            'yaw_deg': yaw_deg, 'tracking_to_heading': alignment.tolist(),
+                            'head': frame['head'], 'mode': control_mode, 'rotation_mode': rotation_mode},
+                            ensure_ascii=False, allow_nan=False)+'\n')
+                    except ValueError as exc:
+                        heading_message = '正前方校准未执行：'+str(exc)
+                        log.write(json.dumps({'local_time': time.time(), 'event': 'heading_calibration_rejected',
+                            'reason': str(exc)}, ensure_ascii=False)+'\n')
+                    stop_reason = heading_message
+                    last_display = 0.
                 if (controls["home"] or character == "h") and not stop_reason:
                     if home_motion is not None or home_pending:
                         stop_reason = "用户中止 Home；松开 Grip 后可继续遥操"
@@ -324,8 +377,11 @@ def operate(args, kin, stream, connection):
             elif frame and status.get("ready") and wrist_ready:
                 if paused:
                     if (all(frame[s]["grip"] <= .3 for s in ARMS)
+                            and (not heading_release_required or
+                                 heading_controls_released(frame, chassis is not None))
                             and max(abs(x) for x in hw["velocity"][:14]) < .005):
                         paused = False
+                        heading_release_required = False
                         print(f"双臂就绪 · 灵敏度 {sensitivity:g}；握住对应 Grip 移动", flush=True)
                         last_message = None
                 else:
@@ -353,6 +409,7 @@ def operate(args, kin, stream, connection):
                             log.write(json.dumps({"local_time": time.time(), "plan_monotonic": now, "vr_stamp": frame["stamp"],
                                 "sensitivity": sensitivity, "mapping": MAPPING_ID,
                                 "mode": control_mode, "rotation_mode": rotation_mode, "controller_sides": hands,
+                                "heading_yaw_deg": heading_yaw_deg,
                                 "input": {s: {k: v for k, v in frame[s].items() if k != "pose"} for s in ARMS},
                                 "robot_status_age_ms": 1000*(now-connection.last_status),
                                 "compute_ms": 1000*(time.monotonic()-now),
@@ -437,7 +494,7 @@ def operate(args, kin, stream, connection):
                         wrist_guard=wrist_state, wrist_pending=not wrist_ready,
                         wrist_limited=any(a.get('wrist_scale', 1.) < 1.
                                           for a in (outgoing or {}).get('arms', {}).values()),
-                        tcp_tool=tools['mode'], tool_id=tools['id'],
+                        mode=control_mode, tcp_tool=tools['mode'], tool_id=tools['id'],
                         home_name=home['name'] if home else '',
                         grips={s: frame[s]["grip"] for s in ARMS} if frame else {},
                         triggers={s: frame[s].get('trigger') for s in ARMS} if frame else {},
@@ -445,6 +502,8 @@ def operate(args, kin, stream, connection):
                         chassis=chassis_state,
                         body=status.get('body'), lift_axis=lift_value,
                         body_lift_enabled=bool(lift_input),
+                        heading_calibrated=heading_yaw_deg is not None,
+                        heading_yaw_deg=heading_yaw_deg, heading_message=heading_message,
                         enabled=sum(hw.get("enabled", [])), **rate_data)
                 last_display = now
             # Both target generation and heartbeat follow one absolute cadence.
@@ -481,15 +540,17 @@ def main(argv=None):
     parser.add_argument("--hand-mapping", choices=("auto", "same", "crossed"), default="auto",
                         help="手柄到手臂：auto 在面对面模式交换左右；same 同侧；crossed 交叉")
     parser.add_argument("--freeze-buttons", action="store_true",
-                        help="A/X 按住冻结旋转，B/Y 按住冻结位移；双击 X 降/Y 升灵敏度，暂停用左摇杆按压或空格")
+                        help="A/X 按住冻结旋转，B/Y 按住冻结位移；双击 X 降/Y 升灵敏度，左摇杆按压校准双臂正前方，空格暂停")
     parser.add_argument('--home-preset', choices=tuple(HOME_PRESETS), default='default',
                         help='可选起始位姿；right_mirrored 为 10-20 右臂实测及左臂镜像')
     parser.add_argument("--home-file", type=Path, help="自定义双臂 Home 七轴配置文件，覆盖 --home-preset")
     parser.add_argument("--no-auto-home", action="store_true", help="本次启动保持姿态，不自动回 Home；右摇杆回 Home 仍可用")
     parser.add_argument('--grippers', action=argparse.BooleanOptionalAction, default=False,
                         help='显式使能 TacCap 夹爪遥操；控制某臂的 Trigger 连续控制对应夹爪，Grip 仍控制双臂跟随')
-    parser.add_argument('--left-gripper-sn', default='', help='可选：机器人左爪固件 SN；留空按 SDK Left')
-    parser.add_argument('--right-gripper-sn', default='', help='可选：机器人右爪固件 SN；留空按 SDK Right')
+    parser.add_argument('--left-gripper-sn', default='',
+                        help='机器人左爪固件 SN；留空使用安装绑定 '+INSTALLATION_SERIALS['left'])
+    parser.add_argument('--right-gripper-sn', default='',
+                        help='机器人右爪固件 SN；留空使用安装绑定 '+INSTALLATION_SERIALS['right'])
     parser.add_argument('--gripper-speed-rad-s', type=float, default=TELEOP_SPEED,
                         help='夹爪电机轴开合速度 0.01–1.0 rad/s，默认 0.75；仅 --grippers 时使用')
     for side in ('left', 'right'):
@@ -503,7 +564,7 @@ def main(argv=None):
                         help='显式启用右摇杆上下控制身体竖直升降，回中保持')
     parser.add_argument('--lift-speed-mm-s', type=positive, default=15., help='身体竖直速度；关节速度沿用身体配置的默认值')
     parser.add_argument('--chassis', action=argparse.BooleanOptionalAction, default=False,
-                        help='同时回正并使能底盘：左摇杆全向平移，右摇杆左右旋转；回中停止')
+                        help='同时回正并使能底盘：左杆平移、右杆左右旋转；方向随 --mode，回中停止')
     parser.add_argument('--chassis-host', default='192.168.58.3', help='底盘 SSH 主机，与上半身共用用户和密码')
     parser.add_argument('--chassis-linear', type=positive, default=DEFAULT_LINEAR,
                         help=f'底盘最大平移速度 m/s，范围 {MIN_SPEED:g}–{MAX_LINEAR:g}')
@@ -538,7 +599,9 @@ def main(argv=None):
     exit_log = ExitLog(logs)
     exit_log.write('started', execute=args.execute, link_check=args.link_check,
                    grippers_requested=args.grippers, body_lift_requested=args.body_lift,
-                   chassis_requested=args.chassis)
+                   chassis_requested=args.chassis, mode=args.mode,
+                   controller_sides=controller_sides(args.mode, args.hand_mapping),
+                   rotation_mode=rotation_mapping(args.mode, args.rotation_mode))
     termination = dict(reason='completed')
     signal_reason = {}
     def interrupted(signum, _frame):

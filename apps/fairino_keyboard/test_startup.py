@@ -1,6 +1,7 @@
 """Exercise the real startup sequence against fake ROS endpoints, without motors."""
 import copy
 import threading
+import time
 import unittest
 from types import SimpleNamespace as NS
 from unittest.mock import patch
@@ -28,14 +29,16 @@ def goal():
 
 class StartupTests(unittest.TestCase):
     def exercise(self, trajectory_error=0, prepare=False, initially_enabled=False,
-                 wrong_topic=False, existing_chassis=False):
+                 wrong_topic=False, existing_chassis=False, stale=None, check=False,
+                 unload_ok=True):
         worker = rw.Worker.__new__(rw.Worker)
-        worker.args = NS(check=False, prepare_check=prepare)
+        worker.args = NS(check=check, prepare_check=prepare)
         worker.hw = normalise_hardware(hardware())
         for i, p in zip(STEER, [.2, -.2, .72, -.35]):
             worker.hw["position"][i] = p
             worker.hw["command_position"][i] = p
         worker.hw["enabled"][0] = initially_enabled
+        worker.hw_time = worker.upper_time = time.monotonic()
         worker.stop = threading.Event()
         worker.pub = None
         worker.ready = worker.owned = worker.enable_attempted = False
@@ -46,9 +49,21 @@ class StartupTests(unittest.TestCase):
         worker.goals = []
         worker.guard = lambda *a: []
         worker.wait_initial_feedback = lambda: None
-        worker.pump = lambda *a: None
+        def pump(*args):
+            worker.hw_time = worker.upper_time = time.monotonic()
+        worker.pump = pump
         worker.status = lambda *a, **k: None
-        worker.controllers = lambda *a: {"fairino_hardware_command_controller": "active", **({rw.CHASSIS: "inactive"} if existing_chassis else {})}
+        controls = {"fairino_hardware_command_controller": "active",
+                    **({rw.CHASSIS: "inactive"} if existing_chassis else {}), **(stale or {})}
+        worker.controllers = lambda *a: dict(controls)
+        def service(typ, path, request):
+            self.assertEqual(path, '/controller_manager/unload_controller')
+            worker.trace.append(('unload', request.name))
+            if unload_ok:
+                del controls[request.name]
+            return NS(ok=unload_ok)
+        worker.service = service
+        worker.emit = lambda **kw: None
         worker.odometry = lambda action, **k: worker.trace.append(('odometry', action))
         worker.verify_chassis = lambda params: worker.trace.append(('verify', params))
         def load(name, typ, params):
@@ -93,6 +108,7 @@ class StartupTests(unittest.TestCase):
             "JointTolerance": NS,
             "Duration": lambda seconds: NS(to_msg=lambda: seconds),
             "Twist": NS,
+            "UnloadController": NS(Request=NS),
         }
         with patch.dict(rw.__dict__, globals_for_ros):
             try:
@@ -135,6 +151,29 @@ class StartupTests(unittest.TestCase):
         w = self.exercise(initially_enabled=True)
         self.assertIn("拒绝接管", w.failure)
         self.assertFalse(w.commands)
+
+    def test_disabled_inactive_residue_is_recovered_before_homing(self):
+        w = self.exercise(existing_chassis=True, stale={rw.ANGLE: 'inactive'})
+        self.assertIsNone(w.failure)
+        self.assertTrue(w.ready)
+        self.assertEqual([x for x in w.trace if x[0] == 'unload'], [('unload', rw.ANGLE)])
+        self.assertLess(w.trace.index(('unload', rw.ANGLE)),
+                        w.trace.index(('command', 'enable(85)')))
+        self.assertNotIn(rw.CHASSIS, w.loaded)
+
+    def test_failed_recovery_blocks_all_startup_commands(self):
+        w = self.exercise(stale={rw.ANGLE: 'inactive'}, unload_ok=False)
+        self.assertIn('回收上次临时控制器失败', w.failure)
+        self.assertFalse(w.commands)
+        self.assertFalse(w.owned)
+        self.assertFalse(w.goals)
+
+    def test_readonly_check_never_recovers_residue(self):
+        w = self.exercise(check=True, stale={rw.ANGLE: 'inactive'})
+        self.assertIsNone(w.failure)
+        self.assertFalse(w.trace)
+        self.assertFalse(w.loaded)
+        self.assertFalse(w.owned)
 
     def test_web_topic_leak_blocks_drive_enable(self):
         w = self.exercise(wrong_topic=True)

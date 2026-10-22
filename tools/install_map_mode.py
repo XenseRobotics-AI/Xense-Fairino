@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def main(password=None):
     payload = base64.b64encode((ROOT / 'apps/map_viewer/map_control_remote.py').read_bytes()).decode()
     profile = base64.b64encode((ROOT / 'apps/map_viewer/mapping.yaml').read_bytes()).decode()
+    localization = {name: base64.b64encode((ROOT/'apps/map_viewer'/name).read_bytes()).decode()
+                    for name in ('localization.py', 'localization.yaml')}
     script = r"""
 import base64, datetime, hashlib, json, os, pathlib, shutil, subprocess
 home = pathlib.Path.home()
@@ -63,6 +65,21 @@ TimeoutStopSec=20
 Restart=no
 '''
 }
+files.update({str(runtime/name): base64.b64decode(value).decode() for name, value in LOCALIZATION.items()})
+files[str(runtime/'localization_runtime.sh')] = files[str(runtime/'mapping_runtime.sh')].replace(' serve\n', ' watch-localization\n')
+files['/etc/systemd/system/fairino-localization.service'] = '''# Managed by fairino-robot-toolkit: explicit localization watchdog
+[Unit]
+Description=Fairino AMCL input and odometry-session watchdog
+After=network-online.target amr_startup.service
+[Service]
+Type=simple
+User=fairino
+Group=fairino
+ExecStart=/bin/bash /home/fairino/.local/share/fairino-map-control/localization_runtime.sh
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=no
+'''
 for name, content in files.items():
     target = pathlib.Path(name)
     if target.exists():
@@ -92,7 +109,7 @@ report = {'backup': str(backup), 'project': str(project), 'changed_files': [str(
 print('MAP_INSTALL ' + json.dumps(report))
 """
     # PAYLOAD is a Python string constant, not a shell interpolation.
-    script = 'PAYLOAD = ' + repr(payload) + '\nPROFILE = ' + repr(profile) + '\n' + script
+    script = 'LOCALIZATION = ' + repr(localization) + '\n' + 'PAYLOAD = ' + repr(payload) + '\nPROFILE = ' + repr(profile) + '\n' + script
     if password is None:
         password = os.environ.pop('FAIRINO_SSH_PASSWORD', None) or getpass.getpass('SSH 密码（fairino@192.168.58.3）: ')
     output = run('192.168.58.3', 'python3 -u -c ' + shlex.quote(script), password=password, timeout=45)

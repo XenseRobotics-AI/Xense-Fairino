@@ -6,7 +6,7 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 
 from apps.gripper_control.client import Session
-from apps.gripper_control.gripper_core import DEFAULT_SPEED, DEFAULT_TORQUE, SIDES
+from apps.gripper_control.gripper_core import DEFAULT_SPEED, DEFAULT_TORQUE, SIDES, INSTALLATION_SERIALS
 
 
 class GripperPanel(Gtk.Box):
@@ -22,7 +22,9 @@ class GripperPanel(Gtk.Box):
         for side, title in [('left', '左爪 SN'), ('right', '右爪 SN')]:
             row.pack_start(Gtk.Label(label=title), False, False, 0)
             entry = Gtk.Entry()
-            entry.set_placeholder_text('留空按 SDK 左右识别')
+            entry.set_placeholder_text('留空按安装侧绑定')
+            entry.set_tooltip_text(f'默认机器人{title[:1]}爪：{INSTALLATION_SERIALS[side]}；'
+                                   '其他设备按 SDK 左右识别，填入 SN 可覆盖默认绑定。')
             entry.set_width_chars(23)
             row.pack_start(entry, False, False, 0)
             self.serials[side] = entry

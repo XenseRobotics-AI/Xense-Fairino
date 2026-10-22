@@ -73,6 +73,95 @@ class ScanMatchMonitor:
         return result
 
 
+
+class LocalizationMonitor:
+    """Session-bound AMCL estimates; stationary poses need not republish."""
+    def __init__(self):
+        self.session = {}
+        self.sample = None
+        self.odometry = None
+        self.travel = self.rotation = 0.
+
+    def set_session(self, session):
+        if (session.get('id'), session.get('initial_pose_stamp')) != (
+                self.session.get('id'), self.session.get('initial_pose_stamp')):
+            self.sample = None
+            self.travel = self.rotation = 0.
+            self.odometry = None
+        self.session = dict(session)
+
+    def on_odometry(self, pose, twist):
+        if not all(math.isfinite(v) for v in (*pose, *twist)):
+            return
+        if self.odometry is not None and (math.hypot(*twist[:2]) >= .005 or abs(twist[2]) >= .005):
+            self.travel += math.hypot(pose[0]-self.odometry[0], pose[1]-self.odometry[1])
+            d = pose[2]-self.odometry[2]
+            self.rotation += abs(math.atan2(math.sin(d), math.cos(d)))
+        self.odometry = tuple(pose)
+
+    def accept(self, stamp, age, pose, covariance, frame):
+        cutoff = self.session.get('initial_pose_stamp')
+        values = [stamp, age, *pose, *covariance]
+        if (not self.session.get('active') or cutoff is None or frame != 'map'
+                or len(covariance) != 36 or not all(math.isfinite(v) for v in values)
+                or stamp < cutoff or age < -.5
+                or any(covariance[i] < 0 for i in (0, 7, 35))
+                or (self.sample and stamp <= self.sample['stamp'])):
+            return False
+        # Largest XY covariance eigenvalue accounts for an oblique uncertainty ellipse.
+        xx, yy, xy = covariance[0], covariance[7], (covariance[1]+covariance[6])/2
+        if xy*xy > xx*yy + 1e-9:
+            return False
+        variance = .5*(xx+yy+math.sqrt((xx-yy)**2+4*xy**2))
+        self.sample = {'stamp': stamp, 'pose': list(pose),
+                       'matches': (self.sample or {}).get('matches', 0)+1,
+                       'xy_std': math.sqrt(max(0., variance)),
+                       'yaw_std': math.sqrt(covariance[35])}
+        self.travel = self.rotation = 0.
+        return True
+
+    def status(self, now_ros, odometry, topics, tf_ready, amcl_active, source_confirmed):
+        result = dict(self.sample or {}, id=self.session.get('id'), active=self.session.get('active', False),
+                      ready=False, estimate_visible=False, state='stopped',
+                      initialization=dict(self.session.get('initialization') or {}),
+                      reason=self.session.get('reason', '定位尚未启动'))
+        if not result['active']:
+            return result
+        result['state'] = 'waiting'
+        if not amcl_active or not source_confirmed:
+            result['reason'] = '等待唯一的活动 AMCL 节点'
+        elif abs(now_ros-self.session.get('watchdog_time', 0)) > 5:
+            result['reason'] = '定位监视服务未更新，请停止后重新启动定位'
+        elif not odometry.get('running') or odometry.get('epoch') != self.session.get('epoch'):
+            result['reason'] = '里程计未就绪或会话已变化，请重新启动定位'
+        elif any(topics.get(t, {}).get('age') is None or topics[t]['age'] > .75
+                 for t in ('/scan', '/odom')):
+            result['reason'] = '雷达或里程计断流，定位不可用'
+        elif self.session.get('initial_pose_stamp') is None:
+            result['reason'] = '请在地图上设置初始位置与朝向'
+        elif not self.sample:
+            result['reason'] = '等待本次初始位姿后的 AMCL 雷达匹配'
+        elif not tf_ready:
+            result['reason'] = '定位 TF 未就绪或已过期'
+        elif now_ros-self.sample['stamp'] > 2 and (self.travel >= .1 or self.rotation >= math.radians(5)):
+            result.update(state='stale', reason='运动后未获新定位匹配，当前主要随里程计推算')
+        elif result['initialization'].get('state') == 'refining':
+            stage = result['initialization']
+            result.update(state='initializing', estimate_visible=True,
+                          reason=f"静止匹配请求 {stage.get('updates', 0)}/{stage.get('maximum', 6)}；橙色箭头为候选位置")
+        elif result['initialization'].get('state') == 'failed':
+            result.update(state='uncertain', estimate_visible=True,
+                          reason=result['initialization'].get('note', '初始化匹配失败，请重新设置初始位姿'))
+        elif self.sample['xy_std'] > .5 or self.sample['yaw_std'] > math.radians(20):
+            result.update(state='uncertain', estimate_visible=True,
+                          reason='候选定位尚未收敛，请核对初始范围与雷达重合；当前不可导航')
+        else:
+            result.update(ready=True, estimate_visible=True, state='tracking',
+                          reason='定位估计正在更新，请核对雷达与墙面重合' if now_ros-self.sample['stamp'] <= 2
+                          else '静止或移动未达更新阈值，保留本次定位估计')
+        return result
+
+
 def emit(payload):
     print(PREFIX + json.dumps(payload, separators=(',', ':'), allow_nan=False), flush=True)
 
@@ -109,13 +198,17 @@ def main():
     subscriptions = []
     odom_topics = ['/fairino_keyboard/odom', '/eight_dof_chassis_controller/odom', '/odom']
     scan_topics = ['/front/scan', '/back/scan']
-    history = {t: deque(maxlen=200) for t in ['/map'] + odom_topics + scan_topics}
+    history = {t: deque(maxlen=200) for t in ['/map', '/scan'] + odom_topics + scan_topics}
     odom = {}
     scans = {t: deque(maxlen=12) for t in scan_topics}
     map_frame = 'map'
     map_signature = None
     ekf_source = None
-    localization_received = None
+    localization = LocalizationMonitor()
+    localization_state = {}
+    amcl_state = None
+    amcl_checked = 0.
+    amcl_publishers = []
     matches = ScanMatchMonitor()
     mapping_parameters = {}
     match_publishers = []
@@ -136,9 +229,21 @@ def main():
         age = node.get_clock().now().nanoseconds*1e-9-stamp
         matches.accept(stamp, age, [p.x, p.y, yaw(msg.pose.pose.orientation)], time.monotonic())
 
+    def refresh_localization():
+        nonlocal localization_state
+        try:
+            localization_state = json.loads((MAPPING_EPOCH.parent/'localization.json').read_text())
+        except (OSError, ValueError):
+            localization_state = {}
+        localization.set_session(localization_state)
+
     def on_localization(msg):
-        nonlocal localization_received
-        localization_received = time.monotonic()
+        refresh_localization()
+        p = msg.pose.pose.position
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec*1e-9
+        localization.accept(stamp, node.get_clock().now().nanoseconds*1e-9-stamp,
+                            [p.x, p.y, yaw(msg.pose.pose.orientation)],
+                            list(msg.pose.covariance), msg.header.frame_id)
 
     def on_map(msg):
         nonlocal map_frame, map_signature
@@ -168,6 +273,7 @@ def main():
                                   [v if math.isfinite(v) else None for v in values]))
             if topic == '/odom':
                 matches.on_odometry(values[:3], values[3:6])
+                localization.on_odometry(values[:3], values[3:6])
         return receive
 
     def on_scan(topic):
@@ -184,7 +290,16 @@ def main():
         subscriptions.append(node.create_subscription(Odometry, topic, on_odom(topic), 20))
     for topic in scan_topics:
         subscriptions.append(node.create_subscription(LaserScan, topic, on_scan(topic), qos_profile_sensor_data))
-    subscriptions.append(node.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', on_localization, 10))
+    subscriptions.append(node.create_subscription(
+        PoseWithCovarianceStamped, '/amcl_pose', on_localization,
+        QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)))
+    subscriptions.append(node.create_subscription(
+        LaserScan, '/scan', lambda msg: history['/scan'].append(time.monotonic()), qos_profile_sensor_data))
+    from lifecycle_msgs.srv import GetState
+    amcl_client = node.create_client(GetState, '/amcl/get_state')
+    amcl_future = None
+    amcl_requested = 0.
+
     subscriptions.append(node.create_subscription(PoseWithCovarianceStamped, '/pose', on_match, 20))
     params = node.create_client(GetParameters, '/ekf_filter_node/get_parameters')
     slam_params = node.create_client(GetParameters, '/slam_toolbox/get_parameters')
@@ -205,6 +320,18 @@ def main():
             now = time.monotonic()
             if args.duration and now - started >= args.duration:
                 break
+            if amcl_future is not None and amcl_future.done():
+                try:
+                    response = amcl_future.result()
+                    amcl_state = response.current_state.id if response else None
+                except Exception:
+                    amcl_state = None
+                amcl_checked = now
+                amcl_future = None
+            elif amcl_future is not None and now-amcl_requested > 3:
+                amcl_future.cancel()
+                amcl_future = None
+                amcl_state = None
             if future is not None and future.done():
                 result = future.result()
                 if result and result.values:
@@ -222,12 +349,21 @@ def main():
                 slam_future = None
             if now - last_mode_query > 2:
                 last_mode_query = now
+                refresh_localization()
+                amcl_publishers = [p.node_name for p in node.get_publishers_info_by_topic('/amcl_pose')]
+                if amcl_future is None and amcl_client.service_is_ready():
+                    amcl_future = amcl_client.call_async(GetState.Request())
+                    amcl_requested = now
                 try:
                     odometry_status = json.loads(ODOMETRY_STATUS.read_text())
                     if abs(time.time()-odometry_status['time']) > 2:
                         odometry_status = {}
                 except (OSError, ValueError, KeyError):
                     odometry_status = {}
+                try:
+                    odometry_status['epoch'] = (ODOMETRY_STATUS.parent/'epoch').read_text().strip()
+                except OSError:
+                    odometry_status['epoch'] = None
                 map_publishers = sorted({p.node_name for p in node.get_publishers_info_by_topic('/map')})
                 match_publishers = sorted({p.node_name for p in node.get_publishers_info_by_topic('/pose')})
                 saved_file = Path('/opt/fairino_AMR_project/maps/active/map.yaml')
@@ -261,7 +397,7 @@ def main():
                                  'latest': odom.get(topic)}
             pose = None
             tf_error = None
-            localized = localization_received is not None and now - localization_received < 2
+            localized = False
             try:
                 tf = buffer.lookup_transform(map_frame, 'base_footprint', Time())
                 age = (node.get_clock().now() - Time.from_msg(tf.header.stamp)).nanoseconds * 1e-9
@@ -272,6 +408,20 @@ def main():
                     tf_error = '机器人 TF 已过期'
             except Exception:
                 tf_error = '等待 map 到 base_footprint 的 TF'
+            # Require a map->odom transform from this initial-pose request.
+            cutoff = localization_state.get('initial_pose_stamp')
+            localization_tf_ready = pose is not None
+            try:
+                map_tf = buffer.lookup_transform(map_frame, 'odom', Time())
+                map_stamp = map_tf.header.stamp.sec + map_tf.header.stamp.nanosec*1e-9
+                localization_tf_ready = localization_tf_ready and cutoff is not None and map_stamp >= cutoff
+            except Exception:
+                localization_tf_ready = False
+            localization_status = localization.status(
+                node.get_clock().now().nanoseconds*1e-9, odometry_status, topics,
+                localization_tf_ready, amcl_state == 3 and now-amcl_checked < 4,
+                amcl_publishers == ['amcl'])
+            localized = localization_status['estimate_visible']
             if mode == 'empty' or (mode != 'mapping' and not localized):
                 pose = None
                 tf_error = '已有地图定位未就绪'
@@ -325,6 +475,7 @@ def main():
                   'odometry_source': odometry_status.get('source', ekf_source),
                   'odometry_status': odometry_status,
                   'scan_match': dict(matches.status(now), source_confirmed=match_publishers == ['slam_toolbox']) if mode == 'mapping' else None,
+                  'localization': localization_status,
                   'mapping_parameters': mapping_parameters, 'transforms': transforms,
                   'scans': points, 'local_scans': local_points, 'frame': map_frame,
                   'map_mode': mode, 'mapping_paused': mapping_paused, 'map_publishers': map_publishers,
