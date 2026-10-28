@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import shlex
 import sys
+import zlib
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,15 @@ print('NAVIGATION_INSTALL '+json.dumps(report))
     return 'PAYLOAD = '+repr(payload)+'\nEXPECTED = '+repr(points)+'\nEXECUTE = '+repr(execute)+'\n'+program
 
 
+def remote_command(execute=False):
+    # The bundled observer can make the single ssh argument exceed Linux's
+    # per-argument limit. Transport the same installer compressed, not truncated.
+    encoded = base64.b64encode(zlib.compress(remote_script(execute).encode())).decode()
+    loader = ('import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('
+              + repr(encoded) + ")), '<navigation installer>', 'exec'))")
+    return 'python3 -u -c '+shlex.quote(loader)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true')
@@ -121,7 +131,7 @@ def main():
     parser.add_argument('--user', default='fairino')
     args = parser.parse_args()
     password = getpass.getpass(f'SSH 密码（{args.user}@{args.host}）：')
-    output = run(args.host, ENV+'python3 -u -c '+shlex.quote(remote_script(args.execute)),
+    output = run(args.host, ENV+remote_command(args.execute),
                  user=args.user, password=password, timeout=60)
     result = json.loads(next(line[len('NAVIGATION_INSTALL '):] for line in output.splitlines()
                              if line.startswith('NAVIGATION_INSTALL ')))

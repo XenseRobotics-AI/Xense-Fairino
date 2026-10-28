@@ -22,10 +22,11 @@ from body_core import load_config
 from tcp_core import MODEL_ID
 from test_tcp import hardware, probe, STUBS
 from vendor_kinematics import VendorKinematics
-from vr_core import KIND, validate
+from vr_core import KIND, LIFT_MODE, validate
 from vr_client import operate, remote_command
 from vr_robot import VRProbe
 from vr_lift import LiftInput, LiftPlanner
+from vr_lift_presets import PresetLiftPlanner
 
 
 class EndSimulation(Exception):
@@ -90,9 +91,11 @@ class LiftMathTests(unittest.TestCase):
             LiftPlanner({**self.model.config, 'upright_confirmed': False})
 
     def test_receiver_only_accepts_scalar_lift_not_arbitrary_body_joints(self):
-        request = dict(kind=KIND, model=MODEL_ID, id=1, created=10., arms={}, lift=.5)
+        request = dict(kind=KIND, model=MODEL_ID, id=1, created=10., arms={}, lift=.5,
+                       lift_mode=LIFT_MODE, lift_epoch=1)
         self.assertEqual(validate(hardware(), request, 10.), {})
-        for mutation in ({'lift': [0.]*20}, {'lift': True}, {'lift': 0.}, {'created': 9.7},
+        self.assertEqual(validate(hardware(), {**request, 'lift': 0.}, 10.), {})
+        for mutation in ({'lift': [0.]*20}, {'lift': True}, {'lift_mode': None}, {'created': 9.7},
                          {'arms': {'body': {}}}, {'lift': float('nan')}):
             with self.assertRaises(ValueError):
                 validate(hardware(), {**request, **mutation}, 10.)
@@ -114,6 +117,32 @@ class LiftInputTests(unittest.TestCase):
             gate.value(self.frame(), True)
             self.assertEqual(gate.value(self.frame(-.7), True), -.7)
 
+    def test_intermediate_neutral_and_reversal_change_persistent_gesture_id(self):
+        gate = LiftInput()
+        gate.value(self.frame(), True)
+        gate.value(self.frame(.8), True)
+        first = gate.gesture_id
+        batch = {**self.frame(.8), 'samples': [self.frame(.8), self.frame(), self.frame(.8)]}
+        self.assertEqual(gate.value(batch, True), .8)
+        self.assertEqual(gate.gesture_id, first+2)
+        # Latest-only and repeated samples cannot erase the observed interruption.
+        gate.value(self.frame(.8), True)
+        self.assertEqual(gate.gesture_id, first+2)
+        gate.value({**self.frame(.8), 'samples': [self.frame(-.8), self.frame(.8)]}, True)
+        self.assertEqual(gate.gesture_id, first+4)
+
+    def test_unavailable_sample_in_batch_cancels_and_requires_neutral(self):
+        gate = LiftInput()
+        gate.value(self.frame(), True)
+        self.assertEqual(gate.value(self.frame(.8), True), .8)
+        self.assertEqual(gate.value({**self.frame(.8),
+            'samples': [self.frame(available=False), self.frame(.8)]}, True), 0.)
+        self.assertTrue(gate.interrupted)
+        self.assertEqual(gate.value(self.frame(.8), True), 0.)
+        self.assertFalse(gate.interrupted)
+        gate.value(self.frame(), True)
+        self.assertEqual(gate.value(self.frame(.8), True), .8)
+
 
 class ReceiverTests(unittest.TestCase):
     def simulate(self, stale=False, enabled=True):
@@ -122,7 +151,7 @@ class ReceiverTests(unittest.TestCase):
         q = model.pose(dict(height=25, forward=0, roll=0, yaw=0), p.hw['position'])
         p.hw['position'] = q[:]; p.hw['command_position'] = q[:]
         p.hold_positions = q[:]; p.baseline = q[:]
-        p.lift = LiftPlanner(model.config) if enabled else None
+        p.lift = PresetLiftPlanner(model.config) if enabled else None
         p.lift_axis_active = False; p.lift_stop_deadline = None
         clock, ticks, published = [10.], [0], []
         p.node = NS(create_publisher=lambda *a: NS(get_subscription_count=lambda: 1, publish=published.append))
@@ -137,11 +166,12 @@ class ReceiverTests(unittest.TestCase):
                 p.hw['velocity'] = [(b-a)/seconds for a,b in zip(p.hw['position'], end)]
                 p.hw['position'] = end[:]; p.hw['command_position'] = end[:]
             p.hw_time = p.received = clock[0]; p.packet['ack'] = clock[0]
-            if ticks[0] > 120:
+            if ticks[0] > 600:
                 raise EndSimulation()
-            if ticks[0] < 65:
+            if ticks[0] < 300:
                 p.packet['request'] = dict(kind=KIND, model=MODEL_ID, id=ticks[0], created=clock[0],
-                                          arms={}, lift=1., _wrist_guard=p.wrist.active)
+                                          arms={}, lift=0. if ticks[0] < 10 else 1.,
+                                          lift_mode=LIFT_MODE, lift_epoch=1, _wrist_guard=p.wrist.active)
             elif not stale:
                 p.packet['request'] = None
             if guarded:
@@ -153,7 +183,7 @@ class ReceiverTests(unittest.TestCase):
                 p.run()
         return p, model, published
 
-    def test_release_or_stale_input_holds_the_new_height_without_returning_to_start(self):
+    def test_cancel_or_stale_input_holds_the_new_height_without_returning_to_start(self):
         for stale in (False, True):
             p, model, messages = self.simulate(stale)
             height = model.state(p.hw['position'])['height']
@@ -197,16 +227,21 @@ class ClientTests(unittest.TestCase):
                 n = len(sent)
                 return dict(stamp=n+1, left=controller.copy(), right={**controller,
                     'axis_y': .8 if 10 <= n < 25 or 32 <= n < 45 else 0., 'axis_click': n == 30})
-            args = NS(execute=True, sensitivity=.25, no_auto_home=True, body_lift=True, lift_speed_mm_s=15.)
+            args = NS(execute=True, sensitivity=.25, no_auto_home=True, body_lift=True)
             with patch('vr_client.time.monotonic', lambda:clock[0]), patch('vr_client.time.sleep',sleep), \
                  patch('vr_client.key',return_value=''), patch('vr_client.keyboard',contextlib.nullcontext), \
                  contextlib.redirect_stdout(io.StringIO()), self.assertRaises(EndSimulation):
                 operate(args, VendorKinematics(), NS(read=read), connection)
         self.assertTrue(any(r and r.get('lift') == .8 and r['arms'] == {} for r in sent[10:25]))
-        self.assertTrue(all(r is None or 'lift' not in r for r in sent[25:]))
+        self.assertTrue(all(r['lift_mode'] == LIFT_MODE for r in sent[10:25] if r and 'lift' in r))
+        self.assertTrue(any(r and r.get('lift') == 0. and r.get('lift_mode') == LIFT_MODE
+                            for r in sent[25:30]))
+        # Right-stick click requests Home: no body preset heartbeat may leak
+        # into Home, even if the vertical stick is pushed again immediately.
+        self.assertTrue(all(r is None or 'lift_mode' not in r for r in sent[30:]))
 
     def test_remote_bundle_reuses_body_model_and_current_calibration(self):
-        args = NS(execute=True, body_lift=True, lift_speed_mm_s=15.)
+        args = NS(execute=True, body_lift=True)
         command = remote_command(args)
         loader = shlex.split(shlex.split(command)[2].split('exec python3 -u -c ',1)[1])[0]
         tree = ast.parse(loader)
@@ -214,10 +249,12 @@ class ClientTests(unittest.TestCase):
                        and ast.unparse(n.func) == 'base64.b64decode')
         bundle = json.loads(zlib.decompress(base64.b64decode(encoded)))
         self.assertEqual(bundle['body_core'], (paths.SHARED/'body_control/body_core.py').read_text())
+        self.assertEqual(bundle['vr_lift_presets'], Path(__file__).with_name('vr_lift_presets.py').read_text())
         argv = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                     and ast.unparse(n.targets[0]) == 'sys.argv')
         config = json.loads(argv[argv.index('--body-config-json')+1])
         self.assertEqual(config, load_config().config)
+        self.assertNotIn('--lift-speed-mm-s', argv)
 
 
 if __name__ == '__main__':

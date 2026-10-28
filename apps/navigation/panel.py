@@ -1,4 +1,5 @@
 """Workbench navigation buttons. Uses the same remote API as the CLI."""
+import math
 import threading
 import time
 import queue
@@ -11,8 +12,9 @@ from .desktop import Target, DriveSession, active_goal, context, execute
 
 
 class NavigationPanel(Gtk.Box):
-    def __init__(self, map_panel, acquire=None, release=None):
+    def __init__(self, map_panel, acquire=None, release=None, integrated=False):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.integrated = integrated
         self.map_panel = map_panel
         self.acquire = acquire or (lambda *_: True)
         self.release = release or (lambda *_: None)
@@ -28,43 +30,99 @@ class NavigationPanel(Gtk.Box):
         self.generation = 0
         self.owned = False
         self.uncertain_goal = False
+        self.reported_failure = None
         self.buttons = {}
-        row = Gtk.Box(spacing=6)
-        for action, title in [('drive', '① 接入导航底盘 · 回正使能'),
-                              ('start', '② 启动导航'), ('end', '结束导航并下使能')]:
+        self.set_border_width(4)
+        for action, title in [('drive', '① 准备底盘 · 回正并使能'),
+                              ('start', '启动导航')]:
             button = Gtk.Button(label=title)
             button.connect('clicked', lambda _, a=action: self.control(a))
-            row.pack_start(button, False, False, 0)
+            if not (integrated and action == 'drive'):
+                self.pack_start(button, False, False, 0)
             self.buttons[action] = button
-        self.pack_start(row, False, False, 0)
-        row = Gtk.Box(spacing=6)
+        self.target_coordinates = Gtk.Expander(label='目标坐标 · 未设置')
+        self.target_coordinates.set_expanded(not integrated)
+        grid = Gtk.Grid(column_spacing=8, row_spacing=6)
         self.entries = []
-        for label in ('X / m', 'Y / m', '朝向 / °'):
-            row.pack_start(Gtk.Label(label=label), False, False, 0)
+        for index, label in enumerate(('X / m', 'Y / m', '朝向 / °')):
+            grid.attach(Gtk.Label(label=label, xalign=0), 0, index, 1, 1)
             entry = Gtk.Entry()
-            entry.set_width_chars(7)
-            entry.set_placeholder_text('0' if label == '朝向 / °' else '')
-            if label == '朝向 / °':
+            entry.set_width_chars(9)
+            entry.set_hexpand(True)
+            entry.set_placeholder_text('0' if index == 2 else '')
+            if index == 2:
                 entry.set_text('0')
             entry.connect('changed', self.edit_target)
-            row.pack_start(entry, False, False, 0)
+            grid.attach(entry, 1, index, 1, 1)
             self.entries.append(entry)
-        for action, title in [('plan', '预览路径'), ('goal', '③ 开始导航'), ('cancel', '取消目标')]:
+        self.target_coordinates.add(grid)
+        if not integrated:
+            self.pack_start(self.target_coordinates, False, False, 0)
+        target_actions = Gtk.Box(spacing=6, homogeneous=True) if integrated else self
+        if integrated:
+            self.pack_start(target_actions, False, False, 0)
+        for action, title in [('pick', '在地图上选择目标'), ('plan', '预览路径')]:
             button = Gtk.Button(label=title)
             button.connect('clicked', lambda _, a=action: self.control(a))
-            row.pack_start(button, False, False, 0)
+            target_actions.pack_start(button, integrated, integrated, 0)
             self.buttons[action] = button
-        self.pack_start(row, False, False, 0)
-        hint = Gtk.Label(label='目标为 map 绝对坐标；0° 沿地图 +X。红色 ❌ 为目标，输入后不会自动移动。', xalign=0)
+        if integrated:
+            self.pack_start(self.target_coordinates, False, False, 0)
+        self.footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        row = Gtk.Box(spacing=6, homogeneous=True)
+        for action, title in [('goal', '开始导航'), ('cancel', '取消目标')]:
+            button = Gtk.Button(label=title)
+            button.connect('clicked', lambda _, a=action: self.control(a))
+            button.get_style_context().add_class('suggested-action' if action == 'goal' else 'destructive-action')
+            row.pack_start(button, True, True, 0)
+            self.buttons[action] = button
+        self.footer.pack_start(row, False, False, 4)
+        button = Gtk.Button(label='结束导航并下使能')
+        button.get_style_context().add_class('destructive-action')
+        button.connect('clicked', lambda _: self.control('end'))
+        self.buttons['end'] = button
+        self.footer.pack_start(button, False, False, 0)
+        self.pack_start(self.footer, False, False, 0)
+        hint = Gtk.Label(label='0° 沿地图 +X。选点或输入仅设置目标，点击“开始导航”才执行。', xalign=0)
         hint.set_line_wrap(True)
-        self.pack_start(hint, False, False, 0)
+        hint.set_max_width_chars(32)
+        details = self
+        if integrated:
+            expander = Gtk.Expander(label='定位 / 导航详情与操作提示')
+            self.details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            expander.add(self.details_box)
+            self.pack_start(expander, False, False, 0)
+            details = self.details_box
+        details.pack_start(hint, False, False, 4)
         self.status = Gtk.Label(label='导航未接入；先选择地图。', xalign=0)
         self.status.set_line_wrap(True)
-        self.pack_start(self.status, False, False, 0)
+        self.status.set_max_width_chars(32)
+        if integrated:
+            self.footer.pack_start(self.status, False, False, 0)
+            self.footer.reorder_child(self.status, 0)
+        else:
+            details.pack_start(self.status, False, False, 0)
         self.message = Gtk.Label(xalign=0)
         self.message.set_line_wrap(True)
-        self.pack_start(self.message, False, False, 0)
+        self.message.set_max_width_chars(32)
+        details.pack_start(self.message, False, False, 0)
+        if integrated:
+            self.set_border_width(0)
+            self.status.set_lines(1)
+            self.status.set_ellipsize(3)
+            self.message.set_lines(2)
+            self.message.set_ellipsize(3)
+            for label in (self.status, self.message):
+                label.connect('notify::label', lambda label, _: label.set_tooltip_text(label.get_text()))
+            # Action results remain visible even when the detail expander is closed.
+            self.message.connect('notify::label', lambda label, _: self.map_panel.message.set_text(label.get_text()))
+        # Hardware actions are unavailable from the very first demo frame.
+        if self.is_demo():
+            self.tick()
         GLib.timeout_add(100, self.tick)
+
+    def is_demo(self):
+        return getattr(self.map_panel.stream.args, 'demo', False) is True
 
     def credentials(self):
         stream = self.map_panel.stream
@@ -85,7 +143,38 @@ class NavigationPanel(Gtk.Box):
         # Prevent map/pose mutations while navigation may own a live goal.
         return self.busy or self.active() or self.shutdown
 
+    def preparation_available(self):
+        """One guarded startup entry, shared by localization and navigation."""
+        return bool(not self.is_demo() and not self.closed and not self.busy
+                    and not self.shutdown and not self.map_panel.busy
+                    and self.drive is None and not self.active())
+
+    def preparation_status(self, frame=None):
+        """Explain current motor readiness without reusing a past AMCL error."""
+        if self.is_demo():
+            return '离线演示，不连接或使能底盘。'
+        if self.shutdown:
+            return '正在结束导航，等待底盘停止并下使能。'
+        if self.drive is None:
+            return self.drive_message+'；定位与导航共用底盘，请先准备底盘。'
+        if not self.drive.ready:
+            return self.drive.message
+        if not self.fresh_map():
+            return '底盘控制已就绪；地图 / 定位反馈未更新，请等待连接恢复。'
+        frame = self.frame() if frame is None else frame
+        loc = frame.get('localization') or {}
+        if not loc.get('active'):
+            return '底盘已就绪，请在第②步启动 AMCL 并设置初始位姿。'
+        if not loc.get('ready'):
+            return '底盘已就绪；请在第②步设置初始位姿并等待定位就绪。'
+        return '底盘与定位已就绪；可在第③步启动导航并选择目标。'
+
     def draw_target(self):
+        if hasattr(self, 'target_coordinates'):
+            pose = self.target.pose
+            self.target_coordinates.set_label(
+                f"目标坐标 · {pose['x']:.2f}, {pose['y']:.2f} m / {math.degrees(pose['yaw']):.1f}°"
+                if pose else '目标坐标 · 未设置（可展开输入）')
         self.map_panel.plot.set_navigation(self.target.pose, self.target.points, self.target.label)
         self.map_panel.canvas.draw_idle()
 
@@ -104,7 +193,21 @@ class NavigationPanel(Gtk.Box):
             self.message.set_text('请填写完整目标坐标，并先选用地图、启动定位。')
         self.draw_target()
 
+    def set_picked_target(self, x, y, yaw):
+        if self.locked() or self.map_panel.busy:
+            return False
+        values = (x, y, yaw)
+        if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
+            self.message.set_text('地图目标无效，请重新选择。')
+            return False
+        for entry, value in zip(self.entries, (x, y, math.degrees(yaw))):
+            entry.set_text(f'{value:.4f}')
+        return self.target.pose is not None
+
     def submit(self, action, pose=None):
+        if self.is_demo():
+            self.message.set_text('离线演示，不发送导航指令。')
+            return
         self.busy = True
         self.generation += 1
         self.message.set_text({'plan': '正在计算路径…', 'goal': '正在发送导航目标…',
@@ -123,13 +226,36 @@ class NavigationPanel(Gtk.Box):
     def control(self, action):
         if self.closed or self.shutdown:
             return
+        if self.is_demo():
+            if action == 'pick':
+                self.map_panel.pick_navigation_goal()
+            elif action == 'plan':
+                try:
+                    pose = self.target.request(self.frame())
+                    self.target.points = self.map_panel.stream.preview_path(pose)
+                    self.target.label = '离线演示路径'
+                    self.message.set_text('离线演示路径，仅展示示例路线，不会执行。')
+                    self.draw_target()
+                except (ValueError, AttributeError) as exc:
+                    self.message.set_text('无法预览离线目标：'+str(exc))
+            else:
+                self.message.set_text('离线演示，不连接、使能或移动机器人。')
+            return
         if action == 'end':
             self.end()
             return
         if self.busy:
             return
+        if action == 'pick':
+            if not self.active() and not self.map_panel.busy and context(self.frame()):
+                self.map_panel.pick_navigation_goal()
+            return
         if action == 'drive':
-            if self.drive or not self.acquire('base', '导航'):
+            # Shared entry; do not rely on a disabled widget for safety.
+            if not self.preparation_available():
+                self.message.set_text(self.preparation_status())
+                return
+            if not self.acquire('base', '导航'):
                 return
             self.lease = True
             self.drive = DriveSession(*self.credentials())
@@ -154,7 +280,7 @@ class NavigationPanel(Gtk.Box):
         else:
             if action == 'start':
                 if not self.drive or not self.drive.ready:
-                    self.message.set_text('请先结束手动底盘控制，再点击①接入导航底盘并等待就绪。')
+                    self.message.set_text('请先结束手动底盘控制，再点击上方“① 准备底盘”并等待就绪。')
                     return
                 if not self.fresh_map() or not (self.frame().get('localization') or {}).get('ready'):
                     self.message.set_text('请保持定位开启，等待定位就绪后再启动导航。')
@@ -163,6 +289,9 @@ class NavigationPanel(Gtk.Box):
             self.submit(action)
 
     def end(self):
+        if self.is_demo():
+            self.message.set_text('离线演示，不发送导航指令。')
+            return
         if self.shutdown:
             return
         self.shutdown = True
@@ -184,6 +313,8 @@ class NavigationPanel(Gtk.Box):
         threading.Thread(target=work, daemon=True).start()
 
     def poll(self):
+        if self.is_demo():
+            return
         self.polling = True
         generation = self.generation
         creds = self.credentials()
@@ -198,6 +329,15 @@ class NavigationPanel(Gtk.Box):
     def tick(self):
         if self.closed:
             return False
+        if self.is_demo():
+            frame = self.frame()
+            if self.target.reconcile(frame):
+                self.draw_target()
+            for name, button in self.buttons.items():
+                button.set_sensitive(bool(name in ('pick', 'plan') and context(frame)
+                                          and (name == 'pick' or self.target.pose)))
+            self.status.set_text('离线演示 · 目标：'+(self.target.label or '未设置'))
+            return True
         now = time.monotonic()
         if self.drive:
             self.drive.pulse()
@@ -208,6 +348,7 @@ class NavigationPanel(Gtk.Box):
                 if self.lease:
                     self.release('base', '导航')
                     self.lease = False
+        new_failure = None
         while not self.events.empty():
             kind, value = self.events.get_nowait()
             if kind == 'status':
@@ -226,6 +367,11 @@ class NavigationPanel(Gtk.Box):
                     self.target.label = {1: '已接收', 2: '执行中', 3: '取消中',
                                          4: '已到达', 5: '已取消', 6: '未完成'}.get(last.get('status'), '状态未知')
                     failure = self.state.get('failure') or {}
+                    if failure.get('goal') == self.target.goal_id:
+                        key = (failure['goal'], failure.get('reason'))
+                        if key != getattr(self, 'reported_failure', None):
+                            self.reported_failure = key
+                            new_failure = '导航保护停止：'+failure.get('reason', '请查看导航记录')
                     if failure.get('goal') == self.target.goal_id and last.get('status') in (5, 6):
                         self.target.label = '保护停止'
                     self.draw_target()
@@ -262,20 +408,30 @@ class NavigationPanel(Gtk.Box):
         if self.target.reconcile(frame):
             self.draw_target()
             self.message.set_text('地图或定位会话已变化，已清除旧目标和预览路径。')
+        if new_failure:
+            # Preserve the actual stop cause even if that same input failure
+            # invalidates the localization session and clears the target.
+            self.message.set_text(new_failure)
         fresh = now-self.received < 3 and not self.state.get('stale')
         ready = fresh and self.state.get('localization_ready') and self.state.get('controller_ready')
         if self.received:
-            drive = self.drive.message if self.drive else self.drive_message
+            drive = self.preparation_status(frame)
             nav = ('状态过期 / 导航未启动' if not fresh else '就绪' if ready
                    else self.state.get('localization_reason', '等待启动 / 就绪'))
+            loc = frame.get('localization') or {}
+            if fresh and self.fresh_map() and not loc.get('active'):
+                nav = '定位未启动'
+                if loc.get('id') and loc.get('reason'):
+                    nav += '；上次定位停止原因：'+str(loc['reason'])
             failure = self.state.get('failure') or {}
             if fresh and failure.get('goal') == self.target.goal_id and self.target.goal_id:
                 nav = failure.get('reason', '保护停止')
-            self.status.set_text(drive+' · 导航：'+str(nav)+' · 目标：'+(self.target.label or '未设置'))
+            prefix = '' if getattr(self, 'integrated', False) else drive+' · '
+            self.status.set_text(prefix+'导航：'+str(nav)+' · 目标：'+(self.target.label or '未设置'))
         elif self.drive:
-            self.status.set_text(self.drive.message+' · 等待导航状态')
+            self.status.set_text(self.preparation_status(frame)+' · 等待导航状态')
         free = not self.busy and not self.shutdown and not self.map_panel.busy
-        self.buttons['drive'].set_sensitive(free and self.drive is None and not self.active())
+        self.buttons['drive'].set_sensitive(self.preparation_available())
         self.buttons['start'].set_sensitive(bool(free and self.drive and self.drive.ready and context(frame) and self.fresh_map()
                                                        and (frame.get('localization') or {}).get('ready') and not self.active()))
         self.buttons['end'].set_sensitive(bool(not self.shutdown and (self.drive or self.owned or self.active() or self.state.get('running'))))
@@ -284,6 +440,8 @@ class NavigationPanel(Gtk.Box):
             self.buttons[name].set_sensitive(bool(free and ready and self.fresh_map() and self.target.pose
                                                  and not self.active()
                                                  and (name == 'plan' or self.drive and self.drive.ready)))
+        if 'pick' in self.buttons:
+            self.buttons['pick'].set_sensitive(bool(free and not self.active() and self.fresh_map() and context(frame)))
         for entry in self.entries:
             entry.set_sensitive(free and not self.active())
         if now >= self.next_poll and not self.polling and not self.busy and not self.shutdown:
@@ -292,6 +450,9 @@ class NavigationPanel(Gtk.Box):
         return True
 
     def close(self):
+        if self.is_demo():
+            self.closed = True
+            return True
         if self.busy or self.shutdown or self.drive or self.owned or self.active():
             waiting_drive = self.drive and self.drive.stop_event.is_set() and not self.busy and not self.owned and not self.active()
             if not self.shutdown and not waiting_drive:

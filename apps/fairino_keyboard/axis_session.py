@@ -25,6 +25,7 @@ class AxisSession:
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.latest = {}
         self.failure = ''
+        self.log_path = None
         self.disabled_confirmed = False
         self.cleanup_confirmed = False
         self.axes, self.source_time, self.active = ZERO, 0., False
@@ -69,7 +70,7 @@ class AxisSession:
         with self.lock:
             return {**self.latest, 'error': self.failure, 'armed': self.armed,
                     'axes': self.sent_axes, 'disabled_confirmed': self.disabled_confirmed,
-                    'cleanup_confirmed': self.cleanup_confirmed}
+                    'cleanup_confirmed': self.cleanup_confirmed, 'log_path': self.log_path}
 
     def run(self):
         connection = None
@@ -81,6 +82,8 @@ class AxisSession:
                 factory = Connection
             connection = factory(self.args, password=self.password)
             self.password = None
+            if getattr(connection, 'log_path', None) is not None:
+                self.log_path = str(connection.log_path)
             started = time.monotonic()
             while not self.stop.wait(PERIOD):
                 while not connection.events.empty():
@@ -88,7 +91,11 @@ class AxisSession:
                     if event.get('error'):
                         raise RuntimeError(event['error'])
                 if connection.done.is_set():
-                    raise RuntimeError('底盘控制连接已结束，请查看 apps/fairino_keyboard/logs')
+                    # The reader can finish between draining events and checking
+                    # done. Keep its first remote error instead of masking it.
+                    detail = getattr(connection, 'last_error', '')
+                    raise RuntimeError(detail or '底盘控制连接已结束，请查看 '+
+                                       (self.log_path or 'apps/fairino_keyboard/logs'))
                 now = time.monotonic()
                 state = connection.latest
                 if state:

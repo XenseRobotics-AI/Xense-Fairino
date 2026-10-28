@@ -24,6 +24,8 @@ TELEOP_MODES = {
     'mirror_same_direction': '右手柄 → 左臂 / 左爪，左手柄 → 右臂 / 右爪',
     'first_person': '左手柄 → 左臂 / 左爪，右手柄 → 右臂 / 右爪',
 }
+IK_BACKENDS = {'native': '联合限位 IK', 'vendor': '原厂 IK'}
+NATIVE_GUARD_MESSAGE = '联合限位 IK 要求腕部联合限位保护开启，不能关闭'
 
 
 class TeleopPanel(Gtk.Box):
@@ -32,6 +34,8 @@ class TeleopPanel(Gtk.Box):
         self.credentials, self.acquire, self.release = credentials, acquire, release
         self.demo = demo
         self.process = self.service = None
+        self.session_ik_backend = None
+        self.updating_wrist = False
         self.events = queue.Queue()
         self.closed = False
         self.upper_lease = self.gripper_lease = self.base_lease = False
@@ -60,18 +64,31 @@ class TeleopPanel(Gtk.Box):
         settings.pack_start(self.mode_help, False, False, 0)
         self.teleop_mode.connect('changed', self.mode_changed)
         self.mode_changed()
+        ik_row = Gtk.Box(spacing=8)
+        ik_row.pack_start(Gtk.Label(label='IK 解算器'), False, False, 0)
+        self.ik_backend = Gtk.ComboBoxText()
+        for name, title in IK_BACKENDS.items():
+            self.ik_backend.append(name, title)
+        self.ik_backend.set_active_id('native')
+        self.ik_backend.set_tooltip_text(
+            '联合限位 IK 默认 100 Hz，原厂 IK 默认 450 Hz；启动后不能切换。\n'
+            '联合限位 IK 将腕部联合限位纳入求解，必须保持腕部保护开启。')
+        ik_row.pack_start(self.ik_backend, False, False, 0)
+        settings.pack_start(ik_row, False, False, 0)
         text = ('握 Grip 跟随，松开保持；Trigger 控制对应手臂的夹爪。\n'
                 '按住 A/X 冻结旋转、B/Y 冻结位移；双击 X 降低、双击 Y 提高灵敏度。\n'
                 '左杆 XY 平移、右杆 X 旋转；右杆 Y 升降。右杆按下回 Home；空格或「暂停 / 保持」暂停。\n'
                 '左杆按下校准双臂正前方；正常转头不改变校准，底盘方向仍由所选遥操方式决定。\n'
                 '校准前松开两侧 Grip、两摇杆回中并松开右杆按键，确认双臂、身体和底盘停止；平视希望的正前方。\n'
-                '底盘与升降需分别勾选；450 Hz 手臂控制由独立进程执行。\n'
+                '底盘与升降需分别勾选；手臂控制由独立进程执行，下方显示实际频率。\n'
                 '先启动接收服务，在头显选择电脑 IP 并打开 Head / Controller / Send。')
         label = Gtk.Label(label=text, xalign=0)
         label.set_line_wrap(True)
         settings.pack_start(label, False, False, 0)
         self.wrist_controls = GuardControls(self.switch_wrist)
         settings.pack_start(self.wrist_controls, False, False, 0)
+        self.ik_backend.connect('changed', self.ik_changed)
+        self.ik_changed()
         self.home = Gtk.CheckButton(label='启动后先回双臂 Home（会运动）；不勾选则保持当前姿态')
         self.home.set_active(True)
         settings.pack_start(self.home, False, False, 0)
@@ -133,8 +150,11 @@ class TeleopPanel(Gtk.Box):
             '首次启动与暂停后先保持，松开 Trigger 再按压开始；Grip 仍用于手臂跟随。', xalign=0)
         gripper_help.set_line_wrap(True)
         settings.pack_start(gripper_help, False, False, 0)
-        self.body_lift = Gtk.CheckButton(label='启用身体竖直升降 · 右摇杆上下，回中保持（沿用高低位标定）')
+        self.body_lift = Gtk.CheckButton(label='启用身体预设升降 · 右杆长推1秒：上到100% / 下到66.7% · 30°/s')
         self.body_lift.set_active(False)
+        self.body_lift.set_tooltip_text('上位为标定100%，下位为66.7%（原50%向上提高剩余行程的1/3）。到位不重复运动；触发后回中继续到位。\n'
+                                       '暂停、Home或断流中止；完成后回中才能再次触发。\n'
+                                       '若当前低于66.7%，下推也会升到66.7%；启动本身不会抬升。只改变J18–J20。')
         settings.pack_start(self.body_lift, False, False, 0)
         self.chassis = Gtk.CheckButton(label='同时启动底盘 · 回正并使能')
         self.chassis.set_active(False)
@@ -207,7 +227,32 @@ class TeleopPanel(Gtk.Box):
         if self.tcp_tool.get_active_id() == 'taccap':
             self.grippers.set_active(True)
 
+    def native_ik_selected(self):
+        return (self.session_ik_backend or self.ik_backend.get_active_id()) == 'native'
+
+    def update_wrist_option(self):
+        native = self.native_ik_selected()
+        if native and not self.wrist_controls.toggle.get_active():
+            self.updating_wrist = True
+            try:
+                self.wrist_controls.toggle.set_active(True)
+            finally:
+                self.updating_wrist = False
+        self.wrist_controls.toggle.set_sensitive(not self.closed and not native)
+        self.wrist_controls.toggle.set_label('腕部联合限位 · 联合限位 IK 要求开启' if native
+                                            else '腕部联合限位 · 运行中可启用 / 停用')
+
+    def ik_changed(self, *_):
+        self.update_wrist_option()
+        self.wrist_controls.update({'message': NATIVE_GUARD_MESSAGE} if self.native_ik_selected() else {})
+
     def switch_wrist(self, enabled):
+        if self.updating_wrist:
+            return
+        if self.native_ik_selected():
+            self.update_wrist_option()
+            self.wrist_controls.update({'message': NATIVE_GUARD_MESSAGE})
+            return
         if self.process is not None and self.process.poll() is None:
             self.command('guard_on' if enabled else 'guard_off')
             self.wrist_controls.update({}, pending=True)
@@ -264,6 +309,9 @@ class TeleopPanel(Gtk.Box):
         try:
             if self.teleop_mode.get_active_id() not in TELEOP_MODES:
                 raise ValueError('请选择有效的遥操方式')
+            if self.ik_backend.get_active_id() not in IK_BACKENDS:
+                raise ValueError('请选择有效的 IK 解算器')
+            self.update_wrist_option()
             mode = self.tcp_tool.get_active_id()
             tool_config(mode, load_geometry() if mode == 'taccap' else None, require_confirmed=True)
         except (ValueError, OSError) as exc:
@@ -293,6 +341,7 @@ class TeleopPanel(Gtk.Box):
             argv = ['bash', str(ROOT/'run.sh'), 'vr', '--gui-stdio', '--host', host, '--user', user]
             argv.extend(['--mode', self.teleop_mode.get_active_id(), '--rotation-mode', 'auto',
                          '--hand-mapping', 'auto'])
+            argv.extend(['--ik-backend', self.ik_backend.get_active_id()])
             argv.extend(['--tcp-tool', self.tcp_tool.get_active_id()])
             argv.extend(['--home-preset', self.home_preset.get_active_id()])
             if not self.wrist_controls.toggle.get_active():
@@ -313,6 +362,7 @@ class TeleopPanel(Gtk.Box):
                              '--chassis-angular', str(self.chassis_angular.get_value())])
             self.process = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
+            self.session_ik_backend = self.ik_backend.get_active_id()
             self.process.stdin.write(json.dumps({'password': password}) + '\n')
             self.process.stdin.flush()
             self.status.set_text('等待双手柄新鲜数据及 Grip 释放…')
@@ -341,13 +391,14 @@ class TeleopPanel(Gtk.Box):
     def update_options(self):
         running = self.process is not None and self.process.poll() is None
         editable = not running and not self.closed
-        for widget in (self.teleop_mode, self.home, self.home_preset, self.grippers, self.tcp_tool,
+        for widget in (self.teleop_mode, self.ik_backend, self.home, self.home_preset, self.grippers, self.tcp_tool,
                        self.tool_settings, self.body_lift, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable)
         for widget in (self.gripper_speed, *self.gripper_limits.values()):
             widget.set_sensitive(editable and self.grippers.get_active())
         for widget in (self.chassis_linear, self.chassis_angular):
             widget.set_sensitive(editable and self.chassis.get_active())
+        self.update_wrist_option()
 
     def command(self, command):
         if self.process is None or self.process.poll() is not None:
@@ -364,6 +415,7 @@ class TeleopPanel(Gtk.Box):
         while not self.events.empty():
             name, data = self.events.get_nowait()
             if name == 'vr_exit':
+                self.session_ik_backend = None
                 self.gripper_feedback = {}
                 self.release_leases()
                 self.status.set_text(f'遥操已退出，返回码 {data}；下使能结果见下方日志')
@@ -382,14 +434,18 @@ class TeleopPanel(Gtk.Box):
                     state = json.loads(data[len('WORKBENCH_VR '):])
                     self.wrist_controls.update(state.get('wrist_guard', {}),
                                                state.get('wrist_pending', True))
-                    if state.get('wrist_limited'):
+                    if state.get('wrist_limited') and state.get('ik_backend') != 'native':
                         self.wrist_controls.label.set_text(
                             self.wrist_controls.label.get_text()+' · 接近边界，已缩小目标；可向内收腕')
                     grips = state.get('grips', {})
+                    ik_name = IK_BACKENDS.get(state.get('ik_backend'), '未报告')
                     self.status.set_text(f'{state["phase"]} · {state["sides"]} · 灵敏度 {state["sensitivity"]:g}\n'
+                        + f'IK：{ik_name} · '
                         + ('TCP：夹爪固定指尖中心 · ' if state.get('tcp_tool') == 'taccap' else 'TCP：法兰中心 · ')+
                         f'Grip 左 {grips.get("left", 0):.2f} / 右 {grips.get("right", 0):.2f} · '
                         f'使能 {state["enabled"]}/20 · 下发 {state["send_hz"]:.0f} / 接收 {state["accepted_hz"]:.0f} Hz')
+                    if state.get('ik_backend') == 'native' and state.get('ik_partial'):
+                        self.status.set_text(self.status.get_text()+'\n当前为部分可行解，完整手柄目标仍保留')
                     heading = '双臂正前方已校准' if state.get('heading_calibrated') else '双臂正前方未校准 · 沿用原有追踪方向'
                     heading_yaw = state.get('heading_yaw_deg')
                     if (state.get('heading_calibrated') and type(heading_yaw) in (int, float)
@@ -427,9 +483,11 @@ class TeleopPanel(Gtk.Box):
                         self.chassis_status.set_text('等待底盘状态' if self.base_lease else '底盘遥操未启用')
                     if state.get('body_lift_enabled'):
                         body = state.get('body')
+                        preset = state.get('body_lift_preset') or {}
                         self.gripper_status.set_text(self.gripper_status.get_text()+'\n'+(
                             f'身体 {body["height"]:.1f}% / 相对低位 {body["height_mm"]:.1f} mm · '
-                            f'右摇杆 {state.get("lift_axis", 0.):+.2f}' if body else '等待身体高度反馈'))
+                            + preset.get('message', '长推1秒：上到100% / 下到66.7% · 30°/s')
+                            if body else '等待身体高度反馈'))
                 except (ValueError, KeyError, TypeError):
                     self.append('遥操状态格式异常')
             else:
@@ -437,7 +495,6 @@ class TeleopPanel(Gtk.Box):
         running = self.process is not None and self.process.poll() is None
         self.update_options()
         self.stop_button.set_sensitive(running)
-        self.wrist_controls.toggle.set_sensitive(not self.closed)
         for button in self.command_buttons:
             button.set_sensitive(running)
         return not self.closed or running

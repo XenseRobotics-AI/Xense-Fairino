@@ -133,15 +133,46 @@ def main():
             received.clear();commands.clear()
             result=handle.get_result_async()
             start=time.monotonic()
-            while time.monotonic()-start<args.seconds and not result.done():spin(.05)
+            samples=[]
+            def sample():
+                samples.append({'elapsed':round(time.monotonic()-start,3),
+                    'pose':list(pose),'command':list(command),
+                    'xy_error':math.hypot(.6-pose[0],.25-pose[1]),
+                    'yaw_error':math.atan2(math.sin(.3-pose[2]),math.cos(.3-pose[2]))})
+            sample()
+            next_sample=1.
+            while time.monotonic()-start<args.seconds and not result.done():
+                spin(.05)
+                if time.monotonic()-start>=next_sample:
+                    sample()
+                    next_sample=math.floor(time.monotonic()-start)+1.
+            sample()
+            action_end_pose=list(pose)
             done_status=result.result().status if result.done() else None
-            if not result.done():wait(handle.cancel_goal_async())
+            timed_out=not result.done()
+            if timed_out:
+                wait(handle.cancel_goal_async())
+                wait(result,5)
+            terminal_status=result.result().status
+            terminal_command=list(command)
+            terminal_pose=list(pose)
+            stop_index=len(commands)
+            stop_started=time.monotonic()
+            spin(.5)
+            stop_observation={'duration':time.monotonic()-stop_started,
+                'terminal_status':terminal_status,'command_at_terminal':terminal_command,
+                'command_after_observation':list(command),
+                'commands_received':len(commands)-stop_index,
+                'translation_after_terminal':math.hypot(pose[0]-terminal_pose[0],pose[1]-terminal_pose[1]),
+                'rotation_after_terminal':pose[2]-terminal_pose[2]}
             gaps=[b-a for a,b in zip(received,received[1:])]
             log.flush();log.seek(0);text=log.read()
             print(json.dumps({'domain':87,'motors_operated':False,'command_count':len(received),
                 'maximum_gap':max(gaps,default=None),'gaps_over_300ms':sum(g>.3 for g in gaps),
                 'missed_loop_warnings':text.count('Control loop missed'),
                 'simulated_pose':pose,'action_status':done_status,
+                'action_end_pose':action_end_pose,'test_deadline_reached':timed_out,
+                'samples':samples,'stop_observation':stop_observation,
                 'max_linear':max((math.hypot(*v[:2]) for v in commands),default=0),
                 'max_angular':max((abs(v[2]) for v in commands),default=0)}))
         finally:

@@ -40,10 +40,13 @@ class Timing:
         return asdict(self)
 
 
-def add_timing_arguments(parser):
+def add_timing_arguments(parser, *, command_default=90., receiver_default=200.,
+                         command_help=None, receiver_help=None):
     parser.add_argument("--command-hz", "--interpolation-hz", dest="command_hz", type=float,
-                        default=90., help="TCP 采样、IK 和下发频率，默认 90 Hz；两参数同义")
-    parser.add_argument("--receiver-hz", type=float, default=200., help="机器人接收轮询频率，默认 200 Hz")
+                        default=command_default,
+                        help=command_help or "TCP 采样、IK 和下发频率，默认 90 Hz；两参数同义")
+    parser.add_argument("--receiver-hz", type=float, default=receiver_default,
+                        help=receiver_help or "机器人接收轮询频率，默认 200 Hz")
     parser.add_argument("--feedback-hz", type=float, default=100., help="机器人状态回传频率，默认 100 Hz")
     parser.add_argument("--horizon-ms", type=float, default=None,
                         help="旧参数；新版只接受 0，机器人不再添加关节插值段")

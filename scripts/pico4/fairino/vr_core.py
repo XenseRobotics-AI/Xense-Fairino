@@ -6,6 +6,7 @@ from tcp_jog import LEASE
 from vr_lift import lift_axis
 
 KIND = "fairino_pico_cartesian_v4"
+LIFT_MODE = "preset_v1"
 
 
 def direct_positions(current, targets, held):
@@ -47,7 +48,19 @@ def validate(hw, request, now, tools=None):
         raise ValueError("PICO 目标超过 0.25 秒未更新")
     arms = request.get("arms")
     lift = lift_axis(request)
-    if not isinstance(arms, dict) or (not arms and abs(lift) <= .2) or not set(arms) <= set(ARMS):
+    mode = request.get('lift_mode')
+    if 'lift_mode' in request and mode != LIFT_MODE:
+        raise ValueError('不支持的身体升降协议，请更新 PICO 客户端与接收端')
+    if mode == LIFT_MODE and 'lift' not in request:
+        raise ValueError('预设升降请求必须包含标量摇杆值；中性心跳使用 lift=0')
+    if mode == LIFT_MODE and (type(request.get('lift_epoch')) is not int or request['lift_epoch'] <= 0):
+        raise ValueError('预设升降请求必须包含正整数 lift_epoch 会话标识')
+    if mode == LIFT_MODE and 'lift_gesture' in request and (
+            type(request['lift_gesture']) is not int or request['lift_gesture'] <= 0):
+        raise ValueError('预设升降 lift_gesture 必须是正整数手势标识')
+    if mode != LIFT_MODE and lift != 0.:
+        raise ValueError('旧版身体点动协议已停用，请更新为 preset_v1 预设升降')
+    if not isinstance(arms, dict) or (not arms and mode != LIFT_MODE) or not set(arms) <= set(ARMS):
         raise ValueError("无效的双臂目标")
     targets = {}
     for side, entry in arms.items():

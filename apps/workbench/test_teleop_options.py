@@ -47,6 +47,63 @@ class TeleopOptionsTests(unittest.TestCase):
         self.assertNotIn('--chassis', argv)
         self.assertEqual(self.acquired, ['upper'])
         self.assertEqual(argv[argv.index('--home-preset')+1], 'default')
+        self.assertEqual(argv[argv.index('--ik-backend')+1], 'native')
+        self.assertNotIn('--interpolation-hz', argv)
+
+    def test_ik_selection_reaches_main_client_and_locks_until_exit(self):
+        self.assertEqual(self.panel.ik_backend.get_active_id(), 'native')
+        for backend in ('native', 'vendor'):
+            with self.subTest(backend=backend):
+                self.panel.ik_backend.set_active_id(backend)
+                self.panel.start()
+                argv = self.launch.call_args.args[0]
+                self.assertEqual(argv[argv.index('--ik-backend')+1], backend)
+                self.assertFalse(self.panel.ik_backend.get_sensitive())
+                self.panel.process.poll = lambda: 0
+                self.panel.events.put(('vr_exit', 0))
+                self.panel.tick()
+                self.assertTrue(self.panel.ik_backend.get_sensitive())
+                self.panel.process = None
+                self.launch.return_value = NS(stdin=io.StringIO(), poll=lambda:None)
+
+    def test_invalid_ik_selection_cannot_acquire_or_launch(self):
+        self.panel.ik_backend.set_active(-1)
+        self.panel.start()
+        self.launch.assert_not_called()
+        self.assertFalse(self.acquired)
+
+    def test_status_displays_reported_ik_backend(self):
+        state = dict(phase='就绪', sides='保持', sensitivity=.25, enabled=20,
+                     send_hz=100., accepted_hz=100.)
+        for backend, title in [('native', '联合限位 IK'), ('vendor', '原厂 IK')]:
+            with self.subTest(backend=backend):
+                state['ik_backend'] = backend
+                self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+                self.panel.tick()
+                self.assertIn('IK：'+title, self.panel.status.get_text())
+        state.pop('ik_backend')
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('IK：未报告', self.panel.status.get_text())
+
+    def test_native_partial_solution_keeps_full_goal_and_does_not_claim_wrist_clipping(self):
+        state = dict(phase='就绪', sides='跟随', sensitivity=.25, enabled=20,
+                     send_hz=100., accepted_hz=100., ik_backend='native',
+                     ik_partial=True, wrist_limited=True, wrist_pending=False,
+                     wrist_guard={'message': '腕部联合限位已启用'})
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('当前为部分可行解，完整手柄目标仍保留', self.panel.status.get_text())
+        self.assertNotIn('缩小目标', self.panel.wrist_controls.label.get_text())
+        self.assertIn('要求开启', self.panel.wrist_controls.toggle.get_label())
+        state['ik_partial'] = False
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertNotIn('部分可行解', self.panel.status.get_text())
+        state['ik_backend'] = 'vendor'
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('已缩小目标', self.panel.wrist_controls.label.get_text())
 
     def test_first_person_and_mirror_select_shared_client_mapping_and_lock_while_running(self):
         for mode, description in [('first_person', '左手柄 → 左臂 / 左爪'),
@@ -106,7 +163,40 @@ class TeleopOptionsTests(unittest.TestCase):
             Gtk.main_iteration_do(False)
         self.assertEqual([button.translate_coordinates(self.panel, 0, 0)[1] for button in controls], positions)
 
-    def test_wrist_module_defaults_on_and_hot_switch_uses_same_process(self):
+    def test_native_requires_wrist_guard_before_and_during_session(self):
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertIn('要求', self.panel.wrist_controls.label.get_text())
+        self.panel.start()
+        self.assertNotIn('--no-wrist-guard', self.launch.call_args.args[0])
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.panel.tick()
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        # The launch backend remains authoritative even if a disabled widget is changed by code.
+        self.panel.ik_backend.set_active_id('vendor')
+        self.panel.switch_wrist(False)
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        records = [json.loads(line) for line in self.panel.process.stdin.getvalue().splitlines()]
+        self.assertFalse(any('command' in record for record in records))
+        self.assertIn('不能关闭', self.panel.wrist_controls.label.get_text())
+
+    def test_switching_to_native_restores_guard_and_vendor_keeps_it_optional(self):
+        self.panel.ik_backend.set_active_id('vendor')
+        self.assertTrue(self.panel.wrist_controls.toggle.get_sensitive())
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.panel.ik_backend.set_active_id('native')
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        self.panel.ik_backend.set_active_id('vendor')
+        self.assertTrue(self.panel.wrist_controls.toggle.get_sensitive())
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.assertFalse(self.panel.wrist_controls.toggle.get_active())
+
+    def test_vendor_wrist_module_defaults_on_and_hot_switch_uses_same_process(self):
+        self.panel.ik_backend.set_active_id('vendor')
         self.assertTrue(self.panel.wrist_controls.toggle.get_active())
         self.panel.start()
         self.assertNotIn('--no-wrist-guard', self.launch.call_args.args[0])
@@ -117,6 +207,7 @@ class TeleopOptionsTests(unittest.TestCase):
         self.assertEqual(self.launch.call_count, 1)
 
     def test_explicit_disabled_module_is_passed_to_standalone_client(self):
+        self.panel.ik_backend.set_active_id('vendor')
         self.panel.wrist_controls.toggle.set_active(False)
         self.panel.start()
         self.assertIn('--no-wrist-guard', self.launch.call_args.args[0])
@@ -134,6 +225,17 @@ class TeleopOptionsTests(unittest.TestCase):
         self.panel.tick()
         self.assertFalse(self.panel.home_preset.get_sensitive())
         self.assertTrue(all(not v.get_sensitive() for v in self.panel.gripper_limits.values()))
+
+    def test_cross_body_home_is_optional_and_reaches_cli_even_without_auto_home(self):
+        self.assertEqual(self.panel.home_preset.get_active_id(), 'default')
+        self.panel.home_preset.set_active_id('left_cross_body')
+        self.assertEqual(self.panel.home_preset.get_active_id(), 'left_cross_body')
+        self.panel.home.set_active(False)
+        self.panel.start()
+        argv = self.launch.call_args.args[0]
+        self.assertEqual(argv[argv.index('--home-preset')+1], 'left_cross_body')
+        self.assertIn('--no-auto-home', argv)
+        self.assertFalse(self.panel.home_preset.get_sensitive())
 
     def test_compact_feedback_preserves_source_age_and_is_cleared_on_exit(self):
         record = dict(received=10., devices={'right': dict(connected=True, position=.27, age_ms=50.)})
@@ -236,6 +338,20 @@ class TeleopOptionsTests(unittest.TestCase):
         self.panel.events.put(('vr_exit', 0))
         self.panel.tick()
         self.assertEqual(self.released, ['upper', 'gripper'])
+
+    def test_body_preset_progress_comes_from_receiver_without_starting_control(self):
+        state = dict(phase='PICO 位置控制中', sides='保持', sensitivity=.25,
+                     enabled=20, send_hz=100., accepted_hz=100., body_lift_enabled=True,
+                     body={'height': 62.3, 'height_mm': 265.},
+                     body_lift_preset={'phase': 'moving', 'target_percent': 100.,
+                                       'message': '正在到高位100% · 30°/s'})
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('62.3%', self.panel.gripper_status.get_text())
+        self.assertIn('正在到高位100%', self.panel.gripper_status.get_text())
+        self.assertIn('30°/s', self.panel.gripper_status.get_text())
+        self.launch.assert_not_called()
+        self.assertFalse(self.acquired)
 
     def test_gripper_conflict_does_not_start_robot_or_keep_upper_lock(self):
         self.panel.grippers.set_active(True)

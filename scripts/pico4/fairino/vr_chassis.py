@@ -76,6 +76,7 @@ class ChassisTeleop:
                     enabled=sum(hardware.get('enabled', [])), command=state.get('command', ZERO),
                     axes=state.get('axes', ZERO), armed=bool(state.get('armed')), message=self.note,
                     received=state.get('received'), error=state.get('error'),
+                    log_path=state.get('log_path'),
                     disabled_confirmed=state.get('disabled_confirmed', False),
                     cleanup_confirmed=state.get('cleanup_confirmed', False))
 

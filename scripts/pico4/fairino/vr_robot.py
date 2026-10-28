@@ -10,14 +10,16 @@ import time
 import robot_probe as rp
 from tcp_robot import TCPProbe, load_ros
 from tcp_jog import LEASE
-from vr_core import validate, direct_positions, KIND
-from vr_lift import LiftPlanner, lift_axis, DEADBAND
+from vr_core import validate, direct_positions, KIND, LIFT_MODE
+from vr_lift import lift_axis, DEADBAND
+from vr_lift_presets import PresetLiftPlanner
 from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
 from tool_frames import tool_config, validate_runtime
 
 STOP_CONFIRM_TIMEOUT = 3.
 STOP_SPEED_RAD_S = .005
 HOLD_COMMAND_TOLERANCE_RAD = 1e-5
+LIFT_SAMPLE_MAX_GAP_S = .05
 
 
 class VRProbe(TCPProbe):
@@ -31,9 +33,11 @@ class VRProbe(TCPProbe):
     def __init__(self, args):
         self.tools = validate_runtime(json.loads(args.tools_json)) if getattr(args, 'tools_json', None) else tool_config()
         self.input_event = threading.Event()
-        self.lift = LiftPlanner(json.loads(args.body_config_json), args.lift_speed_mm_s) if getattr(args, 'body_lift', False) else None
+        self.lift = PresetLiftPlanner(json.loads(args.body_config_json)) if getattr(args, 'body_lift', False) else None
         self.lift_axis_active = False
         self.lift_stop_deadline = None
+        self.last_lift_epoch = 0
+        self.last_lift_sample_time = None
         super().__init__(args)
 
     def kinematics_matches(self, proof):
@@ -76,11 +80,17 @@ class VRProbe(TCPProbe):
         rp.Probe.guard(self, link, cancel)
         deadline = getattr(self, 'lift_stop_deadline', None)
         if deadline is not None:
-            if max(abs(v) for v in self.hw['velocity'][17:20]) < .005:
+            fresh = self.hw_time > self.lift_stop_published
+            error = max(abs(a-b) for a, b in zip(self.hw['command_position'][17:20], self.lift_stop_target))
+            speed = max(abs(v) for v in self.hw['velocity'][17:20])
+            if fresh and error <= HOLD_COMMAND_TOLERANCE_RAD and speed <= STOP_SPEED_RAD_S:
+                self.emit(body_lift_stop_confirmation=dict(result='confirmed', fresh_feedback=True,
+                    command_error_rad=error, max_velocity_rad_s=speed,
+                    wait_ms=1000*(time.monotonic()-self.lift_stop_published)))
                 self.lift_stop_deadline = None
                 self.moving_joints = list(range(1, 15)) if self.path is not None else None
             elif time.monotonic() > deadline:
-                raise RuntimeError('身体摇杆回中后未确认停止')
+                raise RuntimeError('身体预设轨迹结束后未确认停止：需要新反馈、最终指令确认及实际静止')
 
     def on_hw(self, msg):
         super().on_hw(msg)
@@ -113,6 +123,8 @@ class VRProbe(TCPProbe):
                 command_trace=getattr(self, "command_trace", None),
                 last_target_age_ms=getattr(self, "last_target_age_ms", None),
                 body=self.lift.model.state(self.hw['position']) if getattr(self, 'lift', None) and self.hw else None,
+                body_lift_preset=self.lift.snapshot(now) if getattr(self, 'lift', None) else None,
+                body_lift_epoch=getattr(self, 'last_lift_epoch', 0),
                 body_lift_enabled=bool(getattr(self, 'lift', None)), **extra)
 
     def publish_positions(self, points, now):
@@ -180,36 +192,74 @@ class VRProbe(TCPProbe):
                                               **self.hold_feedback(target, published_at)))
             raise
 
-    def stop_stream(self, reason):
-        self.ready = False
+    def stop_stream(self, reason, preserve_lift_gesture=False):
+        # Reset even if no position target has been published yet: a partially
+        # completed one-second gesture must not survive pause/Home/disconnect.
+        # Only normal arm release under a fresh preset heartbeat can preserve
+        # an untriggered gesture while the arms' physical stop is confirmed.
+        lift = getattr(self, 'lift', None)
+        preserve_lift_gesture = bool(preserve_lift_gesture and lift and not lift.moving
+                                    and not getattr(self, 'lift_axis_active', False)
+                                    and getattr(self, 'lift_stop_deadline', None) is None)
+        # Ordinary Grip release is not a session pause. Advertising not-ready
+        # here would make the client cancel its lift session/gesture while this
+        # receiver is synchronously confirming only the released arms' hold.
+        self.ready = preserve_lift_gesture
+        if lift and not preserve_lift_gesture:
+            self.lift.reset()
+        self.lift_stop_deadline = None
+        self.lift_axis_active = False
+        self.last_lift_sample_time = None
         self.phase = reason+"；停止追踪并保持当前位置"
         self.report(True)
-        if self.path is not None:
-            now = time.monotonic()
-            current = self.path[-1][1][:]
-            if getattr(self, 'lift', None):
-                self.hold_positions[17:20] = current[17:20]
-            hold = direct_positions(current, {}, self.hold_positions)
-            self.publish_positions(hold, now)
-            self.confirm_hold(hold[-1][1], time.monotonic())
-            self.hold_positions[:14] = self.hw["command_position"][:14]
-            if getattr(self, 'lift', None):
-                self.hold_positions[17:20] = self.hw['command_position'][17:20]
-                self.lift.reset()
-        self.path = None
-        self.moving_joints = None
-        self.lift_axis_active = False
-        self.lift_stop_deadline = None
-        self.stationary_enabled()
+        try:
+            if self.path is not None:
+                now = time.monotonic()
+                current = self.path[-1][1][:]
+                if lift:
+                    self.hold_positions[17:20] = current[17:20]
+                hold = direct_positions(current, {}, self.hold_positions)
+                self.publish_positions(hold, now)
+                self.confirm_hold(hold[-1][1], time.monotonic())
+                self.hold_positions[:14] = self.hw["command_position"][:14]
+                if lift:
+                    self.hold_positions[17:20] = self.hw['command_position'][17:20]
+            self.path = None
+            self.moving_joints = None
+            self.lift_axis_active = False
+            self.lift_stop_deadline = None
+            self.stationary_enabled()
+        except Exception:
+            self.ready = False
+            if lift:
+                lift.reset()
+            self.report(True)
+            raise
         self.phase = reason+"；全部关节保持位置"
         self.ready = True
         self.report(True)
 
     def run(self):
+        try:
+            self.run_stream()
+        finally:
+            # Hardware/link/exit guards can raise outside the request handler.
+            # A stopped session must never retain an autonomous body trajectory.
+            if getattr(self, 'lift', None):
+                self.lift.reset()
+            self.lift_axis_active = False
+            self.lift_stop_deadline = None
+            self.last_lift_sample_time = None
+
+    def run_stream(self):
         self.timing = Timing.from_args(self.args)
         self.accepted_rate = RateMeter()
         self.moving_joints = None
         self.path = None
+        self.lift_axis_active = False
+        self.lift_stop_deadline = None
+        self.last_lift_epoch = getattr(self, 'last_lift_epoch', 0)
+        self.last_lift_sample_time = None
         self.stream_identity = None
         self.prepare()
         if self.args.check or self.args.prepare_check:
@@ -221,7 +271,7 @@ class VRProbe(TCPProbe):
             if time.monotonic() > deadline:
                 raise RuntimeError("双臂轨迹接口未就绪")
             self.pump()
-        self.phase = ('双臂就绪；Grip 跟随，右摇杆上下升降，回中保持' if getattr(self, 'lift', None)
+        self.phase = ('双臂就绪；右摇杆上/下持续 1 秒到高位/下位，触发后回中仍继续到位' if getattr(self, 'lift', None)
                       else '双臂就绪；各自握住 Grip 移动，松开停止；J15–J20 保持')
         self.report(True)
         accepted = None
@@ -234,28 +284,45 @@ class VRProbe(TCPProbe):
             now = time.monotonic()
             if request is None:
                 if self.path is not None:
-                    self.stop_stream('Grip / 升降摇杆已释放或输入暂停' if getattr(self, 'lift', None)
+                    self.stop_stream('遥操输入暂停，取消预设升降' if getattr(self, 'lift', None)
                                      else 'Grip 已松开或输入暂停')
+                elif getattr(self, 'lift', None):
+                    self.lift.reset()
                 accepted = None
                 blocked = False
                 continue
             if blocked:
-                continue
+                # The latest-packet mailbox can overwrite a single None pause.
+                # Only a validated NEW lift session's neutral/no-arms packet
+                # may rearm without that transient packet ever being observed.
+                epoch = request.get('lift_epoch') if isinstance(request, dict) else None
+                if not (isinstance(request, dict) and request.get('lift_mode') == LIFT_MODE
+                        and type(epoch) is int and epoch > self.last_lift_epoch
+                        and request.get('lift') == 0. and request.get('arms') == {}):
+                    continue
             try:
                 if not isinstance(request, dict):
                     raise ValueError("无效双臂请求")
-                if request.get("id") != (accepted or {}).get("id"):
+                new_request = request.get("id") != (accepted or {}).get("id")
+                if request.get('lift_mode') != (accepted or {}).get('lift_mode'):
+                    new_request = True
+                # Epoch transitions cannot hide behind a reused request ID.
+                # They must pass both protocol validation and ID monotonicity.
+                if request.get('lift_mode') == LIFT_MODE and request.get('lift_epoch') != self.last_lift_epoch:
+                    new_request = True
+                targets = {}
+                work_started = time.monotonic()
+                if new_request:
                     if type(request.get("id")) is not int or request["id"] <= self.last_request:
                         raise ValueError("已丢弃旧双臂请求")
-                    work_started = time.monotonic()
                     targets = validate(self.hw, request, now, getattr(self, 'tools', None))
                     now = time.monotonic()
                     validated = now
-                    if self.path is None:
-                        self.stationary_enabled()
-                        self.moving_joints = list(range(1, 15))
+                    if request.get('lift_mode') == LIFT_MODE and getattr(self, 'lift', None) is None:
+                        raise ValueError('本次遥操未启用身体升降，拒绝预设升降心跳或目标')
+                    if request.get('lift_mode') == LIFT_MODE and request['lift_epoch'] < self.last_lift_epoch:
+                        raise ValueError('已丢弃旧身体升降会话 lift_epoch；请暂停后重新回中')
                     current = self.hold_positions[:] if self.path is None else self.path[-1][1][:]
-                    points = direct_positions(current, targets, self.hold_positions)
                     for side, target in targets.items():
                         offset = 0 if side == "left" else 7
                         self.wrist.guard.arm_segment(
@@ -266,34 +333,91 @@ class VRProbe(TCPProbe):
                         self.wrist.guard.arm_segment(
                             self.hw["position"][offset:offset+7], target,
                             self.hw["velocity"][offset:offset+7])
-                    axis = lift_axis(request)
-                    lift = getattr(self, 'lift', None)
-                    if abs(axis) > DEADBAND and lift is None:
-                        raise ValueError('本次遥操未启用身体升降')
-                    if lift is not None:
-                        points[-1][1][17:20] = lift.sample(axis, points[-1][1], now)[17:20]
-                        active = abs(axis) > DEADBAND
-                        if active:
-                            self.lift_stop_deadline = None
-                            self.moving_joints = list(range(1, 15))+[18, 19, 20]
-                        elif getattr(self, 'lift_axis_active', False):
-                            self.lift_stop_deadline = now+1.
-                        self.lift_axis_active = active
-                        self.hold_positions[17:20] = points[-1][1][17:20]
-                    self.publish_positions(points, now)
-                    self.command_trace = {"id": request["id"],
-                        "client_send": packet.get("client_send_monotonic"),
-                        "server_read": packet.get("server_read_monotonic"),
-                        "server_work": work_started, "server_validated": validated,
-                        "server_published": time.monotonic()}
-                    self.trace_target = points[-1][1][:]
-                    self.accepted_rate.mark(now)
-                    self.last_target_age_ms = 1000*(now-request["created"])
                     accepted = request
                     self.last_request = request["id"]
+                    self.accepted_rate.mark(now)
+                # Check every receiver cycle BEFORE autonomous body sampling.
+                # Duplicate IDs cannot renew the accepted request's lease.
+                now = time.monotonic()
                 if now-accepted["created"] > LEASE:
                     raise ValueError("PICO 目标超过 0.25 秒未更新")
-                self.phase = ('PICO 双臂 / 身体升降；右摇杆回中保持' if getattr(self, 'lift_axis_active', False)
+                current = self.hold_positions[:] if self.path is None else self.path[-1][1][:]
+                lift = getattr(self, 'lift', None)
+                if new_request and lift is not None:
+                    if request.get('lift_mode') == LIFT_MODE:
+                        epoch = request['lift_epoch']
+                        if epoch > self.last_lift_epoch:
+                            # Invalidate old autonomous motion even if its None
+                            # cancellation was replaced in the latest mailbox.
+                            lift.reset()
+                            self.last_lift_epoch = epoch
+                        blocked = False  # Full validation above, never raw epoch alone.
+                        axis = lift_axis(request)
+                        # Do not queue another gesture while the last body's
+                        # physical stop is still being confirmed. Neutral can rearm.
+                        if self.lift_stop_deadline is None or abs(axis) <= DEADBAND:
+                            lift.observe(axis, current, now, gesture_id=request.get('lift_gesture'))
+                    else:
+                        # An arm-only packet cannot silently keep a body plan alive.
+                        lift.reset()
+                was_moving = bool(lift and lift.moving)
+                cancelled_lift = self.lift_axis_active and not was_moving
+                if was_moving and self.lift_axis_active:
+                    previous_sample = self.last_lift_sample_time
+                    if previous_sample is None or now-previous_sample > LIFT_SAMPLE_MAX_GAP_S+1e-9:
+                        # A fresh network packet cannot make up a local receiver
+                        # stall. Hold the LAST published position, never jump
+                        # forward to the absolute-time trajectory's overdue point.
+                        raise ValueError('身体预设采样间隔超过 50 ms，已取消轨迹；请暂停并回中重新开始')
+                # Releasing both Grips without a body trajectory still performs
+                # the existing full hold confirmation, rather than streaming
+                # empty heartbeat position targets forever.
+                if not accepted['arms'] and not was_moving and not cancelled_lift and self.lift_stop_deadline is None:
+                    if self.path is not None:
+                        preserve_gesture = bool(lift and accepted.get('lift_mode') == LIFT_MODE
+                                                and 0. <= now-accepted['created'] <= LEASE)
+                        self.stop_stream('双 Grip 已释放，身体预设未运行',
+                                         preserve_lift_gesture=preserve_gesture)
+                        # Preserve a valid neutral rearm after full hold
+                        # confirmation. Never rearm from an expired packet.
+                        after_hold = time.monotonic()
+                        if (lift and accepted.get('lift_mode') == LIFT_MODE
+                                and abs(lift_axis(accepted)) <= DEADBAND
+                                and 0. <= after_hold-accepted['created'] <= LEASE):
+                            lift.observe(0., self.hold_positions, after_hold,
+                                         gesture_id=accepted.get('lift_gesture'))
+                    self.phase = '双臂保持；右摇杆持续 1 秒选择高位/下位' if lift else '双臂保持'
+                    self.ready = True
+                    continue
+                if new_request or was_moving or cancelled_lift:
+                    if self.path is None:
+                        self.stationary_enabled()
+                    points = direct_positions(current, targets, self.hold_positions)
+                    if lift is not None:
+                        points[-1][1][17:20] = lift.sample(points[-1][1], now)[17:20]
+                        self.hold_positions[17:20] = points[-1][1][17:20]
+                    self.moving_joints = list(range(1, 15))
+                    if was_moving or cancelled_lift or self.lift_stop_deadline is not None:
+                        self.moving_joints += [18, 19, 20]
+                    self.publish_positions(points, now)
+                    published = time.monotonic()
+                    if was_moving:
+                        # Keep the time at which this successfully published
+                        # target was sampled, so a slow publish is detected too.
+                        self.last_lift_sample_time = now
+                    if (was_moving or cancelled_lift) and not lift.moving:
+                        self.lift_stop_target = points[-1][1][17:20]
+                        self.lift_stop_published = published
+                        self.lift_stop_deadline = published+STOP_CONFIRM_TIMEOUT
+                    self.lift_axis_active = bool(lift and lift.moving)
+                    self.command_trace = {"id": accepted["id"],
+                        "client_send": packet.get("client_send_monotonic"),
+                        "server_read": packet.get("server_read_monotonic"),
+                        "server_work": work_started, "server_validated": validated if new_request else None,
+                        "server_published": published, "body_sample": was_moving}
+                    self.trace_target = points[-1][1][:]
+                self.last_target_age_ms = 1000*(now-accepted["created"])
+                self.phase = ('PICO 双臂 / 身体预设升降；回中继续到位，暂停取消' if self.lift_axis_active
                               else '双臂 PICO 位置控制中；松开对应 Grip 停止并保持')
                 self.ready = True
             except ValueError as exc:
@@ -313,7 +437,6 @@ def main():
     parser.add_argument("--observe-ros", action="store_true")
     parser.add_argument('--body-lift', action='store_true')
     parser.add_argument('--body-config-json')
-    parser.add_argument('--lift-speed-mm-s', type=float, default=15.)
     parser.add_argument('--tools-json')
     add_timing_arguments(parser)
     args = parser.parse_args()

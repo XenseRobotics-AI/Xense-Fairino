@@ -39,6 +39,9 @@ class LauncherMappingTests(unittest.TestCase):
         parser.add_argument('--mode', choices=tuple(POSE_FRAMES), default='first_person')
         parser.add_argument('--hand-mapping', choices=('auto', 'same', 'crossed'), default='auto')
         parser.add_argument('--rotation-mode', choices=('auto', *POSE_FRAMES), default='auto')
+        parser.add_argument('--ik-backend', choices=('native', 'vendor'), default='native')
+        parser.add_argument('--command-hz', '--interpolation-hz', dest='command_hz', type=float)
+        parser.add_argument('--receiver-hz', type=float)
         options, _ = parser.parse_known_args(argv)
         return options
 
@@ -55,6 +58,17 @@ class LauncherMappingTests(unittest.TestCase):
         self.assertEqual(controller_sides(options.mode, options.hand_mapping),
                          {'left': 'left', 'right': 'right'})
         self.assertEqual(rotation_mapping(options.mode, options.rotation_mode), 'first_person')
+
+    def test_launcher_leaves_default_rates_to_selected_backend(self):
+        for extra, backend in (((), 'native'), (('--ik-backend', 'vendor'), 'vendor')):
+            with self.subTest(backend=backend):
+                options = self.launch_options(*extra)
+                self.assertEqual(options.ik_backend, backend)
+                self.assertIsNone(options.command_hz)
+                self.assertIsNone(options.receiver_hz)
+        options = self.launch_options('--command-hz', '80', '--receiver-hz', '180')
+        self.assertEqual(options.command_hz, 80.)
+        self.assertEqual(options.receiver_hz, 180.)
 
     def test_explicit_user_hand_and_rotation_mappings_override_automatic_mode(self):
         options = self.launch_options('--mode', 'first_person',

@@ -17,20 +17,40 @@ def lift_axis(request):
 class LiftInput:
     def __init__(self):
         self.armed = False
+        self.gesture_id = 1
+        self._direction = None
+        self.interrupted = False
 
     def reset(self):
         self.armed = False
+        self._direction = None
 
     def value(self, frame, active):
-        right = frame.get('right', {}) if frame else {}
-        if not active or not right.get('joystick_available') or right.get('axis_click'):
+        self.interrupted = False
+        # Preserve direction changes hidden between two client iterations. The
+        # persistent ID survives the receiver's latest-packet mailbox; a brief
+        # neutral pulse alone could be overwritten before resetting its timer.
+        samples = [*(frame.get('samples', []) or []), frame] if frame else []
+        if not active or not samples or any(
+                not sample.get('right', {}).get('joystick_available')
+                or sample.get('right', {}).get('axis_click') for sample in samples):
             self.reset()
+            self.interrupted = True
             return 0.
-        value = lift_axis({'lift': right.get('axis_y')})
-        if not self.armed:
-            self.armed = abs(value) <= DEADBAND
-            return 0.
-        return value if abs(value) > DEADBAND else 0.
+        result = 0.
+        for sample in samples:
+            value = lift_axis({'lift': sample['right'].get('axis_y')})
+            direction = (1 if value > 0 else -1) if abs(value) > DEADBAND else 0
+            if direction != self._direction:
+                if self._direction is not None:
+                    self.gesture_id += 1
+                self._direction = direction
+            if not self.armed:
+                self.armed = direction == 0
+                result = 0.
+            else:
+                result = value if direction else 0.
+        return result
 
 
 class LiftPlanner:

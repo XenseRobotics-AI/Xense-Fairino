@@ -44,16 +44,23 @@ class Workbench:
         self.observers = {}
         self.retired_threads = []
         self.map_panel = None
+        self.model_panel = None
+        self.map_model_visible = False
+        self.syncing_model_toggle = False
         self.events = queue.Queue()
         self.window = Gtk.Window(title='法奥机器人工作台' + (' · 离线演示' if args.demo else ''))
+        self.window.set_name('robot-workbench')
+        self.window_style = Gtk.CssProvider()
+        self.window_style.load_from_data(b'#robot-workbench { background-color: #f4f6f9; color: #223248; }')
+        self.window.get_style_context().add_provider(self.window_style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.window.set_default_size(1500, 940)
-        self.window.set_border_width(12)
+        self.window.set_border_width(10)
         self.window.connect('delete-event', self.close)
         self.window.connect('key-press-event', self.key_event, 'key-press-event')
         self.window.connect('key-release-event', self.key_event, 'key-release-event')
         self.window.connect('focus-out-event', self.key_event, 'focus-out-event')
         self.window.connect('focus-in-event', self.key_event, 'focus-in-event')
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.window.add(box)
         heading = Gtk.Label(xalign=0)
         heading.set_markup('<span size="19000" weight="bold">机器人工作台</span>  ·  查看状态 / 控制 / 建图 / 遥操')
@@ -76,6 +83,9 @@ class Workbench:
         disconnect = Gtk.Button(label='断开查看')
         disconnect.connect('clicked', self.disconnect_observers)
         header.pack_start(disconnect, False, False, 0)
+        self.model_toggle = Gtk.CheckButton(label='显示机器人模型')
+        self.model_toggle.connect('toggled', self.toggle_model)
+        header.pack_end(self.model_toggle, False, False, 0)
         box.pack_start(header, False, False, 0)
         self.routes = Gtk.Label(label='正在检查连接路由…', xalign=0)
         self.routes.set_line_wrap(True)
@@ -83,24 +93,44 @@ class Workbench:
         self.message = Gtk.Label(label='打开工作台不会使能；请先连接查看状态。', xalign=0)
         self.message.set_line_wrap(True)
         box.pack_start(self.message, False, False, 0)
+        self.hardware_strip = Gtk.Box(spacing=18)
+        box.pack_start(self.hardware_strip, False, False, 0)
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.content_split = split
         box.pack_start(split, True, True, 0)
         self.notebook = Gtk.Notebook()
         self.notebook.set_scrollable(True)
         self.notebook.connect('switch-page', self.switched)
         split.pack1(self.notebook, resize=True, shrink=False)
         self.pages = {}
+        self.page_scrolls = {}
         self.page_controls = {}
         for name, title in [('map', '建图与底盘'), ('joints', '关节'), ('body', '身体'), ('tcp', 'TCP'), ('gripper', '夹爪调试'), ('teleop', 'PICO 遥操'), ('maintenance', '维护')]:
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             page.set_border_width(10)
             self.pages[name] = page
-            self.notebook.append_page(page, Gtk.Label(label=title))
+            # Gtk.Notebook requests the tallest page even while it is hidden.
+            # Long option panels must scroll instead of enlarging the map window.
+            # Joint/body/TCP pages already scroll their embedded controls.
+            if name in ('gripper', 'teleop', 'maintenance'):
+                scroll = Gtk.ScrolledWindow()
+                scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+                scroll.set_propagate_natural_height(False)
+                scroll.set_propagate_natural_width(False)
+                scroll.add(page)
+                self.page_scrolls[name] = scroll
+                self.notebook.append_page(scroll, Gtk.Label(label=title))
+            else:
+                self.notebook.append_page(page, Gtk.Label(label=title))
         self.map_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.pages['map'].pack_start(self.map_container, True, True, 0)
         self.map_placeholder()
         for name in ('base', 'joints', 'body', 'tcp'):
             page = self.pages[CONTROL_PAGES[name]]
+            if name == 'base':
+                self.base_controls_widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                self.map_container.pack_end(self.base_controls_widget, False, False, 0)
+                page = self.base_controls_widget
             row = Gtk.Box(spacing=8)
             label = '启动底盘 · 回正并使能' if name == 'base' else '启动本控制 · 使能上半身'
             if args.demo:
@@ -138,11 +168,22 @@ class Workbench:
         page = CONTROL_PAGES.get(args.page, args.page)
         if page in self.pages:
             self.notebook.set_current_page(list(self.pages).index(page))
+        self.update_model_visibility()
+        if args.demo:
+            self.connect_observers()
 
     def map_placeholder(self):
         self.map_container.pack_start(Gtk.Label(
             label='点击「连接 / 刷新只读状态」显示地图和双雷达。\n底盘启动后，可在本页按键移动并实时查看建图。'), True, True, 0)
+        if hasattr(self, 'base_controls_widget'):
+            self.unparent_base_controls()
+            self.map_container.pack_end(self.base_controls_widget, False, False, 0)
         self.map_container.show_all()
+
+    def unparent_base_controls(self):
+        parent = self.base_controls_widget.get_parent()
+        if parent is not None:
+            parent.remove(self.base_controls_widget)
 
     def control_args(self, name, credentials=None, preview=False):
         part = 'base' if name == 'base' else 'upper'
@@ -226,6 +267,9 @@ class Workbench:
     def refresh_routes(self):
         if self.closing:
             return False
+        if self.args.demo:
+            self.routes.set_text('离线演示 · 使用本机示例地图和模拟状态，不连接机器人')
+            return True
         hosts = {part: self.entries[part].get_text().strip() for part in ('base', 'upper')}
         def work():
             values = {part: describe(route_info(host)) for part, host in hosts.items()}
@@ -235,9 +279,6 @@ class Workbench:
 
     def connect_observers(self, *_):
         if self.closing:
-            return
-        if self.args.demo:
-            self.message.set_text('离线演示：不连接机器人；模型为静态参考')
             return
         # Check the lazily loaded plotting backend before replacing observers:
         # an incomplete GUI environment must not leave a half-connected session.
@@ -250,6 +291,13 @@ class Workbench:
             return
         if not self.disconnect_observers():
             return
+        if self.args.demo:
+            from apps.map_viewer.demo import DemoStream
+            stream = DemoStream()
+            self.mount_map_panel(MapPanel, stream, start_stream=False)
+            self.message.set_text('离线演示 · 可查看地图图层和选择目标；不会连接或移动机器人')
+            self.refresh_routes()
+            return
         for part in ('base', 'upper'):
             creds = self.credentials(part)
             if creds:
@@ -260,14 +308,21 @@ class Workbench:
         if creds:
             host, user, password = creds
             stream = Stream(SimpleNamespace(host=host, user=user, check=False, duration=0), password)
-            for child in self.map_container.get_children():
-                child.destroy()
-            self.map_panel = MapPanel(stream, ROOT/'logs/map-viewer', compact=True,
-                                      acquire=self.acquire, release=self.release)
-            self.map_container.pack_start(self.map_panel, True, True, 0)
-            self.map_container.show_all()
+            self.mount_map_panel(MapPanel, stream)
         self.message.set_text('只读状态连接中；控制功能需分别显式启动')
         self.refresh_routes()
+
+    def mount_map_panel(self, panel_class, stream, start_stream=True):
+        self.unparent_base_controls()
+        for child in self.map_container.get_children():
+            child.destroy()
+        self.map_panel = panel_class(stream, ROOT/'logs/map-viewer', compact=True,
+                                     start_stream=start_stream, acquire=self.acquire, release=self.release)
+        self.map_panel.attach_base_controls(self.base_controls_widget)
+        if 'base' in self.controls:
+            self.map_panel.base_expander.set_expanded(True)
+        self.map_container.pack_start(self.map_panel, True, True, 0)
+        self.map_container.show_all()
 
     def disconnect_observers(self, *_):
         if self.map_panel:
@@ -275,6 +330,8 @@ class Workbench:
                 self.message.set_text('请等待地图操作完成后再断开或刷新连接')
                 return False
             self.retired_threads.append(self.map_panel.stream.thread)
+            self.map_panel.detach_base_controls()
+            self.unparent_base_controls()
             self.map_panel.destroy()
             self.map_panel = None
             self.map_placeholder()
@@ -288,6 +345,8 @@ class Workbench:
         return True
 
     def start_control(self, name):
+        if name == 'base' and self.map_panel:
+            self.map_panel.base_expander.set_expanded(True)
         part = 'base' if name == 'base' else 'upper'
         creds = self.credentials(part)
         if creds is None or not self.acquire(part, name):
@@ -377,6 +436,26 @@ class Workbench:
                 control.window.dispatch('focus-out-event', None)
             elif not was_enabled and control.window.input_enabled:
                 control.window.dispatch('focus-in-event', None)
+        if hasattr(self, 'model_toggle'):
+            self.update_model_visibility(current)
+
+    def toggle_model(self, *_):
+        if self.syncing_model_toggle or self.model_panel is None:
+            return
+        if self.notebook.get_current_page() == list(self.pages).index('map'):
+            self.map_model_visible = self.model_toggle.get_active()
+        self.model_panel.set_visible(self.model_toggle.get_active())
+
+    def update_model_visibility(self, current=None):
+        if self.model_panel is None:
+            return
+        if current is None:
+            current = list(self.pages)[max(0, self.notebook.get_current_page())]
+        visible = self.map_model_visible if current == 'map' else True
+        self.syncing_model_toggle = True
+        self.model_toggle.set_active(visible)
+        self.syncing_model_toggle = False
+        self.model_panel.set_visible(visible)
 
     def key_event(self, _, event, kind):
         # Releases go to every control so changing tabs never strands a key.
@@ -389,18 +468,22 @@ class Workbench:
     def add_model(self, split):
         from apps.workbench.model_view import ModelView
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.model_panel = panel
+        panel.set_no_show_all(True)
         panel.set_size_request(340, -1)
         self.hardware_labels = {}
         for part, title in [('base', '底盘'), ('upper', '上半身')]:
             label = Gtk.Label(label=title+'：未连接', xalign=0)
             label.set_line_wrap(True)
             self.hardware_labels[part] = label
-            panel.pack_start(label, False, False, 0)
+            label.set_max_width_chars(44)
+            self.hardware_strip.pack_start(label, True, True, 0)
         self.model = ModelView()
         self.teleop.tool_preview = self.model.set_tool_geometry
         self.body_readout = Gtk.Label(label='身体：等待实测角度', xalign=0)
         self.body_readout.set_line_wrap(True)
-        panel.pack_start(self.body_readout, False, False, 0)
+        self.body_readout.set_max_width_chars(48)
+        self.hardware_strip.pack_start(self.body_readout, True, True, 0)
         panel.pack_start(self.model, True, True, 0)
         config = self.model.model.body.config
         calibration = ('复用身体竖直标定：' + config.get('upright_saved_at', '日期未记录')
@@ -409,6 +492,8 @@ class Workbench:
         hint.set_line_wrap(True)
         panel.pack_start(hint, False, False, 0)
         split.pack2(panel, resize=True, shrink=False)
+        for child in panel.get_children():
+            child.show_all()
 
     def add_maintenance(self):
         page = self.pages['maintenance']

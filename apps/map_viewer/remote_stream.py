@@ -15,6 +15,9 @@ import zlib
 PREFIX = 'MAP_VIEWER '
 ODOMETRY_STATUS = Path.home()/'.local/share/fairino-odometry/status.json'
 MAPPING_EPOCH = Path.home()/'.local/share/fairino-map-control/odometry-epoch'
+NAVIGATION_STATUS = Path.home()/'.local/share/fairino-navigation/status.json'
+PATH_TOPICS = {'global': '/fairino_navigation/received_global_plan',
+               'local': '/fairino_navigation/local_plan'}
 
 
 class ScanMatchMonitor:
@@ -115,6 +118,7 @@ class LocalizationMonitor:
         variance = .5*(xx+yy+math.sqrt((xx-yy)**2+4*xy**2))
         self.sample = {'stamp': stamp, 'pose': list(pose),
                        'matches': (self.sample or {}).get('matches', 0)+1,
+                       'covariance_xy': [xx, xy, yy],
                        'xy_std': math.sqrt(max(0., variance)),
                        'yaw_std': math.sqrt(covariance[35])}
         self.travel = self.rotation = 0.
@@ -162,12 +166,251 @@ class LocalizationMonitor:
         return result
 
 
+def display_session(mode, source, mapping_session, localization, odometry_epoch):
+    """Stable identity, independent of map updates, TF poses and poll times."""
+    return [mode, source, mapping_session if mode == 'mapping' else None,
+            localization.get('id') if mode == 'saved' else None,
+            localization.get('initial_pose_stamp') if mode == 'saved' else None,
+            odometry_epoch]
+
+
+def finite_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def bounded_points(points, maximum, width):
+    """Keep real, evenly spaced samples including endpoints; never synthesize."""
+    if not points or any(len(p) != width or not all(finite_number(v) for v in p) for p in points):
+        raise ValueError('观测点为空或含无效坐标')
+    count = len(points)
+    indices = (range(count) if count <= maximum else
+               [i*(count-1)//(maximum-1) for i in range(maximum)])
+    return [list(points[i]) for i in indices]
+
+
+def transform_points(points, transform):
+    """Rigid XY transform evaluated at the original message timestamp."""
+    if len(transform) != 3 or not all(finite_number(v) for v in transform):
+        raise ValueError('路径 TF 含无效坐标')
+    x, y, heading = transform
+    c, s = math.cos(heading), math.sin(heading)
+    return [[x+c*px-s*py, y+s*px+c*py] for px, py in points]
+
+
+class DisplayTelemetry:
+    """Read-only overlays, isolated from localization and motion decisions."""
+    def __init__(self):
+        self.session = None
+        self.active = False
+        self.cutoff = None
+        self.expected_navigation_session = None
+        self.particle = None
+        self.particle_reason = '等待本次定位的 AMCL 粒子云'
+        self.particle_odometry = None
+        self.travel = self.rotation = 0.
+        self.paths = {}
+        self.path_reasons = {kind: '导航尚未执行' for kind in PATH_TOPICS}
+        self.navigation = None
+        self.navigation_cutoff = None
+
+    def set_session(self, token, active, cutoff, navigation_session):
+        if token != self.session:
+            self.particle = None
+            self.particle_reason = '等待本次定位的 AMCL 粒子云'
+            self.particle_odometry = None
+            self.travel = self.rotation = 0.
+            self.paths.clear()
+            self.navigation = None
+            self.navigation_cutoff = None
+            self.path_reasons = {kind: '地图或定位会话已变化，等待新路径' for kind in PATH_TOPICS}
+        self.session = list(token)
+        self.active = bool(active and finite_number(cutoff) and cutoff > 0)
+        self.cutoff = cutoff
+        self.expected_navigation_session = list(navigation_session)
+        if not self.active:
+            self.particle = None
+            self.paths.clear()
+            self.particle_reason = '请启动定位并设置初始位姿'
+
+    def on_odometry(self, pose, twist):
+        if not all(finite_number(v) for v in [*pose, *twist]):
+            return
+        moving = math.hypot(*twist[:2]) >= .005 or abs(twist[2]) >= .005
+        if self.particle_odometry is not None and moving:
+            self.travel += math.hypot(pose[0]-self.particle_odometry[0], pose[1]-self.particle_odometry[1])
+            delta = pose[2]-self.particle_odometry[2]
+            self.rotation += abs(math.atan2(math.sin(delta), math.cos(delta)))
+        self.particle_odometry = tuple(pose)
+
+    def reject_particles(self, reason):
+        self.particle = None
+        self.particle_reason = reason
+
+    def accept_particles(self, points, stamp, frame, now_ros, now, source_confirmed):
+        if not self.active:
+            self.reject_particles('请启动定位并设置初始位姿')
+            return False
+        if not source_confirmed:
+            self.reject_particles('等待唯一 AMCL 粒子云发布器')
+            return False
+        if (frame != 'map' or not finite_number(stamp) or stamp < self.cutoff
+                or not -.5 <= now_ros-stamp <= 2):
+            self.reject_particles('粒子云坐标系、时间戳或定位会话不匹配')
+            return False
+        if self.particle and stamp <= self.particle['stamp']:
+            return False
+        try:
+            sampled = bounded_points(points, 600, 4)
+            if any(p[3] < 0 for p in points):
+                raise ValueError('粒子权重无效')
+        except (TypeError, ValueError) as exc:
+            self.reject_particles(str(exc))
+            return False
+        self.particle = {'points': sampled, 'count': len(points), 'stamp': stamp, 'frame': frame,
+                         'received': now, 'stamp_age': now_ros-stamp}
+        self.travel = self.rotation = 0.
+        return True
+
+    def set_navigation(self, state, now_ros, now_wall):
+        state = state if isinstance(state, dict) else {}
+        stamp = state.get('time')
+        fresh = finite_number(stamp) and abs(now_wall-stamp) <= 2
+        goal, run_id = state.get('goal'), state.get('run_id')
+        live = (self.active and fresh and isinstance(goal, str) and bool(goal)
+                and isinstance(run_id, str) and bool(run_id)
+                and state.get('controller_ready') and state.get('localization_ready')
+                and state.get('session_token') == self.expected_navigation_session)
+        token = (run_id, goal) if live else None
+        if token != self.navigation:
+            self.paths.clear()
+            self.path_reasons = {kind: '等待本次目标的控制器路径' if live else '导航未执行或状态已过期'
+                                 for kind in PATH_TOPICS}
+            # Path has no goal UUID. Only accept observations newer than when
+            # this active-goal context was first seen; wait for the next replan.
+            self.navigation_cutoff = now_ros if live else None
+        self.navigation = token
+
+    def reject_path(self, kind, reason):
+        self.paths.pop(kind, None)
+        self.path_reasons[kind] = reason
+
+    def accept_path(self, kind, points, stamp, frame, now_ros, now, source_confirmed,
+                    transform=None):
+        if not self.navigation:
+            self.reject_path(kind, '导航未执行或状态已过期')
+            return False
+        if not source_confirmed:
+            self.reject_path(kind, '等待唯一的导航控制器路径发布器')
+            return False
+        maximum_age = 3. if kind == 'global' else .75
+        if (not finite_number(stamp) or stamp < max(self.cutoff, self.navigation_cutoff)
+                or not -.5 <= now_ros-stamp <= maximum_age):
+            self.reject_path(kind, '路径时间戳过期或早于本次目标')
+            return False
+        # DWB's pruned global plan can retain its original timestamp. Receipt
+        # times alone must not make an old plan look newly planned.
+        if self.paths.get(kind) and stamp < self.paths[kind]['stamp']:
+            return False
+        try:
+            sampled = bounded_points(points, 400, 2)
+            if frame != 'map':
+                if not frame or transform is None:
+                    raise ValueError('等待路径采样时刻到 map 的 TF')
+                sampled = transform_points(sampled, transform)
+        except (TypeError, ValueError) as exc:
+            self.reject_path(kind, str(exc))
+            return False
+        self.paths[kind] = {'points': sampled, 'count': len(points), 'stamp': stamp,
+                            'frame': 'map', 'source_frame': frame, 'received': now,
+                            'stamp_age': now_ros-stamp}
+        return True
+
+    @staticmethod
+    def age(sample, now):
+        elapsed = max(0., now-sample['received'])
+        return max(elapsed, abs(sample['stamp_age']+elapsed))
+
+    def snapshot(self, now, localization_visible, localization_reason, particle_source,
+                 path_sources):
+        particles = {'points': [], 'count': 0, 'age': None, 'valid': False,
+                     'reason': self.particle_reason, 'state': 'waiting', 'frame': 'map',
+                     'session_id': self.expected_navigation_session[0] if self.expected_navigation_session else None}
+        sample = self.particle
+        if sample:
+            age = self.age(sample, now)
+            particles.update(count=sample['count'], stamp=sample['stamp'], age=age)
+            if not self.active or not localization_visible:
+                particles.update(reason=localization_reason, state='unavailable')
+            elif not particle_source:
+                particles.update(reason='AMCL 粒子云发布器不可用或不唯一', state='unavailable')
+            elif age > 2 and (self.travel >= .1 or self.rotation >= math.radians(5)):
+                particles.update(reason='运动后粒子云未更新', state='stale')
+            else:
+                particles.update(points=sample['points'], valid=True,
+                                 state='fresh' if age <= 2 else 'retained',
+                                 reason='AMCL 实际粒子' if age <= 2 else '保留上次粒子云；静止时 AMCL 不必持续发布')
+        paths = {}
+        for kind, topic in PATH_TOPICS.items():
+            result = {'points': [], 'age': None, 'valid': False, 'reason': self.path_reasons[kind],
+                      'frame': 'map', 'topic': topic}
+            sample = self.paths.get(kind)
+            if sample:
+                age = self.age(sample, now)
+                result.update(stamp=sample['stamp'], age=age, count=sample['count'],
+                              source_frame=sample['source_frame'])
+                if not self.navigation:
+                    result['reason'] = '导航未执行或状态已过期'
+                elif not localization_visible:
+                    result['reason'] = localization_reason
+                elif not path_sources.get(kind):
+                    result['reason'] = '导航控制器路径发布器不可用或不唯一'
+                elif age > (3. if kind == 'global' else .75):
+                    result['reason'] = '控制器路径已过期'
+                else:
+                    result.update(points=sample['points'], valid=True,
+                                  reason='控制器当前路径' if kind == 'global' else '控制器局部预测轨迹',
+                                  run_id=self.navigation[0], goal_id=self.navigation[1],
+                                  association='active_goal_context')
+            paths[kind] = result
+        return particles, paths
+
+
 def emit(payload):
     print(PREFIX + json.dumps(payload, separators=(',', ':'), allow_nan=False), flush=True)
 
 
 def yaw(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+
+
+def observation_yaw(q):
+    values = [q.x, q.y, q.z, q.w]
+    if not all(finite_number(v) for v in values):
+        raise ValueError('观测姿态含无效四元数')
+    norm = sum(v*v for v in values)
+    if norm < 1e-12:
+        raise ValueError('观测姿态为零四元数')
+    x, y, z, w = [v/math.sqrt(norm) for v in values]
+    return math.atan2(2*(w*z+x*y), 1-2*(y*y+z*z))
+
+
+def path_observation(msg, lookup_transform):
+    """Parse a ROS Path; lookup receives the original ROS stamp, never latest."""
+    frame = msg.header.frame_id
+    stamp = msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
+    if frame not in ('map', 'odom') or not finite_number(stamp) or stamp <= 0:
+        raise ValueError('路径坐标系或时间戳不可用')
+    if any(p.header.frame_id and p.header.frame_id != frame for p in msg.poses):
+        raise ValueError('路径内含不一致的坐标系')
+    transform = None
+    if frame != 'map':
+        try:
+            tf = lookup_transform('map', frame, msg.header.stamp)
+            transform = [tf.transform.translation.x, tf.transform.translation.y,
+                         observation_yaw(tf.transform.rotation)]
+        except Exception as exc:
+            raise ValueError('等待路径采样时刻到 map 的 TF') from exc
+    return [[p.pose.position.x, p.pose.position.y] for p in msg.poses], stamp, frame, transform
 
 
 def main():
@@ -177,7 +420,7 @@ def main():
     import rclpy
     from rclpy.qos import QoSProfile, DurabilityPolicy, qos_profile_sensor_data
     from rclpy.time import Time
-    from nav_msgs.msg import OccupancyGrid, Odometry
+    from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
     from sensor_msgs.msg import LaserScan
     from geometry_msgs.msg import PoseWithCovarianceStamped
     from rcl_interfaces.srv import GetParameters
@@ -212,6 +455,17 @@ def main():
     matches = ScanMatchMonitor()
     mapping_parameters = {}
     match_publishers = []
+    telemetry = DisplayTelemetry()
+    particle_source = False
+    pending_particles = None
+    particles_available = True
+    path_sources = {kind: False for kind in PATH_TOPICS}
+    saved_file = Path('/opt/fairino_AMR_project/maps/active/map.yaml')
+
+    def unique_publisher(topic, name, namespace):
+        publishers = node.get_publishers_info_by_topic(topic)
+        return (len(publishers) == 1 and publishers[0].node_name == name
+                and publishers[0].node_namespace == namespace)
 
     def match_session():
         try:
@@ -245,6 +499,68 @@ def main():
                             [p.x, p.y, yaw(msg.pose.pose.orientation)],
                             list(msg.pose.covariance), msg.header.frame_id)
 
+    def refresh_display_session():
+        # Read current identities before accepting a latched/queued overlay.
+        # The read-only SSH worker owns this cache, never a motion-control node.
+        refresh_localization()
+        try:
+            epoch = (ODOMETRY_STATUS.parent/'epoch').read_text().strip()
+        except OSError:
+            epoch = None
+        odometry_status['epoch'] = epoch
+        try:
+            mapping_session = MAPPING_EPOCH.stat().st_mtime_ns if mode == 'mapping' else None
+        except OSError:
+            mapping_session = None
+        source = str(saved_file.resolve()) if saved_file.is_file() else None
+        token = display_session(mode, source, mapping_session, localization_state, epoch)
+        cutoff = localization_state.get('initial_pose_stamp')
+        telemetry.set_session(token, mode == 'saved' and localization_state.get('active')
+                              and epoch is not None and epoch == localization_state.get('epoch'),
+                              cutoff, [localization_state.get('id'), cutoff, epoch])
+        try:
+            nav_state = json.loads(NAVIGATION_STATUS.read_text())
+        except (OSError, ValueError):
+            nav_state = {}
+        telemetry.set_navigation(nav_state, node.get_clock().now().nanoseconds*1e-9, time.time())
+        return token
+
+    def on_particles(msg):
+        nonlocal pending_particles
+        # Process after refreshing the map mode. The first AMCL cloud can
+        # arrive before the initial graph poll, and may be the last while still.
+        pending_particles = msg
+
+    def consume_particles(msg):
+        nonlocal particle_source
+        if not particle_source:
+            particle_source = unique_publisher('/particle_cloud', 'amcl', '/')
+        try:
+            points = [[p.pose.position.x, p.pose.position.y, observation_yaw(p.pose.orientation), p.weight]
+                      for p in msg.particles]
+        except (AttributeError, TypeError, ValueError) as exc:
+            telemetry.reject_particles('粒子云数据不可用：'+str(exc))
+            return
+        stamp = msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
+        telemetry.accept_particles(points, stamp, msg.header.frame_id,
+                                   node.get_clock().now().nanoseconds*1e-9,
+                                   time.monotonic(), particle_source)
+
+    def on_path(kind):
+        def receive(msg):
+            refresh_display_session()
+            if not path_sources[kind]:
+                path_sources[kind] = unique_publisher(PATH_TOPICS[kind], 'controller_server', '/fairino_navigation')
+            try:
+                points, stamp, frame, transform = path_observation(
+                    msg, lambda target, source, stamp: buffer.lookup_transform(target, source, Time.from_msg(stamp)))
+            except (AttributeError, TypeError, ValueError) as exc:
+                telemetry.reject_path(kind, str(exc))
+                return
+            telemetry.accept_path(kind, points, stamp, frame, node.get_clock().now().nanoseconds*1e-9,
+                                  time.monotonic(), path_sources[kind], transform)
+        return receive
+
     def on_map(msg):
         nonlocal map_frame, map_signature
         history['/map'].append(time.monotonic())
@@ -274,6 +590,7 @@ def main():
             if topic == '/odom':
                 matches.on_odometry(values[:3], values[3:6])
                 localization.on_odometry(values[:3], values[3:6])
+                telemetry.on_odometry(values[:3], values[3:6])
         return receive
 
     def on_scan(topic):
@@ -293,6 +610,15 @@ def main():
     subscriptions.append(node.create_subscription(
         PoseWithCovarianceStamped, '/amcl_pose', on_localization,
         QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)))
+    try:
+        from nav2_msgs.msg import ParticleCloud
+    except ImportError:
+        particles_available = False
+    else:
+        subscriptions.append(node.create_subscription(
+            ParticleCloud, '/particle_cloud', on_particles, qos_profile_sensor_data))
+    for kind, topic in PATH_TOPICS.items():
+        subscriptions.append(node.create_subscription(NavPath, topic, on_path(kind), 1))
     subscriptions.append(node.create_subscription(
         LaserScan, '/scan', lambda msg: history['/scan'].append(time.monotonic()), qos_profile_sensor_data))
     from lifecycle_msgs.srv import GetState
@@ -351,6 +677,9 @@ def main():
                 last_mode_query = now
                 refresh_localization()
                 amcl_publishers = [p.node_name for p in node.get_publishers_info_by_topic('/amcl_pose')]
+                particle_source = unique_publisher('/particle_cloud', 'amcl', '/')
+                path_sources = {kind: unique_publisher(topic, 'controller_server', '/fairino_navigation')
+                                for kind, topic in PATH_TOPICS.items()}
                 if amcl_future is None and amcl_client.service_is_ready():
                     amcl_future = amcl_client.call_async(GetState.Request())
                     amcl_requested = now
@@ -366,7 +695,6 @@ def main():
                     odometry_status['epoch'] = None
                 map_publishers = sorted({p.node_name for p in node.get_publishers_info_by_topic('/map')})
                 match_publishers = sorted({p.node_name for p in node.get_publishers_info_by_topic('/pose')})
-                saved_file = Path('/opt/fairino_AMR_project/maps/active/map.yaml')
                 new_mode = 'mapping' if 'slam_toolbox' in map_publishers else 'saved' if 'map_server' in map_publishers else 'empty' if not saved_file.is_file() else 'unknown'
                 if new_mode != mode:
                     mode = new_mode
@@ -389,6 +717,12 @@ def main():
             if now - last_sent < .25:
                 continue
             last_sent = now
+            current_display_session = refresh_display_session()
+            if pending_particles is not None:
+                consume_particles(pending_particles)
+                pending_particles = None
+            elif not particles_available:
+                telemetry.reject_particles('此 ROS 环境缺少 nav2_msgs/ParticleCloud')
             topics = {}
             for topic, times in history.items():
                 recent = [t for t in times if now - t < 3]
@@ -422,6 +756,8 @@ def main():
                 localization_tf_ready, amcl_state == 3 and now-amcl_checked < 4,
                 amcl_publishers == ['amcl'])
             localized = localization_status['estimate_visible']
+            particles, navigation_paths = telemetry.snapshot(
+                now, localized, localization_status['reason'], particle_source, path_sources)
             if mode == 'empty' or (mode != 'mapping' and not localized):
                 pose = None
                 tf_error = '已有地图定位未就绪'
@@ -476,6 +812,8 @@ def main():
                   'odometry_status': odometry_status,
                   'scan_match': dict(matches.status(now), source_confirmed=match_publishers == ['slam_toolbox']) if mode == 'mapping' else None,
                   'localization': localization_status,
+                  'display_session': current_display_session,
+                  'particles': particles, 'navigation_paths': navigation_paths,
                   'mapping_parameters': mapping_parameters, 'transforms': transforms,
                   'scans': points, 'local_scans': local_points, 'frame': map_frame,
                   'map_mode': mode, 'mapping_paused': mapping_paused, 'map_publishers': map_publishers,

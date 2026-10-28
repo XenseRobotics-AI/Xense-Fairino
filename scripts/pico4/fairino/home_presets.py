@@ -6,6 +6,7 @@ DEFAULT_HOME = ROOT/'home_pose.json'
 HOME_PRESETS = {
     'default': ('起始位姿 1 · 原对称屈肘', DEFAULT_HOME),
     'right_mirrored': ('起始位姿 2 · 10-20 右臂实测镜像', ROOT/'home_pose_right_mirrored.json'),
+    'left_cross_body': ('起始位姿 3 · 左爪身前朝右（腕部余量小）', ROOT/'home_pose_left_cross_body.json'),
 }
 
 

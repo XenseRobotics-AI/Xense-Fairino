@@ -39,6 +39,8 @@ def main():
     pose_source_ok = False
     last_graph = 0.
     last_write = 0.
+    last_tick = None
+    sources = []
     canceled = set()
     reported_failure = None
     last_goal = {}
@@ -70,7 +72,7 @@ def main():
             gate.receive([msg.linear.x, msg.linear.y, msg.linear.z,
                           msg.angular.x, msg.angular.y, msg.angular.z], time.monotonic())
         except ValueError:
-            gate.fail('收到无效或非二维速度指令', time.monotonic())
+            gate.fail('收到无效或非二维速度指令', time.monotonic(), code='invalid_command')
             gate.command = None
 
     def goals(msg):
@@ -95,11 +97,14 @@ def main():
         node.create_subscription(GoalStatusArray, '/fairino_navigation/navigate_to_pose/_action/status', goals,
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))]
     def tick():
-        nonlocal source_ok, pose_source_ok, last_graph, last_write, reported_failure
+        nonlocal source_ok, pose_source_ok, last_graph, last_write, reported_failure, last_tick, sources
         now = time.monotonic()
+        tick_interval = None if last_tick is None else max(0., now-last_tick)
+        last_tick = now
         if now-last_graph > 1:
             last_graph = now
             publishers = node.get_publishers_info_by_topic('/fairino_navigation/cmd_vel_raw')
+            sources = [{'name': p.node_name, 'namespace': p.node_namespace} for p in publishers]
             source_ok = len(publishers) == 1 and publishers[0].node_name == 'controller_server' and publishers[0].node_namespace == '/fairino_navigation'
             pose_source_ok = [p.node_name for p in node.get_publishers_info_by_topic('/amcl_pose')] == ['amcl']
         state = read_session()
@@ -113,13 +118,16 @@ def main():
         except (OSError, ValueError, KeyError):
             odometry = {}
         tf_ready = False
+        tf_age = None
         try:
             transform = tf.lookup_transform('map', 'base_footprint', Time())
             age = node.get_clock().now().nanoseconds*1e-9-stamp(transform)
+            tf_age = age
             tf_ready = abs(age) < .5 and stamp(transform) >= (state.get('initial_pose_stamp') or float('inf'))
         except Exception:
             pass
-        ages = {topic: {'age': max(now-received, abs(age+now-received))}
+        ages = {topic: {'age': max(now-received, abs(age+now-received)),
+                        'receipt_age': max(0., now-received), 'stamp_age': age+now-received}
                 for topic, (received, age) in topics.items()}
         health = monitor.status(node.get_clock().now().nanoseconds*1e-9, odometry, ages,
                                 tf_ready, bool(state.get('active')), pose_source_ok)
@@ -134,17 +142,26 @@ def main():
                             '双雷达观测过期：'+', '.join(stale_scans) if stale_scans else
                             '导航节点未激活或生命周期反馈过期' if not stack_ready else None)
         output = gate.output(now, ready and stack_ready, token, source_ok, readiness_reason)
+        # Publish the stop before diagnostic output or file writes.
+        msg = Twist()
+        msg.linear.x, msg.linear.y, msg.angular.z = output
+        pub.publish(msg)
         if gate.failure and gate.failure['goal'] != reported_failure:
             reported_failure = gate.failure['goal']
+            gate.capture_failure_context({
+                'time': time.time(), 'topic_ages': ages, 'session_token': list(token),
+                'localization_reason': health['reason'], 'localization_ready': ready,
+                'source_ok': source_ok, 'command_sources': sources,
+                'graph_check_age': max(0., now-last_graph),
+                'tf_ready': tf_ready, 'tf_age': tf_age, 'gate_tick_interval': tick_interval,
+                'lifecycle': {n: {'state': v[0], 'age': max(0., now-v[1])}
+                              for n, v in lifecycle.states.items()}})
             event = {'event': 'navigation_protective_stop', 'time': time.time(),
                      **gate.failure, 'topic_ages': ages, 'session_token': list(token),
                      'localization_reason': health['reason'], 'source_ok': source_ok,
                      'lifecycle_states': {n: v[0] for n, v in lifecycle.states.items()}}
             # Sparse events go to journald, independent of the latest status file.
             print(json.dumps(event, ensure_ascii=False), flush=True)
-        msg = Twist()
-        msg.linear.x, msg.linear.y, msg.angular.z = output
-        pub.publish(msg)
         if gate.failed_goal and gate.failed_goal not in canceled and cancel.service_is_ready():
             request = CancelGoal.Request()
             request.goal_info.goal_id.uuid = list(bytes.fromhex(gate.failed_goal))
@@ -158,6 +175,7 @@ def main():
                     'lifecycle_states': {n: v[0] for n, v in lifecycle.states.items()},
                     'goal': gate.goal, 'last_goal': last_goal, 'failed_goal': gate.failed_goal, 'failure': gate.failure, 'reason': gate.reason,
                     'localization_reason': health['reason'], 'command': output,
+                    'command_stream': gate.telemetry(now), 'gate_tick_interval': tick_interval,
                     'linear_limit': DEFAULT_LINEAR, 'angular_limit': DEFAULT_ANGULAR}
             tmp = HERE/'status.tmp'
             tmp.write_text(json.dumps(data, ensure_ascii=False))

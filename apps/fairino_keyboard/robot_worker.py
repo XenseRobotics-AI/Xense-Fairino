@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runs through SSH on 192.168.58.3. ROS is imported only in main()."""
 import argparse
+import errno
 import fcntl
 import json
 import math
@@ -26,6 +27,7 @@ ODOM = "/eight_dof_chassis_controller/odom"
 TOPIC = "/fairino_keyboard/cmd_vel"
 PREFIX = "@KEYCTRL "
 CONFIG = "/opt/fairino_AMR_project_B/reference_chassis_runtime/install/fairino_hardware/share/fairino_hardware/config/ros2_controllers.yaml"
+LOCK_PATH = "/home/fairino/.fairino_keyboard.lock"
 
 
 class Worker:
@@ -197,11 +199,12 @@ class Worker:
             if guarded:
                 self.guard()
 
-    def future(self, future, timeout=5.0, guarded=True):
+    def future(self, future, timeout=5.0, guarded=True, context=None):
         end = time.monotonic() + timeout
         while not future.done():
             if time.monotonic() >= end:
-                raise RuntimeError("ROS 请求超时")
+                detail = f"：{context}（阶段：{self.phase}）" if context else ""
+                raise RuntimeError("ROS 请求超时" + detail)
             self.pump(0.01, guarded)
         if guarded:
             self.guard()
@@ -216,7 +219,7 @@ class Worker:
             if time.monotonic() > end:
                 raise RuntimeError("服务不可用：" + path)
             self.pump(0.02, guarded)
-        return self.future(client.call_async(request), 6, guarded)
+        return self.future(client.call_async(request), 6, guarded, context=path)
 
     def controllers(self, guarded=True):
         result = self.service(ListControllers, "/controller_manager/list_controllers",
@@ -516,6 +519,7 @@ class Worker:
         while self.guard():
             self.zero(); self.pump(0.02)
         self.ready = True
+        self.phase = "底盘已使能，等待恢复里程计"
         self.odometry('resume')
         self.phase = "导航执行就绪：等待明确的导航目标" if getattr(self.args, "navigation", False) else "就绪：按住移动，松开停止"
         self.status(True)
@@ -668,29 +672,50 @@ def main():
         check_speeds(args.linear, args.angular)
     except RuntimeError as exc:
         parser.error(str(exc))
-    # One live keyboard owner; kernel releases the lock even after a crash.
+    # One live keyboard owner. Report failures before ROS initialization, and
+    # retain the same path/inode so another control entry cannot bypass ownership.
+    lock = None
     if not args.check:
-        lock = open("/home/fairino/.fairino_keyboard.lock", "a")
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    rclpy.init()
-    worker = Worker(args)
-    signal.signal(signal.SIGTERM, lambda *_: worker.stop.set())
-    signal.signal(signal.SIGINT, lambda *_: worker.stop.set())
-    code = 0
+        operation = 'open'
+        try:
+            lock = open(LOCK_PATH, "a")
+            operation = 'flock'
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if lock is not None:
+                lock.close()
+            if operation == 'flock' and exc.errno in (errno.EAGAIN, errno.EACCES):
+                message = '底盘控制已被其他会话占用，未启动本次控制'
+            elif exc.errno == errno.EROFS:
+                message = '机器人文件系统只读，无法获取底盘控制锁，未启动本次控制'
+            else:
+                message = '无法获取底盘控制锁，未启动本次控制：' + str(exc)
+            print(PREFIX + json.dumps(dict(error=message, stage='lock', errno=exc.errno,
+                  path=LOCK_PATH, operation=operation), ensure_ascii=False), flush=True)
+            return 1
     try:
-        worker.run()
-    except Exception as exc:
-        code = 1
-        worker.emit(error=str(exc))
-    finally:
-        if not worker.cleanup():
+        rclpy.init()
+        worker = Worker(args)
+        signal.signal(signal.SIGTERM, lambda *_: worker.stop.set())
+        signal.signal(signal.SIGINT, lambda *_: worker.stop.set())
+        code = 0
+        try:
+            worker.run()
+        except Exception as exc:
             code = 1
-        deadline = time.monotonic() + 1.0
-        while worker.output.unfinished_tasks and time.monotonic() < deadline:
-            time.sleep(0.01)
-        worker.node.destroy_node()
-        rclpy.shutdown()
-    return code
+            worker.emit(error=str(exc))
+        finally:
+            if not worker.cleanup():
+                code = 1
+            deadline = time.monotonic() + 1.0
+            while worker.output.unfinished_tasks and time.monotonic() < deadline:
+                time.sleep(0.01)
+            worker.node.destroy_node()
+            rclpy.shutdown()
+        return code
+    finally:
+        if lock is not None:
+            lock.close()
 
 
 if __name__ == "__main__":

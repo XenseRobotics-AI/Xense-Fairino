@@ -71,7 +71,7 @@ class DriveSession:
         self.stop_event = threading.Event()
         self.done = threading.Event()
         self.pulse_time = time.monotonic()
-        self.message = '正在检查并接入导航底盘…'
+        self.message = '正在检查并准备定位 / 导航底盘…'
         self.disabled_confirmed = False
         self.thread = threading.Thread(target=self.run, daemon=True)
 
@@ -108,7 +108,9 @@ class DriveSession:
                     self.message = '界面心跳中断，正在停止并下使能'
                     break
                 c.send(keys=(), focused=True)
-                self.message = c.latest.get('phase', '等待底盘反馈')
+                # Motor readiness does not imply AMCL or Nav2 readiness.
+                self.message = ('底盘控制连接已就绪' if c.latest.get('ready')
+                                else c.latest.get('phase', '等待底盘反馈'))
                 self.stop_event.wait(.05)
         except Exception as exc:
             self.message = '导航底盘未完成：'+str(exc)

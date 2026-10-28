@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "model": "ART7-R7-20260615-flange-x-106mm-v2",
+  "name": "left_cross_body_20261023",
+  "description": "起始位姿 3：左夹爪横在身体前方，指尖水平朝机器人自身右侧；右臂回原对称屈肘 Home。按身体直立、底盘水平及当前夹爪安装配置计算。左腕余量较小：固定 J7 时 J6 向正方向约 2.38°；固定 J6 时 J7 向负方向约 12.08°。仅移动 J1–J14。",
+  "joint_degrees": {
+    "left": [
+      23.5638233073214,
+      66.16468698511639,
+      -33.02469558262019,
+      63.396898768855735,
+      -52.60471808082971,
+      3.62205922649005,
+      -59.61679132524715
+    ],
+    "right": [
+      -45.0,
+      75.0,
+      100.0,
+      85.0,
+      -85.0,
+      0.0,
+      0.0
+    ]
+  },
+  "max_joint_speed_deg_s": 8.0,
+  "minimum_duration_s": 4.0,
+  "source": {
+    "selected_at": "2026-10-23",
+    "method": "用户确认离线预览姿态；厂家 IK 与独立 FK 校验",
+    "candidate_log": "logs/20261023-left-cross-body-preview/fairino-left-cross-body-candidate.json",
+    "left_tcp_chest_mm": [
+      300.0,
+      -100.0,
+      -100.0
+    ],
+    "left_fingertip_direction_chest": [
+      0.0,
+      -1.0,
+      0.0
+    ],
+    "tool_roll_deg": {
+      "left": 180.0,
+      "right": -180.0
+    },
+    "right_arm_reference": "home_pose.json"
+  },
+  "validation": {
+    "joint_limits_and_vendor_fk_ik": "通过",
+    "wrist_paths_from_existing_presets": "通过 Home1 / Home2 到目标的腕部联合限位和速度预留检查",
+    "static_wrist_guard_margin_deg": 2.0,
+    "left_j6_positive_remaining_deg_at_fixed_j7": 2.37794077350995,
+    "left_j7_negative_remaining_deg_at_fixed_j6": 12.083208674752854,
+    "hardware_motion_tested": false,
+    "full_body_tool_and_environment_collision_checked": false,
+    "note": "上述两个单轴余量不能同时使用；运行时按实际姿态和速度检查腕部路径，未保证完整运动路径无碰撞。"
+  }
+}

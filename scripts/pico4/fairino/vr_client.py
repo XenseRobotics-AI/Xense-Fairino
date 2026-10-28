@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PICO -> vendor flange IK -> one guarded FAIRINO ROS trajectory stream."""
+"""PICO -> selected constrained IK -> one guarded FAIRINO ROS trajectory stream."""
 import argparse
 import base64
 import contextlib
@@ -27,8 +27,9 @@ from tcp_keyboard import verify_both
 from tcp_core import ARMS, MODEL_ID
 from vendor_kinematics import VendorKinematics
 from tool_frames import DEFAULT_CONFIG, load_geometry, tool_config, packet_tool_id
-from vr_core import validate, KIND
+from vr_core import validate, KIND, LIFT_MODE
 from vr_lift import LiftInput
+from vr_lift_presets import HIGH_PERCENT, HOLD_SECONDS, LOW_PERCENT, SPEED_DEG_S
 from vr_input import Clutch, Stream, MAPPING_ID, POSE_FRAMES, controller_sides, rotation_mapping
 from vr_controls import JoystickControls, sensitivity_step
 from vr_heading import heading_alignment
@@ -49,6 +50,7 @@ def remote_command(args):
     bundle.update({name: (HERE/(name+".py")).read_text() for name in ("vr_timing", "vr_core", "vr_link_check", "vr_robot")})
     bundle['body_core'] = (SHARED/'body_control/body_core.py').read_text()
     bundle['vr_lift'] = (HERE/'vr_lift.py').read_text()
+    bundle['vr_lift_presets'] = (HERE/'vr_lift_presets.py').read_text()
     encoded = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
     argv = ["vr_robot.py", *Timing.from_args(args).argv()]
     argv.extend(['--tools-json', json.dumps(getattr(args, 'tools', tool_config()), allow_nan=False)])
@@ -60,11 +62,10 @@ def remote_command(args):
         argv.append("--prepare-check" if args.prepare_check else "--check")
     if getattr(args, 'body_lift', False):
         config = json.loads((SHARED/'body_control/body_config.json').read_text())
-        argv.extend(['--body-lift', '--body-config-json', json.dumps(config),
-                     '--lift-speed-mm-s', str(getattr(args, 'lift_speed_mm_s', 15.))])
+        argv.extend(['--body-lift', '--body-config-json', json.dumps(config)])
     loader = ("import base64,zlib,json,sys,types;"
         f"bundle=json.loads(zlib.decompress(base64.b64decode({encoded!r})));\n"
-        "for name in ('wrist_guard','probe_core','robot_probe','tcp_core','tool_frames','tcp_frames','tcp_jog','tcp_robot','body_core','vr_lift','vr_timing','vr_core','vr_link_check'):\n"
+        "for name in ('wrist_guard','probe_core','robot_probe','tcp_core','tool_frames','tcp_frames','tcp_jog','tcp_robot','body_core','vr_lift','vr_lift_presets','vr_timing','vr_core','vr_link_check'):\n"
         " m=types.ModuleType(name);sys.modules[name]=m;exec(compile(bundle[name],name+'.py','exec'),m.__dict__)\n"
         f"sys.argv={argv!r}\n"
         "exec(compile(bundle['vr_robot'],'vr_robot.py','exec'),{'__name__':'__main__'})")
@@ -148,7 +149,15 @@ def operate(args, kin, stream, connection):
     rotation_mode = rotation_mapping(control_mode, getattr(args, "rotation_mode", "auto"))
     hands = controller_sides(control_mode, getattr(args, "hand_mapping", "auto"))
     freeze_buttons = getattr(args, "freeze_buttons", False)
-    clutches = {side: Clutch(side, mode=control_mode, rotation_mode=rotation_mode) for side in ARMS}
+    # Existing direct callers may still supply the old vendor-only namespace.
+    # The CLI explicitly selects native by default and loads it before connecting.
+    ik_backend = getattr(args, 'ik_backend', 'vendor')
+    if ik_backend == 'native' and args.execute:
+        from vr_native_input import NativeClutch
+        clutch_type, plan_request = NativeClutch, args.native_ik.request
+    else:
+        clutch_type, plan_request = Clutch, request
+    clutches = {side: clutch_type(side, mode=control_mode, rotation_mode=rotation_mode) for side in ARMS}
     cartesian = CartesianInput(clutches, timing.interpolation_delay_ms)
     joysticks = JoystickControls()
     heading_yaw_deg = None
@@ -178,12 +187,16 @@ def operate(args, kin, stream, connection):
     chassis = getattr(args, 'chassis_control', None)
     lift_input = LiftInput() if getattr(args, 'body_lift', False) else None
     lift_value = 0.
+    lift_epoch = 0
+    last_lift_session_active = False
     last_lift_value, last_lift_log = 0., 0.
     action_path = connection.log_path.with_suffix(".actions.jsonl")
     print("日志：", connection.log_path, flush=True)
     tools = getattr(kin, 'tools', tool_config())
     print('TCP：'+('法兰中心' if tools['mode'] == 'flange' else '夹爪固定指尖中心')+
           ' · '+tools['id'], flush=True)
+    print('IK：'+('联合限位 IK · 完整 TCP 目标直接求解' if ik_backend == 'native'
+                 else '原厂 IK'), flush=True)
     if args.execute:
         print('所选起始位姿：'+home.get('description', home['name']), flush=True)
         print("即将使能 J1–J20；" + ("先自动回双臂 Home，完成后握 Grip 遥操。" if home_pending else "保持当前姿态，握 Grip 遥操。"), flush=True)
@@ -193,7 +206,8 @@ def operate(args, kin, stream, connection):
             print(f'底盘将回正并使能：{CHASSIS_DIRECTIONS[control_mode]}；'
                   f'最高 {args.chassis_linear:g} m/s、{args.chassis_angular:g} rad/s。回中停止，暂停后先回中。', flush=True)
         if lift_input:
-            print(f'右摇杆上/下：身体竖直升降，回中保持；最高 {args.lift_speed_mm_s:g} mm/s，沿用身体高低标定。', flush=True)
+            print(f'右摇杆持续推 {HOLD_SECONDS:g} 秒：上→高位{HIGH_PERCENT:g}%，下→下位{LOW_PERCENT:.1f}%；'
+                  f'关节速度上限 {SPEED_DEG_S:g}°/s。触发后回中继续到位，暂停/Home可中止；完成后先回中再触发。', flush=True)
         if grippers:
             print('夹爪遥操已显式启用：控制某臂的 Trigger 连续控制同侧夹爪；Grip 仍控制手臂跟随。', flush=True)
             print(f'夹爪速度 {grippers.speed:g} rad/s（电机轴），目标传输最多 100 Hz；'
@@ -205,7 +219,8 @@ def operate(args, kin, stream, connection):
         else:
             print("双击 X/Y 或 +/- 调灵敏度 0.25/0.5/1；左摇杆按压校准双臂正前方，空格暂停。", flush=True)
         print("Esc/Ctrl+C 退出并全部下使能。", flush=True)
-        print("腕部联合限位默认开启；g 启用 / G 停用，切换暂停并保持使能，松开 Grip 后重握。", flush=True)
+        print('联合限位 IK 的腕部保护始终开启，不能关闭。' if ik_backend == 'native' else
+              '腕部联合限位默认开启；g 启用 / G 停用，切换暂停并保持使能，松开 Grip 后重握。', flush=True)
         labels = {"left": "左", "right": "右"}
         print(f"位移 {control_mode} / 旋转 {rotation_mode}；" + "，".join(
             f"{labels[hand]}手柄 → 机器人{labels[arm]}臂" for arm, hand in hands.items()), flush=True)
@@ -213,10 +228,13 @@ def operate(args, kin, stream, connection):
         print(f"机器人单点保持，无额外关节追赶段；接收轮询 {timing.receiver_hz:g} Hz / 回传 {timing.feedback_hz:g} Hz。", flush=True)
         print(f"坐标映射 {MAPPING_ID}：双臂按厂家整机 URDF 对齐胸部，X 前 / Y 左 / Z 上。", flush=True)
         print("方向随胸部变化；腰部或折叠结构倾斜时，胸部轴不保证与地面对齐。", flush=True)
-        print("保留模型关节限位、厂家逆解检查、急停和断流停止。", flush=True)
+        print("保留模型关节限位、独立正解校验、急停和断流停止。", flush=True)
     with action_path.open("a", buffering=1) as log, keyboard():
         log.write(json.dumps({"local_time": time.time(), "event": "timing_config", **timing.payload()})+"\n")
         log.write(json.dumps({"local_time": time.time(), "event": "tcp_tool_config", **tools})+"\n")
+        log.write(json.dumps({'local_time': time.time(), 'event': 'ik_config',
+            'ik_backend': ik_backend, 'command_tracking': 'direct_constrained_ik'
+            if ik_backend == 'native' else 'vendor_wrist_scaled_ik'})+'\n')
         while True:
             now = time.monotonic()
             stop_reason = None
@@ -243,6 +261,8 @@ def operate(args, kin, stream, connection):
                     return 0
                 raise RuntimeError("机器人控制通道已结束，请查看日志中的最后状态")
             status = connection.latest
+            status_received = connection.last_status
+            now = time.monotonic()
             hw = status.get("hardware")
             if hw is None:
                 if now-startup > 12:
@@ -257,20 +277,26 @@ def operate(args, kin, stream, connection):
                 connection.send()
                 time.sleep(.02)
                 continue
-            if now-connection.last_status > .25:
+            if now-status_received > .25:
                 raise RuntimeError("机器人状态反馈超过 0.25 秒未更新")
             character = args.gui_input.key() if getattr(args, "gui_input", None) else key()
             if character in ("\x1b", "q", "Q"):
                 args.exit_reason = 'keyboard_stop'
                 return 0
             if character in ("g", "G"):
-                connection.wrist.switch(character == "g")
-                stop_reason = "切换腕部模块：暂停并等待静止；确认后松开 Grip 再重握"
+                if ik_backend == 'native' and character == 'G':
+                    stop_reason = '联合限位 IK 的腕部保护必须保持开启；已暂停，请松开 Grip 后重握'
+                else:
+                    connection.wrist.switch(character == "g")
+                    stop_reason = "切换腕部模块：暂停并等待静止；确认后松开 Grip 再重握"
             wrist_state = status.get("wrist_guard", {})
             wrist_ready = connection.wrist.ready(wrist_state) and connection.wrist.released
             frame = None
             try:
                 frame = stream.read()
+                # Input callbacks can arrive after this iteration began.
+                # Compute input ages and sampling times after the snapshot.
+                now = time.monotonic()
                 stream_bad_since = None
             except ValueError as exc:
                 stop_reason = str(exc)
@@ -334,6 +360,9 @@ def operate(args, kin, stream, connection):
                     stop_reason = "Grip 已握下，中止 Home；松开后可继续遥操"
             if proof is None and frame is not None:
                 proof, _ = verify_both(kin, hw)
+            now = time.monotonic()
+            if frame is not None and not 0. <= now-frame.get('received_monotonic', now) <= .25:
+                stop_reason = 'PICO 输入超过 0.25 秒未更新；请松开 Grip 后重试'
             if stop_reason:
                 home_pending, home_motion = False, None
                 paused = True
@@ -400,18 +429,18 @@ def operate(args, kin, stream, connection):
                             last_input_stop = None
                             sequence += 1
                             ik_started = time.monotonic()
-                            outgoing = request(kin, hw, goals, sequence, status["stamp"],
-                                               cartesian.references, connection.wrist.guard())
+                            outgoing = plan_request(kin, hw, goals, sequence, status["stamp"],
+                                                    cartesian.references, connection.wrist.guard())
                             ik_ms = 1000*(time.monotonic()-ik_started)
                             validate(hw, outgoing, status["stamp"], tools)
                             cartesian.accepted_plan(outgoing, frame, hands)
                             targets_rate.mark(now)
                             log.write(json.dumps({"local_time": time.time(), "plan_monotonic": now, "vr_stamp": frame["stamp"],
-                                "sensitivity": sensitivity, "mapping": MAPPING_ID,
+                                "sensitivity": sensitivity, "mapping": MAPPING_ID, "ik_backend": ik_backend,
                                 "mode": control_mode, "rotation_mode": rotation_mode, "controller_sides": hands,
                                 "heading_yaw_deg": heading_yaw_deg,
                                 "input": {s: {k: v for k, v in frame[s].items() if k != "pose"} for s in ARMS},
-                                "robot_status_age_ms": 1000*(now-connection.last_status),
+                                "robot_status_age_ms": 1000*(now-status_received),
                                 "compute_ms": 1000*(time.monotonic()-now),
                                 "ik_ms": ik_ms, "cartesian_sampling": cartesian.buffer.last_metadata,
                                 "pico_pc_sample_age_ms": 1000*(now-frame.get("received_monotonic", now)),
@@ -437,19 +466,35 @@ def operate(args, kin, stream, connection):
             if chassis is not None:
                 chassis.update(frame, auxiliary_active)
             if lift_input is not None:
-                lift_value = lift_input.value(frame, auxiliary_active)
-                if lift_value:
+                right = frame.get('right', {}) if frame else {}
+                lift_session_active = (auxiliary_active and right.get('joystick_available', False)
+                                       and not right.get('axis_click', False))
+                lift_value = lift_input.value(frame, lift_session_active)
+                lift_session_active = lift_session_active and not lift_input.interrupted
+                if lift_session_active and not last_lift_session_active:
+                    lift_epoch += 1
+                last_lift_session_active = bool(lift_session_active)
+                # Neutral is a live heartbeat for an already-triggered preset.
+                # Missing input, pause and Home omit the mode to cancel it; never
+                # carry a previous lift field into an unrelated arm/Home target.
+                if outgoing is not None:
+                    outgoing = {k: v for k, v in outgoing.items()
+                                if k not in ('lift', 'lift_mode', 'lift_epoch', 'lift_gesture')}
+                if lift_session_active:
                     if outgoing is None:
                         sequence += 1
                         outgoing = dict(kind=KIND, model=MODEL_ID, id=sequence, created=status['stamp'],
                                         arms={}, tool_id=packet_tool_id(kin))
                         targets_rate.mark(now)
-                    outgoing = {**outgoing, 'lift': lift_value}
+                    outgoing = {**outgoing, 'lift': lift_value, 'lift_mode': LIFT_MODE,
+                                'lift_epoch': lift_epoch, 'lift_gesture': lift_input.gesture_id}
                 if ((lift_value and now-last_lift_log >= .1)
                         or bool(lift_value) != bool(last_lift_value)):
                     log.write(json.dumps({'local_time': time.time(), 'event': 'body_lift_input',
                         'axis': lift_value, 'request_id': outgoing.get('id') if outgoing else None,
-                        'body': status.get('body')}, allow_nan=False)+'\n')
+                        'mode': LIFT_MODE, 'lift_epoch': lift_epoch,
+                        'lift_gesture': lift_input.gesture_id, 'body': status.get('body'),
+                        'preset': status.get('body_lift_preset')}, allow_nan=False)+'\n')
                     last_lift_log = now
                 last_lift_value = lift_value
             if grippers is not None:
@@ -476,7 +521,9 @@ def operate(args, kin, stream, connection):
                       + (f" | 冻结 {frozen}" if frozen else ""), flush=True)
                 if lift_input and status.get('body'):
                     body = status['body']
-                    print(f'身体 {body["height"]:.1f}% / 相对低位 {body["height_mm"]:.1f} mm · 右摇杆 {lift_value:+.2f}', flush=True)
+                    preset = status.get('body_lift_preset') or {}
+                    print(f'身体 {body["height"]:.1f}% / 相对低位 {body["height_mm"]:.1f} mm · '
+                          + preset.get('message', '长推1秒：上高位 / 下到66.7%'), flush=True)
                 if grippers:
                     gs = grippers.snapshot()
                     units = ' / '.join(f'{s}: {u["position"]*100:.1f}%' for s,u in gs['devices'].items())
@@ -494,13 +541,17 @@ def operate(args, kin, stream, connection):
                         wrist_guard=wrist_state, wrist_pending=not wrist_ready,
                         wrist_limited=any(a.get('wrist_scale', 1.) < 1.
                                           for a in (outgoing or {}).get('arms', {}).values()),
-                        mode=control_mode, tcp_tool=tools['mode'], tool_id=tools['id'],
+                        ik_partial=any(a.get('native_ik', {}).get('success') is False
+                                       for a in (outgoing or {}).get('arms', {}).values()),
+                        mode=control_mode, ik_backend=ik_backend,
+                        tcp_tool=tools['mode'], tool_id=tools['id'],
                         home_name=home['name'] if home else '',
                         grips={s: frame[s]["grip"] for s in ARMS} if frame else {},
                         triggers={s: frame[s].get('trigger') for s in ARMS} if frame else {},
                         grippers=grippers.snapshot() if grippers is not None else None,
                         chassis=chassis_state,
                         body=status.get('body'), lift_axis=lift_value,
+                        body_lift_preset=status.get('body_lift_preset'),
                         body_lift_enabled=bool(lift_input),
                         heading_calibrated=heading_yaw_deg is not None,
                         heading_yaw_deg=heading_yaw_deg, heading_message=heading_message,
@@ -518,6 +569,17 @@ def positive(value):
     return number
 
 
+def configure_ik(args):
+    """Resolve backend timing before any connection or device initialization."""
+    if args.ik_backend == 'native' and args.no_wrist_guard:
+        raise ValueError('联合限位 IK 要求腕部保护开启，不能使用 --no-wrist-guard')
+    if args.command_hz is None:
+        args.command_hz = 100. if args.ik_backend == 'native' else 450.
+    if args.receiver_hz is None:
+        args.receiver_hz = 200. if args.ik_backend == 'native' else 500.
+    Timing.from_args(args)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="法奥双臂 PICO 相对遥操；默认只读检查")
     mode = parser.add_mutually_exclusive_group()
@@ -527,11 +589,15 @@ def main(argv=None):
     mode.add_argument("--link-check", action="store_true", help="通信压测：不启用 ROS 控制器、不使能、不运动")
     parser.add_argument("--duration", type=positive, default=10., help="通信压测持续秒数")
     parser.add_argument("--observe-ros", action="store_true", help="仅用于 --link-check：增加只读硬件状态订阅；不发布运动目标")
-    add_timing_arguments(parser)
+    add_timing_arguments(parser, command_default=None, receiver_default=None,
+        command_help='TCP 采样/IK/下发频率：native 默认 100 Hz，vendor 默认 450 Hz',
+        receiver_help='机器人接收轮询频率：native 默认 200 Hz，vendor 默认 500 Hz')
+    parser.add_argument('--ik-backend', choices=('native', 'vendor'), default='native',
+                        help='native 联合限位 IK（默认），vendor 原厂 IK')
     parser.add_argument("--host", default="192.168.58.1")
     parser.add_argument("--user", default="fairino")
     parser.add_argument("--no-wrist-guard", action="store_true",
-                        help="显式停用腕部联合限位模块；运行中 g 启用、G 停用")
+                        help="仅 vendor 后端可用；停用外部腕部保护，运行中 g 启用、G 停用")
     parser.add_argument("--sensitivity", type=positive, default=.25, help="位移和旋转灵敏度")
     parser.add_argument("--mode", choices=tuple(POSE_FRAMES), default="first_person",
                         help="first_person 同向；mirror 面对面镜像；mirror_same_direction 面对面且保持房间方向")
@@ -542,7 +608,7 @@ def main(argv=None):
     parser.add_argument("--freeze-buttons", action="store_true",
                         help="A/X 按住冻结旋转，B/Y 按住冻结位移；双击 X 降/Y 升灵敏度，左摇杆按压校准双臂正前方，空格暂停")
     parser.add_argument('--home-preset', choices=tuple(HOME_PRESETS), default='default',
-                        help='可选起始位姿；right_mirrored 为 10-20 右臂实测及左臂镜像')
+                        help='双臂起始位姿；默认原对称屈肘，其他预设需显式选择')
     parser.add_argument("--home-file", type=Path, help="自定义双臂 Home 七轴配置文件，覆盖 --home-preset")
     parser.add_argument("--no-auto-home", action="store_true", help="本次启动保持姿态，不自动回 Home；右摇杆回 Home 仍可用")
     parser.add_argument('--grippers', action=argparse.BooleanOptionalAction, default=False,
@@ -561,8 +627,7 @@ def main(argv=None):
     parser.add_argument('--tool-config', type=Path, default=DEFAULT_CONFIG,
                         help='左右夹爪安装角度和固定指尖中心配置')
     parser.add_argument('--body-lift', action=argparse.BooleanOptionalAction, default=False,
-                        help='显式启用右摇杆上下控制身体竖直升降，回中保持')
-    parser.add_argument('--lift-speed-mm-s', type=positive, default=15., help='身体竖直速度；关节速度沿用身体配置的默认值')
+                        help=f'右摇杆持续推1秒：上到高位{HIGH_PERCENT:g}%、下到下位{LOW_PERCENT:.1f}%，30°/s；回中继续到位，暂停/Home中止')
     parser.add_argument('--chassis', action=argparse.BooleanOptionalAction, default=False,
                         help='同时回正并使能底盘：左杆平移、右杆左右旋转；方向随 --mode，回中停止')
     parser.add_argument('--chassis-host', default='192.168.58.3', help='底盘 SSH 主机，与上半身共用用户和密码')
@@ -577,7 +642,7 @@ def main(argv=None):
     if args.observe_ros and not args.link_check:
         parser.error("--observe-ros 只能与 --link-check 一起使用")
     try:
-        Timing.from_args(args)
+        configure_ik(args)
         try:
             check_speeds(args.chassis_linear, args.chassis_angular)
         except RuntimeError as exc:
@@ -600,6 +665,7 @@ def main(argv=None):
     exit_log.write('started', execute=args.execute, link_check=args.link_check,
                    grippers_requested=args.grippers, body_lift_requested=args.body_lift,
                    chassis_requested=args.chassis, mode=args.mode,
+                   ik_backend=args.ik_backend,
                    controller_sides=controller_sides(args.mode, args.hand_mapping),
                    rotation_mode=rotation_mapping(args.mode, args.rotation_mode))
     termination = dict(reason='completed')
@@ -615,6 +681,10 @@ def main(argv=None):
             args.gui_input = GuiInput()
             password = args.gui_input.authenticate()
         kin = VendorKinematics(tools=args.tools)
+        if args.execute and args.ik_backend == 'native':
+            # Compile/load locally before opening PICO or any robot connection.
+            from vr_native_ik import NativeIK
+            args.native_ik = NativeIK(tools=args.tools)
         if args.execute:
             stream = Stream()
             stream.open()

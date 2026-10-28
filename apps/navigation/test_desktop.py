@@ -156,6 +156,19 @@ class DriveTests(unittest.TestCase):
         self.assertEqual((drive.args.linear, drive.args.angular), (.06, .1))
         self.assertTrue(drive.done.is_set())
 
+    def test_motor_ready_phase_does_not_claim_navigation_is_ready(self):
+        c = self.fake_connection()
+        c.latest['phase'] = '导航执行就绪：等待明确的导航目标'
+        drive = DriveSession('host', 'user', 'password', command=lambda *a: {}, factory=lambda *a, **k: c)
+        phases = []
+        def send(**_):
+            phases.append(drive.message)
+            if len(phases) == 2:
+                drive.stop()
+        c.send.side_effect = send
+        drive.run()
+        self.assertEqual(phases[-1], '底盘控制连接已就绪')
+
 
 class PanelPolicyTests(unittest.TestCase):
     """Exercise real callbacks with widgets replaced by inert test doubles, no GTK."""
@@ -238,6 +251,86 @@ class PanelPolicyTests(unittest.TestCase):
         factory.assert_not_called()
         p.acquire.assert_called_once_with('base', '导航')
 
+    def test_protective_stop_reaches_visible_message_when_localization_is_invalidated(self):
+        p = self.panel()
+        p.target.goal_id, p.target.label = 'goal', '执行中'
+        f = frame()
+        f['localization']['active'] = False
+        p.map_panel.stream.snapshot.return_value = {'frame': f, 'received': time.monotonic()}
+        failure = {'goal': 'goal', 'reason': '后雷达观测过期；本次目标已停止'}
+        p.events.put(('status', (2, {'last_goal': {'id': 'goal', 'status': 5},
+                                    'failure': failure}, None)))
+        p.tick()
+        self.assertIsNone(p.target.pose)
+        p.message.set_text.assert_called_with('导航保护停止：'+failure['reason'])
+        p.message.set_text.reset_mock()
+        p.events.put(('status', (2, {'last_goal': {'id': 'goal', 'status': 5},
+                                    'failure': failure}, None)))
+        p.tick()
+        p.message.set_text.assert_not_called()
+
+    def test_shared_preparation_cannot_bypass_busy_active_or_shutdown_guards(self):
+        for blocked in ('busy', 'map_busy', 'active', 'shutdown', 'closed'):
+            with self.subTest(blocked=blocked):
+                p = self.panel()
+                if blocked == 'map_busy':
+                    p.map_panel.busy = True
+                elif blocked == 'active':
+                    p.uncertain_goal = True
+                else:
+                    setattr(p, blocked, True)
+                self.assertFalse(p.preparation_available())
+                with patch.object(self.module, 'DriveSession') as factory:
+                    p.control('drive')
+                factory.assert_not_called()
+                p.acquire.assert_not_called()
+
+    def test_localization_and_navigation_entries_share_one_explicit_motor_start(self):
+        p = self.panel()
+        p.acquire.return_value = True
+        p.credentials = lambda: ('host', 'user', 'password')
+        p.submit = Mock()
+        with patch.object(self.module, 'DriveSession') as factory:
+            p.control('drive')  # Localization tab entry.
+            p.control('drive')  # Navigation tab entry, before startup completes.
+        factory.assert_called_once_with('host', 'user', 'password')
+        factory.return_value.thread.start.assert_called_once()
+        p.acquire.assert_called_once_with('base', '导航')
+        p.submit.assert_not_called()  # No AMCL activation, goal or movement sent.
+        self.assertIs(p.drive, factory.return_value)
+        self.assertFalse(p.preparation_available())
+
+    def test_ready_drive_and_stopped_amcl_describe_error_as_historical(self):
+        p = self.panel()
+        cause = '原始轮速输入无新数据；请先修复里程计接线并启动数据源'
+        f = frame()
+        f['localization'].update(active=False, ready=False, reason=cause)
+        p.map_panel.stream.snapshot.return_value = {'frame': f, 'received': time.monotonic()}
+        p.drive = Mock(ready=True, message='导航执行就绪：等待明确的导航目标')
+        p.drive.done.is_set.return_value = False
+        p.events.put(('status', (2, {'running': True, 'localization_ready': False,
+                                     'localization_reason': cause}, None)))
+        p.tick()
+        text = p.status.set_text.call_args.args[0]
+        self.assertIn('底盘已就绪，请在第②步启动 AMCL 并设置初始位姿', text)
+        self.assertIn('上次定位停止原因：'+cause, text)
+        self.assertNotIn('导航执行就绪', text)
+        self.assertIsNone(p.target.pose)
+        self.assertFalse(p.preparation_available())
+        p.buttons['drive'].set_sensitive.assert_called_with(False)
+        p.buttons['start'].set_sensitive.assert_called_with(False)
+        p.buttons['goal'].set_sensitive.assert_called_with(False)
+        p.buttons['end'].set_sensitive.assert_called_with(True)
+
+    def test_shared_status_does_not_use_stale_localization_as_current(self):
+        p = self.panel()
+        f = frame()
+        f['localization'].update(active=False, reason='旧错误')
+        p.map_panel.stream.snapshot.return_value = {'frame': f, 'received': time.monotonic()-5}
+        p.drive = Mock(ready=True)
+        self.assertIn('地图 / 定位反馈未更新', p.preparation_status())
+        self.assertNotIn('旧错误', p.preparation_status())
+
     def test_start_requires_navigation_drive_and_ready_localization(self):
         p = self.panel()
         p.submit = Mock()
@@ -261,6 +354,26 @@ class PanelPolicyTests(unittest.TestCase):
         p.map_panel.stream.snapshot.return_value = {'frame': f, 'received': time.monotonic()}
         p.tick()
         p.buttons['start'].set_sensitive.assert_called_with(False)
+
+    def test_end_stays_enabled_when_other_workflow_actions_are_blocked(self):
+        for blocked in ('map_busy', 'busy', 'active', 'stale'):
+            with self.subTest(blocked=blocked):
+                p = self.panel()
+                p.drive = Mock(ready=True)
+                p.drive.done.is_set.return_value = False
+                if blocked == 'map_busy':
+                    p.map_panel.busy = True
+                elif blocked == 'active':
+                    p.uncertain_goal = True
+                elif blocked == 'stale':
+                    p.map_panel.stream.snapshot.return_value['received'] -= 5
+                else:
+                    p.busy = True
+                p.tick()
+                p.buttons['end'].set_sensitive.assert_called_with(True)
+                p.buttons['start'].set_sensitive.assert_called_with(False)
+                p.buttons['goal'].set_sensitive.assert_called_with(False)
+                p.buttons['drive'].set_sensitive.assert_called_with(False)
 
     def test_end_is_available_during_pending_goal_and_stops_drive_immediately(self):
         p = self.panel()

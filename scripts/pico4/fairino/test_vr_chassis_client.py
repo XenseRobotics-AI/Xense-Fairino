@@ -17,6 +17,7 @@ from test_tcp import hardware
 from vendor_kinematics import VendorKinematics
 from vr_chassis import ChassisTeleop
 from vr_client import operate, wait_for_input
+from vr_core import LIFT_MODE
 from apps.fairino_keyboard.axis_session import AxisSession, ZERO
 from apps.fairino_keyboard.control_core import check_axes, input_twist
 
@@ -44,7 +45,7 @@ class ChassisClientTests(unittest.TestCase):
         session = AxisSession('unused', 'unused', None)
         session.latest = dict(ready=True, hardware={'enabled': [True]*8}, command=ZERO)
         args = NS(execute=True, sensitivity=.25, no_auto_home=True, body_lift=body_lift,
-                  lift_speed_mm_s=15., chassis_linear=.06, chassis_angular=.10, user='unused',
+                  chassis_linear=.06, chassis_angular=.10, user='unused',
                   mode=mode, hand_mapping=hand_mapping)
         chassis = ChassisTeleop(args, None, session_factory=lambda *_, **__: session)
         args.chassis_control = chassis
@@ -73,7 +74,10 @@ class ChassisClientTests(unittest.TestCase):
                 step = steps[len(sent)]
                 if step.get('read_error'):
                     raise ValueError('双手柄数据超过 0.25 秒未更新')
-                return frame(clock[0], **step)
+                result = frame(clock[0], **step)
+                if 'samples' in step:
+                    result['samples'] = [frame(clock[0], **sample) for sample in step['samples']]
+                return result
 
             connection.send = send
             with patch('vr_client.time.monotonic', lambda: clock[0]), \
@@ -93,7 +97,10 @@ class ChassisClientTests(unittest.TestCase):
         self.assertEqual(sent[2]['command'], (0., -.06, 0.))
         self.assertEqual(sent[3]['command'], (0., 0., -.10))
         for row in sent[:4]:
-            self.assertIsNone(row['request'])  # Base control never needs a fabricated arm target.
+            self.assertEqual(row['request']['arms'], {})  # No fabricated arm target.
+            self.assertEqual(row['request']['lift'], 0.)  # Body heartbeat keeps its lease alive.
+            self.assertEqual(row['request']['lift_mode'], LIFT_MODE)
+            self.assertEqual(row['request']['lift_epoch'], 1)
         mixed = sent[4]
         for actual, expected in zip(mixed['command'], (.048, -.036, -.0625)):
             self.assertAlmostEqual(actual, expected)
@@ -116,13 +123,50 @@ class ChassisClientTests(unittest.TestCase):
                          {'x': .6, 'y': .8, 'yaw': .7, 'lift': -.6}],
                         body_lift=True, mode=mode, hand_mapping=hand_mapping)
                     self.assertEqual(sent[1]['command'], forward)
-                    self.assertIsNone(sent[1]['request'])  # Left Y is never the lift input.
+                    self.assertEqual(sent[1]['request']['arms'], {})
+                    self.assertEqual(sent[1]['request']['lift'], 0.)  # Left Y never triggers lift.
                     self.assertEqual(sent[2]['command'], ZERO)  # Right Y never translates the base.
                     self.assertEqual(sent[2]['request']['lift'], 1.)
                     for actual, wanted in zip(sent[3]['command'], mixed):
                         self.assertAlmostEqual(actual, wanted)
                     self.assertEqual(sent[3]['request']['arms'], {})
                     self.assertEqual(sent[3]['request']['lift'], -.6)
+
+    def test_body_session_epoch_changes_after_pause_and_input_loss(self):
+        sent, _ = self.simulate([{}, {'lift': .8}, {'lift': .8, 'key': ' '},
+                                 {'lift': .8}, {}, {'lift': .8}, {'read_error': True},
+                                 {'lift': .8}, {}, {'lift': .8}], body_lift=True)
+        self.assertEqual(sent[1]['request']['lift'], .8)
+        self.assertIsNone(sent[2]['request'])
+        self.assertIsNone(sent[6]['request'])
+        for indices, epoch in (((0, 1), 1), ((3, 4, 5), 2), ((7, 8, 9), 3)):
+            for index in indices:
+                self.assertEqual(sent[index]['request']['lift_epoch'], epoch)
+                self.assertEqual(sent[index]['request']['lift_mode'], LIFT_MODE)
+        # Reconnected deflection cannot resume a gesture until a real neutral sample.
+        for index in (3, 4, 7, 8):
+            self.assertEqual(sent[index]['request']['lift'], 0.)
+        self.assertEqual(sent[5]['request']['lift'], .8)
+        self.assertEqual(sent[9]['request']['lift'], .8)
+
+    def test_batch_direction_changes_remain_visible_in_later_heartbeats(self):
+        sent, _ = self.simulate([{}, {'lift': .8},
+            {'lift': .8, 'samples': [{'lift': .8}, {}, {'lift': .8}]}, {'lift': .8}],
+            body_lift=True)
+        requests = [row['request'] for row in sent]
+        self.assertEqual([r['lift'] for r in requests], [0., .8, .8, .8])
+        self.assertEqual(requests[2]['lift_gesture'], requests[1]['lift_gesture']+2)
+        self.assertEqual(requests[3]['lift_gesture'], requests[2]['lift_gesture'])
+        self.assertEqual({r['lift_epoch'] for r in requests}, {1})
+
+    def test_hidden_missing_sample_changes_body_session_after_recovery(self):
+        sent, _ = self.simulate([{}, {'lift': .8},
+            {'lift': .8, 'samples': [{'right_available': False}, {'lift': .8}]},
+            {'lift': .8}, {}, {'lift': .8}], body_lift=True)
+        self.assertIsNone(sent[2]['request'])
+        self.assertEqual(sent[3]['request']['lift_epoch'], 2)
+        self.assertEqual(sent[3]['request']['lift'], 0.)
+        self.assertEqual(sent[5]['request']['lift'], .8)
 
     def test_space_pauses_base_until_a_new_neutral_sample(self):
         sent, events = self.simulate([{}, {'y': 1.}, {'y': 1.}, {'y': 1., 'key': ' '},

@@ -24,7 +24,7 @@ case "$COMMAND" in
   vr)
     exec bash "$ROOT/scripts/pico4/run.sh" fairino --execute \
       --mode mirror_same_direction --rotation-mode auto --hand-mapping auto \
-      --freeze-buttons --sensitivity 0.25 --interpolation-hz 450 --receiver-hz 500 \
+      --freeze-buttons --sensitivity 0.25 \
       --interpolation-delay-ms 12 "$@" ;;
   errors) exec "$FAIRINO_PYTHON" "$ROOT/scripts/pico4/fairino/clear_errors.py" "$@" ;;
   reset-upper) exec "$FAIRINO_PYTHON" "$ROOT/tools/reset_upper_once.py" "$@" ;;

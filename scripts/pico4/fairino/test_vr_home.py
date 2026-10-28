@@ -20,6 +20,8 @@ from tcp_core import ARMS, pose_error
 from test_tcp import hardware
 from test_vr_controls import hand
 from vendor_kinematics import VendorKinematics
+from tool_frames import load_geometry, tool_config
+from wrist_guard import WristGuard
 from vr_client import operate
 from vr_controls import JoystickControls, sensitivity_step
 from vr_home import DEFAULT_HOME, HomeMotion, load_home, resolve_home
@@ -131,6 +133,45 @@ class HomeTests(unittest.TestCase):
         self.assertEqual(second['max_joint_speed_deg_s'], self.home['max_joint_speed_deg_s'])
         with self.assertRaises(ValueError):
             resolve_home('unknown')
+
+    def test_cross_body_home_points_left_gripper_right_with_recorded_tool_mount(self):
+        home = load_home(resolve_home('left_cross_body'))
+        self.assertEqual(resolve_home(), DEFAULT_HOME)
+        self.assertEqual(resolve_home('left_cross_body', DEFAULT_HOME), DEFAULT_HOME)
+        self.assertEqual(home['target']['right'], self.home['target']['right'])
+        # Verify the physical intent at the mounting angles used by the preview,
+        # rather than depending on a later change to the user's tool settings.
+        geometry = load_geometry()
+        for side, roll in (('left', 180.), ('right', -180.)):
+            geometry['arms'][side].update(installed=True, confirmed=True, roll_deg=roll)
+        kin = VendorKinematics(tools=tool_config('taccap', geometry, True))
+        for side, q in home['target'].items():
+            with self.subTest(side=side):
+                self.assertLess(kin.verify_tcp(q, side)['roundtrip_deg'], .0001)
+        chest = tcp_in_chest('left', kin.forward_tcp(home['target']['left'], 'left')[0])
+        np.testing.assert_allclose(chest[:3, 3], [300., -100., -100.], atol=.01)
+        # The gripper projects along flange -X; chest -Y is robot right.
+        np.testing.assert_allclose(-chest[:3, 0], [0., -1., 0.], atol=1e-6)
+
+    def test_cross_body_home_paths_from_both_presets_pass_wrist_margin_and_speed_reserve(self):
+        home = load_home(resolve_home('left_cross_body'))
+        for preset in ('default', 'right_mirrored'):
+            with self.subTest(start=preset):
+                source = load_home(resolve_home(preset))
+                hw = hardware()
+                for side, joints in ARMS.items():
+                    for joint, value in zip(joints, source['target'][side]):
+                        hw['position'][joint-1] = hw['command_position'][joint-1] = value
+                # Constructor validates the full joint-space segment and adds
+                # the peak-velocity stopping reserve, using the live planner.
+                motion = HomeMotion(home, hw, 10., WristGuard())
+                steps = math.ceil(motion.duration/.2)
+                for step in range(steps+1):
+                    targets = motion.sample(10.+motion.duration*step/steps)
+                    for q in targets.values():
+                        self.assertGreaterEqual(WristGuard.clearance(q[5:7]), 0.)
+                for side in ARMS:
+                    np.testing.assert_allclose(targets[side], home['target'][side], atol=1e-9)
 
     def test_path_has_bounded_home_speed_no_overshoot_and_never_moves_body(self):
         motion = HomeMotion(self.home, self.hw, 10.)

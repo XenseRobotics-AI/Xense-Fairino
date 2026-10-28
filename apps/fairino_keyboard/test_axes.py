@@ -191,6 +191,33 @@ class SessionGateTests(unittest.TestCase):
         self.assertTrue(s.finish())
         self.assertEqual(s.snapshot()['error'], '本次运行故障已记录')
 
+    def test_closed_connection_preserves_remote_first_error_and_exact_log(self):
+        for error in ('底盘主机文件系统只读，无法创建控制锁', ''):
+            with self.subTest(error=error):
+                class ClosedConnection:
+                    def __init__(self, *args, **kwargs):
+                        self.events = queue.Queue()
+                        self.last_error = error
+                        self.log_path = Path('/tmp/offline-base-startup.jsonl')
+                        self.done = threading.Event()
+                        self.done.set()
+                        self.latest = {}
+                        self.last_status = 0.
+                    def finish(self):
+                        pass
+                s = AxisSession('unused', 'unused', None, connection_factory=ClosedConnection).start()
+                s.thread.join(1.)
+                self.assertFalse(s.thread.is_alive())
+                state = s.snapshot()
+                self.assertEqual(state['log_path'], '/tmp/offline-base-startup.jsonl')
+                if error:
+                    self.assertEqual(state['error'], error)
+                else:
+                    self.assertIn(state['log_path'], state['error'])
+                self.assertFalse(state['disabled_confirmed'])
+                self.assertFalse(state['cleanup_confirmed'])
+                self.assertFalse(s.finish())
+
 
 if __name__ == '__main__':
     unittest.main()
