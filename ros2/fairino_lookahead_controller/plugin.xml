@@ -1,0 +1,5 @@
+<library path="fairino_lookahead_controller">
+  <class type="fairino_lookahead_controller::HolonomicLookaheadController" base_class_type="nav2_core::Controller">
+    <description>Holonomic Euclidean lookahead with held goal heading and swept-footprint checks.</description>
+  </class>
+</library>

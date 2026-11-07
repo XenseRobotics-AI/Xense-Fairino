@@ -1,0 +1,52 @@
+{
+  "date": "2026-11-04",
+  "timezone": "Asia/Shanghai",
+  "target": "/Users/zbk/XenseRobo_work/fairino_slam",
+  "scope": "repository migration; mapping keyboard retained; navigation algorithms unchanged",
+  "offline_tests": {
+    "run": 174,
+    "passed": 174,
+    "failed": 0,
+    "skipped": 0
+  },
+  "python": "3.11.11",
+  "dependencies": {
+    "pexpect": "4.9.0",
+    "PyYAML": "6.0.3",
+    "numpy": "2.4.6",
+    "matplotlib": "3.11.2"
+  },
+  "checks": {
+    "python_yaml_xml_urdf": "passed",
+    "generated_navigation_profile": "matched",
+    "all_public_help_offline": "passed",
+    "flat_robot_payload_imports": "passed",
+    "shell_syntax": "passed",
+    "final_directory_tests": "passed",
+    "wheel_resources": "passed",
+    "wheel_import_outside_checkout": "passed"
+  },
+  "wheel": {
+    "name": "fairino_slam-0.1.0-py3-none-any.whl",
+    "sha256": "de0db472d570c1f5b3eaeb8b55797da73f27be54da756946db11f5eb2f59ccf5",
+    "files": 75
+  },
+  "original_repository": {
+    "files_hashed": 666,
+    "changed_files": []
+  },
+  "migration": {
+    "copied_source_files": 110,
+    "independent_git_initialized": true,
+    "git_commit_created": false,
+    "virtual_environment_recreated_at_target": true
+  },
+  "robot_connected": false,
+  "robot_deployed": false,
+  "motors_operated": false,
+  "not_run": [
+    "GTK real window interaction",
+    "ROS isolated controller/SLAM runtime checks",
+    "robot mapping/localization/navigation accuracy tests"
+  ]
+}

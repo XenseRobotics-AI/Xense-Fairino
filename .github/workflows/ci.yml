@@ -1,0 +1,58 @@
+name: Offline engineering checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install development dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Test source and distribution packages without robot access
+        run: bash scripts/check.sh --package
+
+  ros-navigation:
+    runs-on: ubuntu-latest
+    container: ros:humble-ros-base-jammy
+    env:
+      ROS_DOMAIN_ID: "87"
+      ROS_LOCALHOST_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Humble navigation plugin build dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake python3-colcon-common-extensions \
+            ros-humble-nav2-core ros-humble-nav2-costmap-2d ros-humble-nav2-util ros-humble-nav2-smac-planner \
+            ros-humble-behaviortree-cpp-v3 ros-humble-pluginlib ros-humble-tf2-geometry-msgs ros-humble-ament-cmake-gtest
+      - name: Build and load navigation plugins without robot access
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --base-paths ros2 --packages-select fairino_lookahead_controller fairino_straight_planner \
+            --cmake-args -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+          source install/setup.bash
+          ros2 run fairino_lookahead_controller plugin_check
+          ros2 run fairino_straight_planner plugin_check
+          colcon test --packages-select fairino_lookahead_controller fairino_straight_planner --event-handlers console_direct+
+          colcon test-result --verbose

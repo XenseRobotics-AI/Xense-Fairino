@@ -1,0 +1,195 @@
+# 导航调参源。距离：m；角度：rad；频率：Hz；时间：s。
+# 速度和加速度统一来自 chassis.yaml；控制周期 = 1 / controller_frequency。
+# 全向预瞄点跟随；heading_mode 可选 hold_initial（保持当前）或 path_tangent（沿路径并指定终点朝向）。
+# 底盘轮廓由 URDF 计算，footprint 与 inflation_radius 由 geometry 自动生成。
+# 不要在 FollowPath 或 costmap 中手工加入上述派生参数。
+version: 1
+geometry:
+  footprint_padding: 0.02
+  minimum_inflation_radius: 0.75
+  inflation_clearance: 0.2
+nav2:
+  planner_server:
+    ros__parameters:
+      use_sim_time: false
+      expected_planner_frequency: 1.0
+      planner_plugins:
+      - GridBased
+      GridBased:
+        plugin: fairino_straight_planner::StraightLinePlanner
+        # true: 安全直达优先、绕障路径合并；false: 直接使用原 SmacPlanner2D。
+        straight_line_enabled: true
+        tolerance: 0.05
+        allow_unknown: false
+        downsample_costmap: false
+        max_planning_time: 2.0
+        cost_travel_multiplier: 2.0
+        use_final_approach_orientation: false
+        smoother:
+          max_iterations: 0
+  controller_server:
+    ros__parameters:
+      use_sim_time: false
+      controller_frequency: 3
+      odom_topic: /odom
+      min_x_velocity_threshold: 0.001
+      min_y_velocity_threshold: 0.001
+      min_theta_velocity_threshold: 0.001
+      failure_tolerance: 0.6
+      progress_checker_plugin: progress_checker
+      goal_checker_plugins:
+      - goal_checker
+      controller_plugins:
+      - FollowPath
+      progress_checker:
+        plugin: nav2_controller::SimpleProgressChecker
+        required_movement_radius: 0.03
+        movement_time_allowance: 60.0
+      goal_checker:
+        plugin: nav2_controller::StoppedGoalChecker
+        xy_goal_tolerance: 0.05
+        yaw_goal_tolerance: 0.05
+        stateful: false
+        trans_stopped_velocity: 0.005
+        rot_stopped_velocity: 0.01
+      FollowPath:
+        plugin: fairino_lookahead_controller::HolonomicLookaheadController
+        heading_mode: hold_initial     # hold_initial / path_tangent；切换后重新部署导航并重启面板
+        lookahead_distance: 0.2          # m；当前位置到路径预瞄点的直线距离
+        projection_search_distance: 1.0  # m；路径进度向前搜索窗口，避免交叉处跳段
+        position_gain: 0.8               # 1/s；位置误差转平移速度
+        heading_gain: 1.5                # 1/s；朝向误差转角速度
+        coordination_linear_speed: 0.02   # m/s；等待轮组协同时的小非零平移意图上限
+        coordination_angular_speed: 0.04  # rad/s；等待轮组协同时的小非零旋转意图上限
+        coordination_wait_timeout: 15.0   # s；连续协调等待上限，须小于进展检查时限
+        coordination_direction_tolerance: 0.20  # rad；等待期间允许的请求方向变化
+        transform_tolerance: 0.3         # s
+        collision_horizon: 1.0           # s；另按速度/加速度覆盖制动时间
+        collision_step: 0.05             # s；碰撞扫掠最大时间步长
+  local_costmap:
+    local_costmap:
+      ros__parameters:
+        use_sim_time: false
+        global_frame: odom
+        robot_base_frame: base_link
+        resolution: 0.05
+        transform_tolerance: 0.3
+        update_frequency: 5.0
+        publish_frequency: 2.0
+        always_send_full_costmap: true
+        plugins:
+        - static_layer
+        - obstacle_layer
+        - inflation_layer
+        static_layer:
+          plugin: nav2_costmap_2d::StaticLayer
+          map_topic: /map
+          map_subscribe_transient_local: true
+        obstacle_layer:
+          plugin: nav2_costmap_2d::ObstacleLayer
+          observation_sources: front back
+          footprint_clearing_enabled: true
+          front:
+            topic: /front/scan
+            data_type: LaserScan
+            marking: true
+            clearing: true
+            inf_is_valid: true
+            expected_update_rate: 0.5
+            observation_persistence: 0.0
+            obstacle_min_range: 0.1
+            obstacle_max_range: 12.0
+            raytrace_min_range: 0.1
+            raytrace_max_range: 15.0
+            min_obstacle_height: -0.2
+            max_obstacle_height: 2.0
+          back:
+            topic: /back/scan
+            data_type: LaserScan
+            marking: true
+            clearing: true
+            inf_is_valid: true
+            expected_update_rate: 0.5
+            observation_persistence: 0.0
+            obstacle_min_range: 0.1
+            obstacle_max_range: 12.0
+            raytrace_min_range: 0.1
+            raytrace_max_range: 15.0
+            min_obstacle_height: -0.2
+            max_obstacle_height: 2.0
+        inflation_layer:
+          plugin: nav2_costmap_2d::InflationLayer
+          cost_scaling_factor: 3.0
+        rolling_window: true
+        width: 4
+        height: 4
+        track_unknown_space: true
+  global_costmap:
+    global_costmap:
+      ros__parameters:
+        use_sim_time: false
+        global_frame: map
+        robot_base_frame: base_link
+        resolution: 0.05
+        transform_tolerance: 0.3
+        update_frequency: 2.0
+        publish_frequency: 2.0
+        always_send_full_costmap: true
+        plugins:
+        - static_layer
+        - obstacle_layer
+        - inflation_layer
+        static_layer:
+          plugin: nav2_costmap_2d::StaticLayer
+          map_topic: /map
+          map_subscribe_transient_local: true
+        obstacle_layer:
+          plugin: nav2_costmap_2d::ObstacleLayer
+          observation_sources: front back
+          footprint_clearing_enabled: false
+          front:
+            topic: /front/scan
+            data_type: LaserScan
+            marking: true
+            clearing: true
+            inf_is_valid: true
+            expected_update_rate: 0.5
+            observation_persistence: 0.0
+            obstacle_min_range: 0.1
+            obstacle_max_range: 12.0
+            raytrace_min_range: 0.1
+            raytrace_max_range: 15.0
+            min_obstacle_height: -0.2
+            max_obstacle_height: 2.0
+          back:
+            topic: /back/scan
+            data_type: LaserScan
+            marking: true
+            clearing: true
+            inf_is_valid: true
+            expected_update_rate: 0.5
+            observation_persistence: 0.0
+            obstacle_min_range: 0.1
+            obstacle_max_range: 12.0
+            raytrace_min_range: 0.1
+            raytrace_max_range: 15.0
+            min_obstacle_height: -0.2
+            max_obstacle_height: 2.0
+        inflation_layer:
+          plugin: nav2_costmap_2d::InflationLayer
+          cost_scaling_factor: 3.0
+        track_unknown_space: true
+  bt_navigator:
+    ros__parameters:
+      use_sim_time: false
+      global_frame: map
+      robot_base_frame: base_link
+      odom_topic: /odom
+      bt_loop_duration: 50
+      default_server_timeout: 1000
+      wait_for_service_timeout: 1000
+      plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - fairino_replan_bt_node

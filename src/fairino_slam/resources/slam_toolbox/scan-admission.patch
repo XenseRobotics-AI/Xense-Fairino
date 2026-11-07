@@ -1,0 +1,74 @@
+--- a/src/slam_toolbox_common.cpp
++++ b/src/slam_toolbox_common.cpp
+@@ -53,6 +53,7 @@
+ /*****************************************************************************/
+ {
+   setParams();
++  this->declare_parameter("fairino_scan_gate", std::string("backend_motion_gate_v1"));
+   setROSInterfaces();
+   setSolver();
+ 
+@@ -501,52 +502,32 @@
+ /*****************************************************************************/
+ bool SlamToolbox::shouldProcessScan(
+   const sensor_msgs::msg::LaserScan::ConstSharedPtr & scan,
+-  const Pose2 & pose)
+-/*****************************************************************************/
+-{
+-  static Pose2 last_pose;
++  const Pose2 & /*pose*/)
++/*****************************************************************************/
++{
+   static rclcpp::Time last_scan_time = rclcpp::Time(0.);
+-  static double min_dist2 =
+-    smapper_->getMapper()->getParamMinimumTravelDistance() *
+-    smapper_->getMapper()->getParamMinimumTravelDistance();
+   static int scan_ctr = 0;
+   scan_ctr++;
+-
+-  // we give it a pass on the first measurement to get the ball rolling
+   if (first_measurement_) {
+     last_scan_time = scan->header.stamp;
+-    last_pose = pose;
+     first_measurement_ = false;
+     return true;
+   }
+-
+-  // we are in a paused mode, reject incomming information
+-  if (isPaused(NEW_MEASUREMENTS)) {
++  if (isPaused(NEW_MEASUREMENTS) || (scan_ctr % throttle_scans_) != 0) {
+     return false;
+   }
+-
+-  // throttled out
+-  if ((scan_ctr % throttle_scans_) != 0) {
++  if (rclcpp::Time(scan->header.stamp) - last_scan_time < minimum_time_interval_ ||
++    scan_ctr < 5)
++  {
+     return false;
+   }
+-
+-  // not enough time
+-  if (rclcpp::Time(scan->header.stamp) - last_scan_time < minimum_time_interval_) {
+-    return false;
+-  }
+-
+-  // check moved enough, within 10% for correction error
+-  const double dist2 = last_pose.SquaredDistance(pose);
+-  if (dist2 < 0.8 * min_dist2 || scan_ctr < 5) {
+-    return false;
+-  }
+-
+-  last_pose = pose;
++  // Let Karto::Mapper::HasMovedEnough select translation OR rotation relative
++  // to its last ACCEPTED scan. An XY-only prefilter here drops in-place turns
++  // and consumes short movements before the mapper accepts a keyframe.
++  // The time gate bounds work; the mapper still rejects stationary repeats.
+   last_scan_time = scan->header.stamp;
+-
+   return true;
+ }
+-
+ /*****************************************************************************/
+ LocalizedRangeScan * SlamToolbox::addScan(
+   LaserRangeFinder * laser,

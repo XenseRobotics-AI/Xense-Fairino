@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-20",
+  "environment": "control computer conda env_fairino",
+  "navigation_tests": {
+    "run": 44,
+    "passed": 44
+  },
+  "generated_profile_check": "passed",
+  "python_ast_files": 7,
+  "git_diff_check": "passed",
+  "robot_controller_benchmark": "not run: robot SSH unavailable",
+  "robot_deployment": "pending connection",
+  "hardware_motion_test": "not performed",
+  "changes": {
+    "controller_hz": 10,
+    "dwb_candidates_nominal": 175,
+    "generator": "dwb_plugins::LimitedAccelGenerator",
+    "simulation_period_seconds": 0.1,
+    "linear_limit_m_s": 0.06,
+    "angular_limit_rad_s": 0.1,
+    "raw_command_timeout_seconds": 0.3
+  },
+  "limitations": [
+    "No steering actuator dynamics in isolated controller test",
+    "No evidence yet that the new configuration eliminates real wheel oscillation",
+    "Previous goal cancellation reasons were overwritten; new gate preserves first cause"
+  ]
+}

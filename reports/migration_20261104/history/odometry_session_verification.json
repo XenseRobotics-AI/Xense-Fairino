@@ -1,0 +1,69 @@
+{
+  "issue": "control teardown unconditionally stopped healthy odometry",
+  "evidence_log": "apps/fairino_keyboard/logs/20261020-101745.jsonl",
+  "observed_error": "往返通信超时，拒绝滞留指令",
+  "desktop_status_gap_seconds": 1.298,
+  "remote_status_stamp_gap_seconds": 0.109,
+  "latency_root_cause": "Wi-Fi loss and jitter observed; exact contribution from GUI scheduling not isolated",
+  "fix": "preserve already-active chassis odometry only after completed startup, confirmed disable and fresh healthy feedback; no automatic resume",
+  "tests": {
+    "chassis_passed": 32,
+    "chassis_skipped": 4,
+    "navigation_passed": 27,
+    "map_passed": 33
+  },
+  "robot_runtime_verified": false,
+  "connection_blocker": null,
+  "motors_operated": false,
+  "robot_connected": true,
+  "network_probe": {
+    "interface": "wlp14s0",
+    "kind": "wifi",
+    "sent": 40,
+    "received": 34,
+    "loss_percent": 15,
+    "rtt_max_ms": 314.747,
+    "ethernet": "enp8s0 unavailable"
+  },
+  "robot_readonly": {
+    "raw_odom_messages_8s": 0,
+    "odom_messages_8s": 0,
+    "scan_messages_8s": 123,
+    "chassis_controller": "inactive",
+    "odometry_guard": "paused"
+  },
+  "recovery_attempt": {
+    "stage": "preflight hardware check",
+    "controller_changed": false,
+    "enable_requests_sent": 0,
+    "result": "aborted on hardware fault"
+  },
+  "current_hardware": {
+    "error_hex": "0x0E10FF01",
+    "joint_errors": {
+      "j2": 30,
+      "j6": 30
+    },
+    "enabled": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "velocity": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "runtime_blocker": "Hardware fault 0x0E10FF01, J2=30, J6=30; no reset sent"
+}
