@@ -1,11 +1,23 @@
 #pragma once
 
+#include <cmath>
 #include <functional>
 #include <type_traits>
 #include <utility>
 
 namespace fairino_straight_planner::compat
 {
+// Humble SmacPlanner2D leaves intermediate quaternions at zero when smoothing
+// is disabled. We consume only their XY positions and regenerate all headings.
+// User start/goal poses still require a normalized quaternion.
+inline bool usable_orientation(double x, double y, double z, double w, bool allow_unspecified)
+{
+  const double norm = x * x + y * y + z * z + w * w;
+  const bool unspecified = x == 0. && y == 0. && z == 0. && w == 0.;
+  return std::isfinite(norm) &&
+         (std::abs(norm - 1.) <= 1e-3 || (allow_unspecified && unspecified));
+}
+
 namespace detail
 {
 template<class Planner, class Start, class Goal, class = void>

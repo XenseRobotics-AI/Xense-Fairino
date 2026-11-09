@@ -7,6 +7,7 @@ import queue
 import signal
 import subprocess
 import threading
+import time
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -35,6 +36,9 @@ class TeleopPanel(Gtk.Box):
         self.demo = demo
         self.process = self.service = None
         self.session_ik_backend = None
+        self.session_target = None
+        self.demo_state = None
+        self.demo_received = 0.
         self.updating_wrist = False
         self.events = queue.Queue()
         self.closed = False
@@ -51,6 +55,18 @@ class TeleopPanel(Gtk.Box):
         self.settings_scroll.add(settings)
         self.pack_start(self.settings_scroll, True, True, 0)
         settings.pack_start(Gtk.Label(label='PICO 遥操 · 双臂 / 夹爪 / 身体 / 底盘', xalign=0), False, False, 0)
+        target_row = Gtk.Box(spacing=8)
+        target_row.pack_start(Gtk.Label(label='运行目标'), False, False, 0)
+        self.runtime_target = Gtk.ComboBoxText()
+        if not demo:
+            self.runtime_target.append('robot', '真机')
+        self.runtime_target.append('model', '控制台模型（Demo）')
+        self.runtime_target.set_active_id('model' if demo else 'robot')
+        target_row.pack_start(self.runtime_target, False, False, 0)
+        settings.pack_start(target_row, False, False, 0)
+        self.target_help = Gtk.Label(xalign=0)
+        self.target_help.set_line_wrap(True)
+        settings.pack_start(self.target_help, False, False, 0)
         mode_row = Gtk.Box(spacing=8)
         mode_row.pack_start(Gtk.Label(label='遥操方式'), False, False, 0)
         self.teleop_mode = Gtk.ComboBoxText()
@@ -86,6 +102,7 @@ class TeleopPanel(Gtk.Box):
         label.set_line_wrap(True)
         settings.pack_start(label, False, False, 0)
         self.wrist_controls = GuardControls(self.switch_wrist)
+        self.robot_wrist_tooltip = self.wrist_controls.get_tooltip_text()
         settings.pack_start(self.wrist_controls, False, False, 0)
         self.ik_backend.connect('changed', self.ik_changed)
         self.ik_changed()
@@ -176,7 +193,7 @@ class TeleopPanel(Gtk.Box):
         chassis_help.set_line_wrap(True)
         settings.pack_start(chassis_help, False, False, 0)
         row = Gtk.Box(spacing=8)
-        self.stop_button = None
+        self.stop_button = self.start_button = None
         for title, callback in [('启动 PICO 接收服务', self.start_service), ('启动遥操 · 使能上半身', self.start),
                                 ('停止遥操并下使能', lambda *_: self.command('stop'))]:
             button = Gtk.Button(label=title)
@@ -184,6 +201,8 @@ class TeleopPanel(Gtk.Box):
             if title == '停止遥操并下使能':
                 self.stop_button = button
                 button.set_sensitive(False)
+            elif title == '启动遥操 · 使能上半身':
+                self.start_button = button
             row.pack_start(button, False, False, 0)
         self.pack_start(row, False, False, 0)
         commands = Gtk.Box(spacing=8)
@@ -215,7 +234,49 @@ class TeleopPanel(Gtk.Box):
         self.log = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         scroll.add(self.log)
         self.pack_start(scroll, False, True, 0)
+        self.runtime_target.connect('changed', self.target_changed)
+        self.target_changed()
         GLib.timeout_add(100, self.tick)
+
+    def model_demo_selected(self):
+        return (self.session_target or self.runtime_target.get_active_id()) == 'model'
+
+    def target_changed(self, *_):
+        model = self.model_demo_selected()
+        if model:
+            self.ik_backend.set_active_id('native')
+            self.chassis.set_active(False)
+        self.target_help.set_text(
+            '模型演示：PICO 驱动右侧模型；腕部联合限位可开关，不连接或使能机器人。\n'
+            '每次从所选双臂 Home 和身体上位开始；可演示双臂、身体升降和夹爪，底盘暂不参与。'
+            if model else '真机遥操：启动会连接并使能上半身；可按需启用夹爪、身体及底盘。')
+        self.start_button.set_label('启动模型 Demo' if model else '启动遥操 · 使能上半身')
+        self.stop_button.set_label('停止模型 Demo' if model else '停止遥操并下使能')
+        self.home.set_label('模型从所选双臂 Home 开始（每次启动重置）' if model else
+                            '启动后先回双臂 Home（会运动）；不勾选则保持当前姿态')
+        self.grippers.set_label('演示夹爪 · Trigger 连续控制模型开度' if model else
+                                '同时使能 TacCap 夹爪遥操 · Trigger 连续控制开度')
+        if model:
+            self.wrist_controls.set_tooltip_text(
+                '模型中可关闭左腕 J6/J7、右腕 J13/J14 的联合限位。\n'
+                '红色腕部表示进入标定的前臂与腕壳干涉区（近似），不代表全身或环境碰撞检测。\n'
+                '切换会暂停；重新启用前需回到保护范围内，可先回 Home。真机联合限位 IK 始终开启保护。')
+        else:
+            self.wrist_controls.set_tooltip_text(self.robot_wrist_tooltip)
+        self.chassis_status.set_text('模型 Demo 暂不包含底盘运动' if model else '底盘遥操未启用')
+        self.update_options()
+
+    def model_snapshot(self):
+        """Return only simulated feedback; callers must not mix live observers into it."""
+        if not self.model_demo_selected():
+            return None
+        active = self.session_target == 'model' and self.process is not None and self.process.poll() is None
+        fresh = bool(active and self.demo_state is not None and time.monotonic()-self.demo_received < .5)
+        state = self.demo_state or {}
+        return {'hardware': state.get('hardware') if fresh else None,
+                'grippers': state.get('grippers', {}) if fresh else {},
+                'wrist_collision': state.get('wrist_collision', {}),
+                'fresh': fresh, 'active': active, 'phase': state.get('phase', '等待模型 Demo 启动')}
 
     def mode_changed(self, *_):
         mode = self.teleop_mode.get_active_id()
@@ -231,7 +292,7 @@ class TeleopPanel(Gtk.Box):
         return (self.session_ik_backend or self.ik_backend.get_active_id()) == 'native'
 
     def update_wrist_option(self):
-        native = self.native_ik_selected()
+        native = self.native_ik_selected() and not self.model_demo_selected()
         if native and not self.wrist_controls.toggle.get_active():
             self.updating_wrist = True
             try:
@@ -239,17 +300,19 @@ class TeleopPanel(Gtk.Box):
             finally:
                 self.updating_wrist = False
         self.wrist_controls.toggle.set_sensitive(not self.closed and not native)
-        self.wrist_controls.toggle.set_label('腕部联合限位 · 联合限位 IK 要求开启' if native
+        self.wrist_controls.toggle.set_label('腕部联合限位 · 模型 Demo 可启用 / 停用' if self.model_demo_selected()
+                                            else '腕部联合限位 · 联合限位 IK 要求开启' if native
                                             else '腕部联合限位 · 运行中可启用 / 停用')
 
     def ik_changed(self, *_):
         self.update_wrist_option()
-        self.wrist_controls.update({'message': NATIVE_GUARD_MESSAGE} if self.native_ik_selected() else {})
+        self.wrist_controls.update({'message': NATIVE_GUARD_MESSAGE}
+                                   if self.native_ik_selected() and not self.model_demo_selected() else {})
 
     def switch_wrist(self, enabled):
         if self.updating_wrist:
             return
-        if self.native_ik_selected():
+        if self.native_ik_selected() and not self.model_demo_selected():
             self.update_wrist_option()
             self.wrist_controls.update({'message': NATIVE_GUARD_MESSAGE})
             return
@@ -284,8 +347,7 @@ class TeleopPanel(Gtk.Box):
             self.events.put((name + '_exit', process.returncode))
 
     def start_service(self, *_):
-        if self.demo:
-            self.append('离线演示：未启动接收服务')
+        if self.closed:
             return
         if self.service and self.service.poll() is None:
             self.append('本窗口启动的接收服务正在运行')
@@ -298,12 +360,9 @@ class TeleopPanel(Gtk.Box):
             self.append(str(exc))
 
     def start(self, *_):
-        if self.demo:
-            self.append('离线演示：未连接、未使能')
-            return
         if self.closed or (self.process and self.process.poll() is None):
             return
-        if self.upper_lease or self.gripper_lease or self.base_lease:
+        if self.session_target or self.upper_lease or self.gripper_lease or self.base_lease:
             self.append('上一会话正在退出，等待控制占用释放后再启动')
             return
         try:
@@ -316,6 +375,12 @@ class TeleopPanel(Gtk.Box):
             tool_config(mode, load_geometry() if mode == 'taccap' else None, require_confirmed=True)
         except (ValueError, OSError) as exc:
             self.append(str(exc))
+            return
+        if self.model_demo_selected():
+            self.start_model_demo()
+            return
+        if self.demo:
+            self.append('离线控制台仅支持模型 Demo')
             return
         credentials = self.credentials('upper')
         if credentials is None:
@@ -363,6 +428,7 @@ class TeleopPanel(Gtk.Box):
             self.process = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
             self.session_ik_backend = self.ik_backend.get_active_id()
+            self.session_target = 'robot'
             self.process.stdin.write(json.dumps({'password': password}) + '\n')
             self.process.stdin.flush()
             self.status.set_text('等待双手柄新鲜数据及 Grip 释放…')
@@ -379,7 +445,41 @@ class TeleopPanel(Gtk.Box):
                 self.append(f'遥操进程退出请求失败：{stop_error}')
             finally:
                 self.release_leases()
+                self.session_target = self.session_ik_backend = None
             self.append(str(exc))
+
+    def start_model_demo(self):
+        """Separate local process: never request credentials or acquire robot devices."""
+        argv = [str(ROOT/'.local/pico4/env/bin/python'), '-u',
+                str(ROOT/'scripts/pico4/fairino/vr_demo.py'), '--gui-stdio',
+                '--mode', self.teleop_mode.get_active_id(), '--freeze-buttons',
+                '--tcp-tool', self.tcp_tool.get_active_id(),
+                '--home-preset', self.home_preset.get_active_id()]
+        if not self.wrist_controls.toggle.get_active():
+            argv.append('--disable-wrist-guard')
+        if self.body_lift.get_active():
+            argv.append('--body-lift')
+        if self.grippers.get_active():
+            argv.append('--grippers')
+            for side in ('left', 'right'):
+                argv.extend([f'--{side}-gripper-max-open-percent', str(self.gripper_limits[side].get_value())])
+        try:
+            self.process = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
+            self.session_target = 'model'
+            self.session_ik_backend = 'native'
+            self.demo_state, self.demo_received = None, 0.
+            self.gripper_feedback = {}
+            self.status.set_text('模型 Demo 启动中 · 等待 PICO 手柄数据；机器人未连接')
+            self.heading_status.set_text('双臂正前方未校准 · 沿用原有追踪方向')
+            self.chassis_status.set_text('模型 Demo 暂不包含底盘运动')
+            self.update_options()
+            threading.Thread(target=self.reader, args=(self.process, 'demo'), daemon=True).start()
+        except (OSError, ValueError, RuntimeError) as exc:
+            if self.process and self.process.poll() is None:
+                self.process.terminate()
+            self.session_target = self.session_ik_backend = None
+            self.append(f'模型 Demo 启动失败：{exc}')
 
     def release_leases(self):
         for part in ('upper', 'gripper', 'base'):
@@ -390,14 +490,20 @@ class TeleopPanel(Gtk.Box):
 
     def update_options(self):
         running = self.process is not None and self.process.poll() is None
-        editable = not running and not self.closed
+        editable = not running and self.session_target is None and not self.closed
+        model = self.model_demo_selected()
+        self.runtime_target.set_sensitive(editable and not self.demo)
         for widget in (self.teleop_mode, self.ik_backend, self.home, self.home_preset, self.grippers, self.tcp_tool,
                        self.tool_settings, self.body_lift, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable)
+        for widget in (self.ik_backend, self.home, self.chassis, *self.gripper_serials.values()):
+            widget.set_sensitive(editable and not model)
         for widget in (self.gripper_speed, *self.gripper_limits.values()):
             widget.set_sensitive(editable and self.grippers.get_active())
+        self.gripper_speed.set_sensitive(editable and self.grippers.get_active() and not model)
         for widget in (self.chassis_linear, self.chassis_angular):
-            widget.set_sensitive(editable and self.chassis.get_active())
+            widget.set_sensitive(editable and self.chassis.get_active() and not model)
+        self.start_button.set_sensitive(editable)
         self.update_wrist_option()
 
     def command(self, command):
@@ -407,15 +513,81 @@ class TeleopPanel(Gtk.Box):
             self.process.stdin.write(json.dumps({'command': command}) + '\n')
             self.process.stdin.flush()
             if command == 'stop':
-                self.status.set_text('正在等待遥操退出并确认下使能…')
+                self.status.set_text('正在停止模型 Demo…' if self.model_demo_selected() else
+                                     '正在等待遥操退出并确认下使能…')
         except (OSError, ValueError):
             self.status.set_text('遥操命令管道已关闭，等待退出结果')
+
+    def receive_model_state(self, data):
+        state = json.loads(data)
+        hardware = state['hardware']
+        names, positions = hardware['joint_names'], hardware['position']
+        if names != [f'j{i}' for i in range(1, 21)] or len(positions) != 20:
+            raise ValueError('模型关节格式错误')
+        if not all(type(v) in (int, float) and math.isfinite(v) for v in positions):
+            raise ValueError('模型关节角无效')
+        grippers = state.get('grippers', {})
+        if (not isinstance(grippers, dict) or any(side not in ('left', 'right') for side in grippers)
+                or not all(type(v) in (int, float) and math.isfinite(v) and 0. <= v <= 1.
+                           for v in grippers.values())):
+            raise ValueError('模型夹爪开度无效')
+        collisions = state.get('wrist_collision', {})
+        if (not isinstance(collisions, dict) or any(side not in ('left', 'right') for side in collisions)
+                or not all(type(v) is bool for v in collisions.values())):
+            raise ValueError('模型干涉状态无效')
+        sensitivity = state.get('sensitivity', .25)
+        if type(sensitivity) not in (int, float) or not math.isfinite(sensitivity):
+            raise ValueError('模型灵敏度无效')
+        self.demo_state, self.demo_received = state, time.monotonic()
+        text = f'模型 Demo · {state.get("phase", "跟随")} · 灵敏度 {sensitivity:g} · 仅显示模拟关节'
+        if state.get('message'):
+            text += '\n'+str(state['message'])
+        if state.get('ik_partial'):
+            text += '\n当前为部分可行解，完整手柄目标仍保留'
+        self.status.set_text(text)
+        heading = '双臂正前方已校准' if state.get('heading_calibrated') else '双臂正前方未校准 · 沿用原有追踪方向'
+        yaw = state.get('heading_yaw_deg')
+        if state.get('heading_calibrated') and type(yaw) in (int, float) and math.isfinite(yaw):
+            heading += f' · 水平朝向 {yaw:+.1f}°'
+        if state.get('heading_message'):
+            heading += '\n'+str(state['heading_message'])
+        self.heading_status.set_text(heading)
+        self.gripper_status.set_text('模型夹爪：'+' · '.join(
+            f'{label} {grippers[side]*100:.1f}%' for side, label in [('left', '左'), ('right', '右')]
+            if side in grippers) if grippers else '模型夹爪演示未启用')
+        enabled = state.get('wrist_guard_enabled')
+        if type(enabled) is bool:
+            self.updating_wrist = True
+            try:
+                self.wrist_controls.toggle.set_active(enabled)
+            finally:
+                self.updating_wrist = False
+            self.wrist_controls.update({'message': '模型联合限位已启用' if enabled else
+                                       '模型联合限位已停用；进入标定干涉区时腕部显示红色'})
 
     def tick(self):
         while not self.events.empty():
             name, data = self.events.get_nowait()
-            if name == 'vr_exit':
+            if name == 'demo_exit':
+                if self.session_target != 'model':
+                    continue
+                self.session_target = self.session_ik_backend = None
+                self.status.set_text(f'模型 Demo 已停止，返回码 {data}；保留最后模型姿态')
+                self.heading_status.set_text('方向校准仅对本次演示有效；下次启动需重新校准')
+                if self.process:
+                    self.process.stdin.close()
+            elif name == 'demo' and data.startswith('WORKBENCH_DEMO '):
+                if self.session_target != 'model':
+                    continue
+                try:
+                    self.receive_model_state(data[len('WORKBENCH_DEMO '):])
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    self.append('模型 Demo 状态格式异常；保留最后姿态')
+            elif name in ('vr', 'vr_exit') and self.session_target == 'model':
+                continue
+            elif name == 'vr_exit':
                 self.session_ik_backend = None
+                self.session_target = None
                 self.gripper_feedback = {}
                 self.release_leases()
                 self.status.set_text(f'遥操已退出，返回码 {data}；下使能结果见下方日志')

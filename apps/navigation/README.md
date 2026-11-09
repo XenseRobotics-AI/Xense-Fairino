@@ -1,6 +1,6 @@
 # 二维底盘导航
 
-本模块使用 Nav2 Humble：**SmacPlanner2D（二维 A*）+ DWB 全向局部控制**。仅考虑底盘在 XY 平面中的碰撞和运动。上半身投影提供器仍为预留接口，不参与当前规划。
+本模块使用 Nav2 Humble：**直线路径优先、SmacPlanner2D 绕障回退 + 全向预瞄控制器**。仅考虑底盘在 XY 平面中的碰撞和运动。上半身投影提供器仍为预留接口，不参与当前规划。
 
 ## 固定底盘轮廓
 
@@ -26,47 +26,47 @@ shape = provider.compute("chassis", FootprintRequest(stamp=0.0, joint_positions=
 
 ## 二维规划和速度
 
-`profile.py` 生成 `nav2.yaml`，参数统一来自上述 URDF 与 `apps/fairino_keyboard/control_core.py` 中的默认速度：
+控制台调用内置 `modules/fairino_slam/src/fairino_slam` 实现；参数来自该模块的 `config/chassis.yaml` 与 `config/navigation.yaml`。`apps/navigation/nav2.yaml` 是当前生成结果的核对快照，不是在线配置来源：
 
 | 项目 | 当前值 |
 |---|---|
-| 平移合速度 | ≤ 0.06 m/s，包括前后、横移和斜向移动 |
-| 旋转速度 | ≤ 0.10 rad/s |
-| 局部控制 | DWB，正负 X/Y 速度采样，ObstacleFootprint 多边形碰撞检查 |
+| 平移合速度 | ≤ 0.10 m/s，包括前后、横移和斜向移动 |
+| 旋转速度 | ≤ 0.20 rad/s |
+| 局部控制 | 全向预瞄，0.20 m 预瞄距离，实际足迹预测碰撞检查 |
 | 目标容差 | 位置 0.05 m、朝向 0.05 rad |
 | 地图分辨率 | 0.05 m |
 | 局部代价地图 | 4 × 4 m 滚动窗口 |
 | 轮廓余量 | 局部矩形每侧增加 0.02 m |
 | 重规划 | 1 Hz |
-| DWB 控制输出 | 10 Hz |
+| 预瞄控制输出 | 3 Hz |
+| 速度门控 / 底盘执行 | 20 Hz / 约 50 Hz；保持最新指令，无插值 |
 
 平移速度限制的是 `sqrt(vx² + vy²)`，不是只限制每个轴。配置、速度门控和底盘执行层都应用限制；不沿用键控允许调节的最大值 0.20 m/s / 0.40 rad/s。
 
-SmacPlanner2D 不做随 yaw 变化的矩形碰撞搜索，而是检查膨胀代价。全局代价地图因此使用一个保守辅助轮廓：其内切圆半径等于加余量底盘的外接圆半径，约 **0.508 m**。这保留了矩形四角的空间要求，会比按实际朝向挤过窄通道更保守。局部 DWB 使用真实矩形加 2 cm 余量。辅助轮廓不用于清除车身附近障碍；它不是第二种上半身动态模式。
+SmacPlanner2D 不做随 yaw 变化的矩形碰撞搜索，而是检查膨胀代价。全局代价地图因此使用一个保守辅助轮廓：其内切圆半径等于加余量底盘的外接圆半径，约 **0.508 m**。这保留了矩形四角的空间要求，会比按实际朝向挤过窄通道更保守。局部预瞄控制器使用真实矩形加 2 cm 余量。辅助轮廓不用于清除车身附近障碍；它不是第二种上半身动态模式。
 
 全局和局部地图均使用静态地图、二维 ObstacleLayer 和 InflationLayer。不使用三维 voxel 层。障碍层分别订阅 `/front/scan`、`/back/scan`，使清障射线从各雷达真实原点出发；定位继续使用合并 `/scan`。未知区域不可通行。当前关闭 Smac 附加平滑，以避免 Humble 平滑器对未知单元的放行行为。行为树只做重规划与跟随，不执行自动旋转/倒车恢复动作。
 
-参考 [Humble Smac2D 实现](https://github.com/ros-navigation/navigation2/blob/humble/nav2_smac_planner/src/smac_planner_2d.cpp) 和 [DWB 轮廓碰撞检查](https://github.com/ros-navigation/navigation2/blob/humble/nav2_dwb_controller/dwb_critics/src/obstacle_footprint.cpp)。
+默认沿途保持任务开始时朝向，到达位置后再对齐目标朝向；可在模块配置中改用 `path_tangent`。直线被障碍阻挡时先调用 Smac，再校验、简化、重新采样路径。Smac 未平滑中间点的零四元数被识别为“未提供朝向”，由包装器重建朝向；用户起点、终点仍严格要求有效姿态。
 
 ## 代码入口与部署
 
-所有命令从控制电脑的仓库根目录运行，使用本项目的 Python 环境：
+所有命令从控制电脑的仓库根目录运行：
 
 ```bash
-.venv/bin/python tools/build_navigation.py --check
-# URDF 或默认速度变化后，重新生成，再检查版本差异：
-.venv/bin/python tools/build_navigation.py
+bash run.sh slam check                  # 本地配置和安装载荷检查，不连接机器人
+bash run.sh slam build-config      # 生成到模块 .local/generated/
+bash run.sh slam deploy navigation    # 机器人端只读前置检查
 ```
 
-连接机器人部署时，先结束底盘/PICO 控制和建图、定位、导航会话，确认底盘下使能，再更新地图定位层和导航：
+本地合并不会更新机器人。需要部署时，先结束底盘/PICO 控制、建图、定位和导航会话，确认底盘下使能，再运行：
 
 ```bash
-.venv/bin/python tools/install_map_mode.py  # 此旧入口运行即备份并安装，没有预览模式
-.venv/bin/python tools/install_navigation.py
-.venv/bin/python tools/install_navigation.py --execute
+bash run.sh slam deploy mapping --execute
+bash run.sh slam deploy navigation --execute
 ```
 
-只有 `install_navigation.py` 不带 `--execute` 时是机器人端只读前置检查；`install_map_mode.py` 运行即安装，也不支持 `--help`。导航安装器核对实际底盘轮廓与仓库模型一致，并检查 Nav2 插件是否存在；备份后安装到机器人 `~/.local/share/fairino-navigation/`，安装显式启动的 `fairino-navigation.service`。不自动启动服务、不改地图、不使能电机。服务运行中拒绝覆盖代码，先 `navigation stop` 再更新。启动文件、ROS 参数和行为树均位于 `apps/navigation/`，SSH/安装入口位于 `tools/`，运行记录位于仓库 `logs/navigation/`。已有统一底盘与原始里程计配置无需重新迁移；未安装过的机器先按根目录 README 完成控制栈迁移。
+部署会备份并安装对应配置和完整插件源码。导航安装到机器人 `~/.local/share/fairino-navigation/`，不会自动启动导航或使能电机。原 `tools/build_navigation.py`、`tools/install_navigation.py`、`tools/install_map_mode.py` 和 `tools/navigation_mode.py` 均转发到同一内置模块；地图安装入口也支持 `--help`，明确部署需 `--execute`。已有部署如果不支持新的朝向参数，界面会提示更新，不会自动降级或重发目标。运行参数、ROS 插件与行为树以 `modules/fairino_slam/` 中的文件为准。
 
 ## 工作台操作
 
@@ -78,6 +78,8 @@ SmacPlanner2D 不做随 yaw 变化的矩形碰撞搜索，而是检查膨胀代�
 4. 在下方 **③ 导航**区域点击**启动导航**，激活已配置的节点，等待导航就绪。此步骤不启动新进程或创建新的 ROS 通信节点。然后点击**在地图上选择目标**，在地图按住目标位置、拖向目标朝向再松开。拖拽长度至少 5 cm；它只用于表示方向，不是移动距离。目标 **X / m、Y / m、朝向 / °** 位于可展开的坐标输入区，可查看或手动输入。这是 `map` 坐标系下的绝对位置；0° 沿地图 +X，90° 沿 +Y。选点会回填数值，显示**红色 ❌**（红叉图元）和目标朝向。核对坐标后再继续；选点或输入本身不发送目标。
 5. 可先点击 **预览路径**，地图显示紫色虚线路径；点击固定底部的**开始导航**才发送目标。预览是当次规划结果，执行中 Nav2 会重规划；有效实时反馈另外绘为蓝色的控制器当前路径和橙色的局部预测轨迹。
 6. 底部同时固定显示**取消目标**和**结束导航并下使能**，不随上方操作区滚动。取消目标会取消导航、保持底盘使能；结束导航并下使能会停止 Nav2 并结束底盘执行会话，即使尚未开始导航也可结束已准备的底盘。关闭工作台同样等待导航停止和底盘退出，下使能结果显示在导航状态中。
+
+展开“已保存位置点”可保存当前位置与朝向，或选择当前地图的已保存点设为目标；保存点绑定机器人、地图和地图版本，选择本身不移动机器人。
 
 成功、取消或失败后保留红叉并更新状态，便于核对终点；修改目标后变为“待发送”并清除旧预览。切换地图或定位会话后，清除旧目标和路径，必须重新输入。发送中的目标不能被编辑；取消后等待终态再输入新目标。请求超时会提示核对状态，不自动重发。
 
@@ -93,7 +95,7 @@ SmacPlanner2D 不做随 yaw 变化的矩形碰撞搜索，而是检查膨胀代�
 
 在仓库根目录运行 `bash run.sh console --demo` 或 `bash run.sh map --demo`，即可用模拟数据查看同一地图与导航界面，不连接机器人。导航接入、启动、开始、取消和结束按钮禁用；目标输入、地图选点、图层、截图和本地“预览路径”仍可使用。演示曲线标为“离线演示路径”，不是 Nav2 计算结果，不验证可达性或避障。演示模式也不会轮询机器人导航状态或启动底盘执行会话。
 
-## 命令行使用顺序（保留）
+## 命令行使用顺序
 
 默认地图可以为空；本轮没有创建、选用或加载任何地图。没有地图时 `navigation start` 会明确拒绝。
 
@@ -133,7 +135,7 @@ Nav2 controller → /fairino_navigation/cmd_vel_raw
 
 `start` 只启动规划相关服务；真正执行还要求显式的 `drive` 会话和 `goal`。没有目标时速度为零。定位/里程计会话变化、双雷达或速度输入断流会停止输出，失败目标不会在数据恢复后自动继续。取消目标不等于下使能；Ctrl+C 结束 `drive` 才走底盘停止与下使能流程。
 
-工作台和命令行共用导航操作接口。Nav2 已部署并做过服务启动检查；尚未验证实际行驶、避障及到点精度。
+工作台和命令行共用内置 SLAM 导航接口。下列历史检查针对旧导航版本；本次合并后的直线/Smac 规划与预瞄控制版本尚未部署或进行实车行驶、避障及到点精度验证。
 
 离线验证记录：导航/轮廓 15 项、地图/定位 33 项、底盘 27 项通过，4 项 GTK/显示测试跳过；生成配置一致性、Python/Shell 语法及补丁格式检查通过。完整记录保存于 `logs/navigation-20261019/verification.json`。
 
@@ -152,7 +154,7 @@ Nav2 controller → /fairino_navigation/cmd_vel_raw
 - 导航就绪还要求三个节点实际处于 active 且状态新鲜；仅存在速度发布器不再视为控制器已就绪。
 - 底盘原有 0.4 秒反馈保护保持不变。保护退出后界面保留具体错误，并显示下使能确认结果；不会自动使能、恢复目标或解除里程计断流锁定。
 
-准备阶段的服务创建仍每隔 3 秒启动一个进程，并通过 nice -n 10 降低调度优先级。运行接口、状态机和安装文件位于 apps/navigation/；SSH 入口位于 tools/navigation_mode.py 和 tools/install_navigation.py。实机准备检查与离线回归记录见 logs/navigation-preparation-20261020/。完整带定位的激活与行驶仍需实机验证。
+准备阶段的服务创建仍每隔 3 秒启动一个进程，并通过 nice -n 10 降低调度优先级。运行接口、状态机和安装文件现位于 modules/fairino_slam/；控制台适配层位于 apps/navigation/，旧 tools 入口转发到模块。实机准备检查与离线回归记录见 logs/navigation-preparation-20261020/。完整带定位的激活与行驶仍需实机验证。
 
 2026-10-20 后续心跳排查发现 fairino SSH 会话继承了错误的 nice 19。已通过用户级 PAM priority=0 覆盖修正，未放宽保护阈值。正常优先级下 60 秒只读心跳测试未超时，导航配置待机检查通过；详细安装、对照测试和日志字段见 apps/fairino_keyboard/README.md 的“SSH 会话优先级与往返通信超时”。重开工作台并建立新控制会话后生效。
 

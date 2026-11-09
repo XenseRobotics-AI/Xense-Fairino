@@ -227,7 +227,8 @@ class TransportAndInstallationTests(unittest.TestCase):
         import shlex
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'tools'))
         import install_map_mode
-        with patch.object(install_map_mode, 'run', side_effect=RuntimeError('captured')) as run:
+        with patch.object(install_map_mode, 'run', side_effect=RuntimeError('captured')) as run, \
+                patch.object(sys, 'argv', ['install_map_mode.py', '--execute']):
             with self.assertRaisesRegex(RuntimeError, 'captured'):
                 install_map_mode.main(password='unused')
         program = shlex.split(run.call_args.args[1])[3]

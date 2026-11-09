@@ -45,48 +45,49 @@ class ChassisGeometryTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
-    def test_profile_is_generated_from_current_defaults(self):
+    def test_profile_is_generated_from_current_slam_defaults(self):
         import yaml
+        from fairino_slam.chassis.control_core import DEFAULT_LINEAR, DEFAULT_ANGULAR
         profile = build()
         self.assertEqual(yaml.safe_load((ROOT/'apps/navigation/nav2.yaml').read_text()), profile)
         controller = profile['controller_server']['ros__parameters']
-        dwb = controller['FollowPath']
-        self.assertEqual(dwb['max_speed_xy'], DEFAULT_LINEAR)
-        self.assertEqual(dwb['max_vel_theta'], DEFAULT_ANGULAR)
-        self.assertEqual(dwb['min_vel_y'], -DEFAULT_LINEAR)
+        follow = controller['FollowPath']
+        self.assertEqual(follow['plugin'], 'fairino_lookahead_controller::HolonomicLookaheadController')
+        self.assertEqual(follow['max_linear_speed'], DEFAULT_LINEAR)
+        self.assertEqual(follow['max_angular_speed'], DEFAULT_ANGULAR)
+        self.assertEqual(follow['heading_mode'], 'hold_initial')
         self.assertLess(controller['min_y_velocity_threshold'], DEFAULT_LINEAR)
-        self.assertLess(dwb['trans_stopped_velocity'], DEFAULT_LINEAR)
-        self.assertIn('ObstacleFootprint', dwb['critics'])
 
-    def test_controller_candidates_use_current_control_period_and_bounded_work(self):
+    def test_controller_lookahead_period_and_collision_horizon_follow_config(self):
         profile = build()
         controller = profile['controller_server']['ros__parameters']
-        dwb = controller['FollowPath']
-        self.assertEqual(dwb['trajectory_generator_name'], 'dwb_plugins::LimitedAccelGenerator')
-        self.assertAlmostEqual(dwb['sim_period'] * controller['controller_frequency'], 1.)
-        self.assertLess(dwb['sim_period'], .3)
-        self.assertLessEqual(dwb['vx_samples']*dwb['vy_samples']*dwb['vtheta_samples'], 200)
-        # Local collision prediction and the full planar control space remain.
-        self.assertGreater(dwb['sim_time'], dwb['sim_period'])
-        self.assertLess(dwb['min_vel_y'], 0)
-        self.assertGreater(dwb['max_vel_y'], 0)
-        self.assertIn('ObstacleFootprint', dwb['critics'])
+        follow = controller['FollowPath']
+        self.assertEqual(controller['controller_frequency'], 3.)
+        self.assertAlmostEqual(follow['control_period'] * controller['controller_frequency'], 1.)
+        self.assertEqual(follow['lookahead_distance'], .2)
+        self.assertGreater(follow['collision_horizon'], follow['control_period'])
+        self.assertGreater(follow['linear_acceleration'], 0.)
+        self.assertGreater(follow['angular_acceleration'], 0.)
 
     def test_smac_global_inscribed_radius_contains_every_rotated_local_corner(self):
         profile = build()
         local = profile['local_costmap']['local_costmap']['ros__parameters']
         global_map = profile['global_costmap']['global_costmap']['ros__parameters']
-        square = json.loads(global_map['footprint'])
-        radius = square[1][0]
+        # SLAM uses a circumscribed regular polygon rather than the old square.
+        polygon = json.loads(global_map['footprint'])
         points = json.loads(local['footprint'])
         padding = local['footprint_padding']
-        for x, y in points:
-            padded_radius = math.hypot(abs(x)+padding, abs(y)+padding)
-            self.assertGreaterEqual(radius+1e-12, padded_radius)
-        self.assertGreater(global_map['inflation_layer']['inflation_radius'], radius)
-        self.assertFalse(profile['planner_server']['ros__parameters']['GridBased']['allow_unknown'])
+        padded_radius = max(math.hypot(abs(x)+padding, abs(y)+padding) for x,y in points)
+        for a, b in zip(polygon, polygon[1:]+polygon[:1]):
+            edge_distance = (a[0]*b[1]-a[1]*b[0])/math.hypot(b[0]-a[0], b[1]-a[1])
+            self.assertGreaterEqual(edge_distance+1e-12, padded_radius)
+        self.assertGreater(global_map['inflation_layer']['inflation_radius'], padded_radius)
+        planner = profile['planner_server']['ros__parameters']['GridBased']
+        self.assertEqual(planner['plugin'], 'fairino_straight_planner::StraightLinePlanner')
+        self.assertTrue(planner['straight_line_enabled'])
+        self.assertFalse(planner['allow_unknown'])
         self.assertFalse(global_map['obstacle_layer']['footprint_clearing_enabled'])
-        self.assertEqual(profile['planner_server']['ros__parameters']['GridBased']['smoother']['max_iterations'], 0)
+        self.assertEqual(planner['smoother']['max_iterations'], 0)
 
     def test_both_costmaps_use_each_lidars_own_ray_origin(self):
         profile = build()

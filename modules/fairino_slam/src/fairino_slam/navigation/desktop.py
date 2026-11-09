@@ -187,7 +187,9 @@ class DriveSession:
                     self.message = '界面心跳中断，正在停止并下使能'
                     break
                 c.send(keys=(), focused=True)
-                self.message = c.latest.get('phase', '等待底盘反馈')
+                # Motor readiness alone does not establish AMCL/Nav2 readiness.
+                self.message = ('底盘控制连接已就绪' if c.latest.get('ready')
+                                else c.latest.get('phase', '等待底盘反馈'))
                 self.stop_event.wait(.05)
         except Exception as exc:
             self.message = '导航底盘未完成：'+str(exc)

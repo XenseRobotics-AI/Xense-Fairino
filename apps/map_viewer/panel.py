@@ -187,7 +187,7 @@ class MapPanel(Gtk.Box):
         display = self.side_page('图层')
         self.section(display, '地图叠加', '轮廓为真实尺寸的底盘；不包含伸出的双臂。轨迹来自 TF 位姿估计。')
         for name, title, active in [('particles', 'AMCL 粒子云', True), ('uncertainty', '定位不确定度', True),
-                                     ('scans', '前后雷达扫描', True), ('trail', '机器人运动轨迹', True),
+                                     ('scans', '前后雷达扫描', True), ('footprints', 'Nav2 局部 / 全局碰撞轮廓', True), ('trail', '机器人运动轨迹', True),
                                      ('paths', '导航路径与目标', True), ('local_radar', '本体雷达小窗', False)]:
             check = Gtk.CheckButton(label=title)
             check.set_active(active)

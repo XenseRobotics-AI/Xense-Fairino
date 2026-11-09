@@ -15,12 +15,14 @@ class InstallationTransportTests(unittest.TestCase):
             with self.subTest(execute=execute):
                 argv = shlex.split(remote_command(execute))
                 self.assertEqual(argv[:3], ['python3', '-u', '-c'])
-                self.assertLess(len(argv[3].encode()), 65536)
+                # New plugin source is embedded too; bound the complete remote shell
+                # argument below Linux's 128 KiB single-argument limit.
+                self.assertLess(len(remote_command(execute).encode()), 120000)
                 captured = []
                 # Decode the real transport loader, but never execute an installer.
-                with patch('builtins.compile', side_effect=lambda source, *args: captured.append(source) or 'pass'):
-                    exec(argv[3], {'exec': lambda *args: None})
-                self.assertEqual(captured, [remote_script(execute).encode()])
+                exec(argv[3], {'exec': lambda source: captured.append(source)})
+                self.assertEqual(len(captured), 1)
+                self.assertEqual(captured[0], remote_script(execute))
 
 
 if __name__ == '__main__':

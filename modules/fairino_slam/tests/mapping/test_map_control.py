@@ -4,9 +4,9 @@ import json
 import math
 from pathlib import Path
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from fairino_slam.mapping.map_control_remote import guard_reason, validate_name
+from fairino_slam.mapping.map_control_remote import guard_reason, validate_name, ROS
 
 
 class MappingInputTests(unittest.TestCase):
@@ -57,6 +57,22 @@ class MappingInputTests(unittest.TestCase):
         for name in ('../active/map', '/tmp/map', '', 'x;rm', 'x\ny'):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 validate_name(name)
+
+    def test_chinese_and_ascii_map_names_preserve_characters_and_length(self):
+        for name in ('碧迪15楼实验室', '实验室_15F-01', 'room_20261016-01', 'A', '0',
+                     '图'*80, 'a'*80, '\u3400', '\u4dbf', '\u4e00', '\u9fff'):
+            with self.subTest(name=name):
+                self.assertEqual(validate_name(name), name)
+
+    def test_invalid_save_name_does_not_pause_or_touch_ros(self):
+        ros = Mock()
+        for name in ('../active/map', '碧迪 15楼实验室', 'map.yaml', '图'*81):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                ROS.save(ros, name)
+        ros.pause.assert_not_called()
+        ros.params.assert_not_called()
+        ros.spin.assert_not_called()
+        ros.call.assert_not_called()
 
 
 class DisplayHealthTests(unittest.TestCase):

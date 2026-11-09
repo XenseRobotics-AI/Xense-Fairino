@@ -77,7 +77,7 @@ bash scripts/run.sh faults
 
 如果远端报 `navigation_remote.py: error: plan/goal requires finite --x --y --yaw`，机器人执行的是仍要求手工朝向的旧版导航入口。在 `hold_initial` 策略下，新版电脑发送目标 X/Y 及预期策略，机器人端应在请求时读取新鲜 TF 锁定朝向；电脑源码更新或启动已有导航服务不会自动部署新程序。
 
-先在界面结束导航并确认底盘下使能，再退出面板。检查 `config/navigation.yaml` 中 `nav2.controller_server.ros__parameters.controller_frequency`，当前预瞄控制配置为 `6.0` Hz；`1` Hz 会超过 0.6 秒速度超时，被配置检查拒绝。这里控制的是连续速度更新，降低到 1 Hz 不能实现平滑运动。
+先在界面结束导航并确认底盘下使能，再退出面板。检查 `config/navigation.yaml` 中 `nav2.controller_server.ros__parameters.controller_frequency`，当前预瞄控制配置为 `3.0` Hz；`1` Hz 会超过 0.6 秒速度超时，被配置检查拒绝。这里控制的是连续速度更新，降低到 1 Hz 不能实现平滑运动。
 
 在控制电脑仓库根目录、已激活项目环境后执行：
 

@@ -14,3 +14,4 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export XENSE_LOG_DIR="${XENSE_LOG_DIR:-$ROOT/.local/pico4/logs}"
 (cd "$ROOT/scripts/pico4/fairino" && "$PICO_PY" -m unittest discover -p 'test_*.py')
 (cd "$ROOT/scripts/pico4" && "$PICO_PY" -m unittest test_pico)
+FAIRINO_SLAM_PYTHON="$PY" bash "$ROOT/modules/fairino_slam/scripts/check.sh"

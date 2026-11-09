@@ -6,6 +6,7 @@ import time
 
 import gi
 gi.require_version('Gtk', '3.0')
+gi.require_version('Gdk', '3.0')
 from gi.repository import Gdk, Gtk
 import numpy as np
 
@@ -55,6 +56,11 @@ void main() {
 }
 '''
 
+DEMO_ARM_COLOR = (.56, .88, .65)
+DEMO_COLLISION_COLOR = (1., .13, .10)
+WRIST_CENTER_LINKS = {'left_waist1_Link': 'left', 'right_waist1_Link': 'right',
+                     'left_waist2_Link': 'left', 'right_waist2_Link': 'right'}
+
 
 class ModelView(Gtk.Box):
     def __init__(self):
@@ -66,6 +72,8 @@ class ModelView(Gtk.Box):
         self.gripper_positions = {'left': 1., 'right': 1.}
         self.gripper_fresh = set()
         self.fresh = False
+        self.demo = False
+        self.wrist_collision = {}
         self.program = None
         self.buffers = []
         self.render_error = None
@@ -132,11 +140,30 @@ class ModelView(Gtk.Box):
         values = []
         for side, title in [('left', '左爪'), ('right', '右爪')]:
             if self.tool_geometry['arms'][side]['installed']:
-                values.append(f'{title}实测 {self.gripper_positions[side]*100:.1f}%'
+                source = '模拟' if self.demo else '实测'
+                values.append(f'{title}{source} {self.gripper_positions[side]*100:.1f}%'
                               if side in self.gripper_fresh else title+'开度未更新 · 灰色参考')
         pending = any(s['installed'] and not s['confirmed'] for s in self.tool_geometry['arms'].values())
-        self.tool_note.set_text('；'.join(values)+'。\n开度来自夹爪反馈，指节几何为近似；绿色固定 TCP 不随开合移动。'
+        self.tool_note.set_text('；'.join(values)+('。\n开度来自模型演示，指节几何为近似；绿色固定 TCP 不随开合移动。'
+                               if self.demo else '。\n开度来自夹爪反馈，指节几何为近似；绿色固定 TCP 不随开合移动。')
                                + (' 工具 TCP 待核对。' if pending else ''))
+
+    def visual_color(self, visual):
+        """Demo colors are stable even when input stops; red means wrist envelope only."""
+        color = visual.color[:3]
+        if self.demo and not visual.tool_part and visual.link.startswith(('left_', 'right_')):
+            side = WRIST_CENTER_LINKS.get(visual.link)
+            return DEMO_COLLISION_COLOR if self.wrist_collision.get(side, False) else DEMO_ARM_COLOR
+        if self.tint.get_active() and self.fresh and not visual.tool_part:
+            if visual.link.startswith('left_'):
+                color = (.16, .66, .76)
+            elif visual.link.startswith('right_'):
+                color = (.96, .48, .19)
+        if not self.fresh and not visual.tool_part:
+            color = (.48, .54, .62)
+        if visual.tool_part and visual.tool_part != 'tcp' and visual.side not in self.gripper_fresh:
+            color = (.39, .42, .46)
+        return color
 
     def visual_local(self, visual):
         return visual.local @ jaw_transform(visual, self.gripper_positions.get(visual.side, 1.))
@@ -297,16 +324,7 @@ class ModelView(Gtk.Box):
                 if not self.visible(visual):
                     continue
                 self.matrix('model', transforms[visual.link] @ self.visual_local(visual))
-                color = np.array(visual.color[:3])
-                if self.tint.get_active() and self.fresh and not visual.tool_part:
-                    if visual.link.startswith('left_'):
-                        color = np.array([.16, .66, .76])
-                    elif visual.link.startswith('right_'):
-                        color = np.array([.96, .48, .19])
-                if not self.fresh and not visual.tool_part:
-                    color = np.array([.48, .54, .62])
-                if visual.tool_part and visual.tool_part != 'tcp' and visual.side not in self.gripper_fresh:
-                    color = np.array([.39, .42, .46])
+                color = np.array(self.visual_color(visual))
                 GL.glUniform3fv(self.uniforms['color'], 1, color.astype(np.float32))
                 GL.glUniform1i(self.uniforms['floor_mode'], 0)
                 GL.glBindVertexArray(vao)
@@ -323,7 +341,17 @@ class ModelView(Gtk.Box):
             self.fail(exc)
         return True
 
-    def update(self, hardware, live_arms=True, grippers=None):
+    def update(self, hardware, live_arms=True, grippers=None, *, demo=False, demo_active=False,
+               wrist_collision=None):
+        if self.demo != demo:
+            # Neither source may inherit the other source's pose or be labelled as its feedback.
+            self.positions = {}
+            self.gripper_positions = {'left': 1., 'right': 1.}
+            self.received_pose = False
+            self.wrist_collision = {}
+        self.demo = demo
+        if demo and wrist_collision is not None:
+            self.wrist_collision = dict(wrist_collision)
         self.gripper_fresh = set(grippers or {})
         self.gripper_positions.update(grippers or {})
         self.update_tool_note()
@@ -334,6 +362,17 @@ class ModelView(Gtk.Box):
                 self.received_pose = True
                 self.reset_camera()
         if not self.render_error:
-            self.title.set_text('实体模型 · 实测双臂 / 折叠关节' if self.fresh else
-                                '实体模型 · 静态参考' if not live_arms else '实体模型 · 无新反馈，保留最后姿态')
+            if demo:
+                title = ('模型 Demo · 模拟双臂 / 折叠关节' if self.fresh else
+                         '模型 Demo · 等待新数据，保留姿态' if demo_active else
+                         '模型 Demo · 已停止，保留姿态' if self.received_pose else '模型 Demo · 等待启动')
+                warning = [name for side, name in [('left', '左腕'), ('right', '右腕')]
+                           if self.wrist_collision.get(side)]
+                title += '\n浅绿：演示双臂；红色腕部：联合限位干涉区（近似）'
+                if warning:
+                    title += ' · '+ ' / '.join(warning)
+                self.title.set_text(title)
+            else:
+                self.title.set_text('实体模型 · 实测双臂 / 折叠关节' if self.fresh else
+                                    '实体模型 · 静态参考' if not live_arms else '实体模型 · 无新反馈，保留最后姿态')
         self.area.queue_render()

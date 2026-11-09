@@ -3,6 +3,8 @@ import math
 import queue
 import threading
 
+import gi
+gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from .waypoints import WaypointStore, capture, fresh_frame, map_binding

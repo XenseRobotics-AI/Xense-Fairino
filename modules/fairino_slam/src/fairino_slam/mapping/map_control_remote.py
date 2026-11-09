@@ -63,8 +63,8 @@ def run(*args, timeout=30):
 
 
 def validate_name(name):
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', name):
-        raise ValueError('地图名请使用 1–80 个英文字母、数字、下划线或短横线')
+    if not re.fullmatch(r'[A-Za-z0-9\u3400-\u4dbf\u4e00-\u9fff][A-Za-z0-9_\u3400-\u4dbf\u4e00-\u9fff-]{0,79}', name):
+        raise ValueError('地图名请使用 1–80 个汉字、英文字母、数字、下划线或短横线，并以汉字、字母或数字开头')
     return name
 
 
@@ -262,11 +262,11 @@ class ROS:
             raise RuntimeError('建图暂停状态未达到要求')
 
     def save(self, name):
+        destination = MAPS / validate_name(name)
         from slam_toolbox.srv import SerializePoseGraph
         self.pause(True)
         interval = self.params('/slam_toolbox', ['map_update_interval'])['map_update_interval'] or 10
         self.spin(min(30, max(1, interval)) + .5)
-        destination = MAPS / validate_name(name)
         destination.mkdir(parents=True, exist_ok=False)
         # Save a separate map and pose graph; never overwrite maps/active.
         run('ros2', 'run', 'nav2_map_server', 'map_saver_cli', '-f', str(destination / 'map'),

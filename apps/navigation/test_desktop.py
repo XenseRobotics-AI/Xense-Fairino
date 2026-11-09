@@ -24,7 +24,8 @@ class TargetTests(unittest.TestCase):
     def test_absolute_coordinates_and_degrees_without_command(self):
         target = Target()
         target.set(['-1.2', '3', '90'], frame())
-        self.assertEqual(target.request(frame()), {'x': -1.2, 'y': 3., 'yaw': math.pi/2, 'session_id': 'A'})
+        self.assertEqual(target.request(frame()), {'x': -1.2, 'y': 3., 'yaw': math.pi/2, 'session_id': 'A',
+                                                  'heading_mode': 'hold_initial', 'arrival_heading': 1})
         self.assertEqual(target.label, '待发送')
         self.assertIsNone(target.goal_id)
 
@@ -153,7 +154,7 @@ class DriveTests(unittest.TestCase):
         drive.run()
         c.send.assert_called_once_with(keys=(), focused=True)
         self.assertTrue(drive.args.navigation)
-        self.assertEqual((drive.args.linear, drive.args.angular), (.06, .1))
+        self.assertEqual((drive.args.linear, drive.args.angular), (.1, .2))
         self.assertTrue(drive.done.is_set())
 
     def test_motor_ready_phase_does_not_claim_navigation_is_ready(self):

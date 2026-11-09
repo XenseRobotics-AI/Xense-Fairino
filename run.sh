@@ -9,6 +9,7 @@ if (($#)); then shift; fi
 case "$COMMAND" in
   console) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" "$@" ;;
   teleop) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" --page teleop "$@" ;;
+  slam) exec "$FAIRINO_PYTHON" "$ROOT/tools/slam.py" "$@" ;;
   gripper) exec "$FAIRINO_PYTHON" "$ROOT/apps/gripper_control/app.py" "$@" ;;
   status) exec "$FAIRINO_PYTHON" "$ROOT/tools/inspect_robot.py" "$@" ;;
   network) exec "$FAIRINO_PYTHON" "$ROOT/tools/network_check.py" "$@" ;;
@@ -34,7 +35,9 @@ case "$COMMAND" in
     cat <<'HELP'
 法奥机器人控制项目
   bash run.sh console                   集成工作台：连接、模型、键控、地图、遥操
-  bash run.sh console --demo            工作台离线预览，不连接机器人
+  bash run.sh console --demo            工作台离线演示，PICO 可控制模型
+  bash run.sh teleop --demo             打开 PICO 模型演示，不连接机器人
+  bash run.sh slam help                 内置 SLAM：配置、导航、部署、离线检查
   bash run.sh teleop                    打开遥操界面，不自动使能
   bash run.sh vr --grippers --body-lift  PICO 显式启用 Trigger 夹爪和右摇杆升降
   bash run.sh vr --tcp-tool taccap --grippers --gripper-speed-rad-s 0.75  已核对安装后的指尖 TCP 遥操
@@ -77,7 +80,7 @@ case "$COMMAND" in
   bash run.sh pico preview              虚拟相对目标预览
   bash run.sh pico fairino --check       机器人/运动学只读检查
   bash run.sh pico latency --duration 25  PICO 时间戳至电脑的链路测量
-  bash run.sh vr                        450 Hz 面对面遥操，自动使能并先回 Home
+  bash run.sh vr                        联合限位 IK 面对面遥操，自动使能并先回 Home
   bash run.sh vr --mode first_person    第一人称遥操，同侧手柄控制同侧手臂与夹爪
   bash run.sh vr --chassis              同时回正并使能底盘，左杆平移、右杆左右旋转
   bash run.sh diagnostics geometry      雷达机械位置离线分析

@@ -26,6 +26,9 @@ from apps.workbench.telemetry import Feedback, fresh_hardware
 from apps.workbench.teleop import TeleopPanel
 from apps.gripper_control.panel import GripperPanel
 from apps.gripper_control.feedback import measured_openings
+from apps.workbench.slam_support import ensure_slam
+
+ensure_slam()
 
 # Several independent features may share one page without sharing a controller.
 CONTROL_PAGES = {'base': 'map', 'joints': 'joints', 'body': 'body', 'tcp': 'tcp'}
@@ -564,12 +567,23 @@ class Workbench:
             gripper_state = (self.gripper.session.snapshot() if self.gripper.session
                              and not self.gripper.session.finished() else {})
             jaws = measured_openings(gripper_state, self.teleop.gripper_feedback)
-            self.model.update(upper, live_arms=self.args.live_arms, grippers=jaws)
-            state = self.model.model.body_state(upper)
+            demo_state = self.teleop.model_snapshot()
+            if demo_state is not None:
+                model_hardware = demo_state['hardware']
+                self.model.update(model_hardware, live_arms=demo_state['fresh'],
+                    grippers=demo_state['grippers'], demo=True,
+                    demo_active=demo_state['active'],
+                    wrist_collision=demo_state.get('wrist_collision', {}))
+                body_prefix = '身体（模型演示）'
+            else:
+                model_hardware = upper
+                self.model.update(upper, live_arms=self.args.live_arms, grippers=jaws)
+                body_prefix = '身体'
+            state = self.model.model.body_state(model_hardware)
             self.body_readout.set_text(
-                f'身体：{state["height"]:.1f}% · 相对低位约 {state["height_mm"]:.1f} mm\n'
+                f'{body_prefix}：{state["height"]:.1f}% · 相对低位约 {state["height_mm"]:.1f} mm\n'
                 f'前倾 {state["forward"]:.1f}° · 侧倾 {state["roll"]:.1f}° · 腰转 {state["yaw"]:.1f}°'
-                if state else '身体：反馈未更新，当前姿态未知')
+                if state else body_prefix + '：等待数据')
         except (ValueError, KeyError) as exc:
             self.message.set_text('模型反馈不可用：' + str(exc))
         for key, entry in self.entries.items():

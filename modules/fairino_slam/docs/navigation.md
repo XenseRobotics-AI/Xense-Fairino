@@ -27,7 +27,7 @@
 
 | 参数 | 当前配置值 | 含义 |
 |---|---|---|
-| `controller_frequency` | 6.0 Hz | 读取位姿、选点、计算速度的周期 |
+| `controller_frequency` | 3.0 Hz | 读取位姿、选点、计算速度的周期 |
 | `FollowPath.lookahead_distance` | 0.20 m | 当前位置到路径预瞄点的欧氏直线距离 |
 | `FollowPath.heading_mode` | `hold_initial` | `hold_initial` 保持当前朝向；`path_tangent` 沿路径方向并使用输入的终点朝向 |
 | `FollowPath.position_gain` | 0.8 /s | 位置误差到平移速度的比例增益 |

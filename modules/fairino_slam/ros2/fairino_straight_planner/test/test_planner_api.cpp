@@ -1,3 +1,4 @@
+#include <limits>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -149,6 +150,18 @@ void return_value_category_is_preserved()
   CHECK(&result == &planner.path);
   CHECK(result == Path({4, 5, 6}));
 }
+void smac_unspecified_heading_is_only_allowed_for_fallback_samples()
+{
+  using fairino_straight_planner::compat::usable_orientation;
+  CHECK(usable_orientation(0., 0., 0., 1., false));
+  CHECK(usable_orientation(0., 0., 0., -1., true));
+  CHECK(!usable_orientation(0., 0., 0., 0., false));
+  CHECK(usable_orientation(0., 0., 0., 0., true));
+  CHECK(!usable_orientation(0., 0., 0., 1e-6, true));
+  CHECK(!usable_orientation(0., 0., 0., 2., true));
+  CHECK(!usable_orientation(std::numeric_limits<double>::quiet_NaN(), 0., 0., 1., true));
+  CHECK(!usable_orientation(0., 0., 0., std::numeric_limits<double>::infinity(), true));
+}
 }  // namespace
 
 int main()
@@ -160,7 +173,8 @@ int main()
     callback_overload_is_preferred_if_both_exist();
     planner_and_callback_exceptions_keep_their_original_type();
     return_value_category_is_preserved();
-    std::cout << "Planner API compatibility: 6 groups passed\n";
+    smac_unspecified_heading_is_only_allowed_for_fallback_samples();
+    std::cout << "Planner API compatibility: 7 groups passed\n";
     return 0;
   } catch (const std::exception & error) {
     std::cerr << error.what() << '\n';

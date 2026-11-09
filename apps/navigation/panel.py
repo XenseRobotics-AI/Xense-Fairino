@@ -8,7 +8,9 @@ import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 
-from .desktop import Target, DriveSession, active_goal, context, execute
+from .desktop import (Target, DriveSession, active_goal, context, execute,
+                      navigation_status, configured_heading_mode)
+from fairino_slam.navigation.waypoint_panel import WaypointPanel
 
 
 class NavigationPanel(Gtk.Box):
@@ -18,7 +20,8 @@ class NavigationPanel(Gtk.Box):
         self.map_panel = map_panel
         self.acquire = acquire or (lambda *_: True)
         self.release = release or (lambda *_: None)
-        self.target = Target()
+        self.target = Target(configured_heading_mode())
+        self.setting_waypoint = False
         self.drive = None
         self.drive_message = '导航底盘未接入'
         self.lease = False
@@ -83,7 +86,9 @@ class NavigationPanel(Gtk.Box):
         self.buttons['end'] = button
         self.footer.pack_start(button, False, False, 0)
         self.pack_start(self.footer, False, False, 0)
-        hint = Gtk.Label(label='0° 沿地图 +X。选点或输入仅设置目标，点击“开始导航”才执行。', xalign=0)
+        hint = Gtk.Label(label=('行进保持启动朝向，到点后转向目标朝向。' if self.target.heading_mode == 'hold_initial'
+                                else '行进沿路径转向，到点后对齐目标朝向。')
+                         +'0° 沿地图 +X。设置目标后点击“开始导航”才执行。', xalign=0)
         hint.set_line_wrap(True)
         hint.set_max_width_chars(32)
         details = self
@@ -116,6 +121,15 @@ class NavigationPanel(Gtk.Box):
                 label.connect('notify::label', lambda label, _: label.set_tooltip_text(label.get_text()))
             # Action results remain visible even when the detail expander is closed.
             self.message.connect('notify::label', lambda label, _: self.map_panel.message.set_text(label.get_text()))
+        self.waypoint_panel = WaypointPanel(self)
+        # Keep the workbench's narrow sidebar usable even when the list expands.
+        for row in self.waypoint_panel.get_children():
+            if isinstance(row, Gtk.Box):
+                row.set_orientation(Gtk.Orientation.VERTICAL)
+        self.waypoint_panel.info.set_max_width_chars(30)
+        waypoint_expander = Gtk.Expander(label='已保存位置点')
+        waypoint_expander.add(self.waypoint_panel)
+        self.pack_start(waypoint_expander, False, False, 0)
         # Hardware actions are unavailable from the very first demo frame.
         if self.is_demo():
             self.tick()
@@ -179,7 +193,7 @@ class NavigationPanel(Gtk.Box):
         self.map_panel.canvas.draw_idle()
 
     def edit_target(self, *_):
-        if len(self.entries) != 3 or self.busy or self.active():
+        if len(self.entries) != 3 or self.busy or self.active() or self.setting_waypoint:
             return
         try:
             self.target.set([entry.get_text() for entry in self.entries], self.frame())
@@ -192,6 +206,22 @@ class NavigationPanel(Gtk.Box):
             self.target.clear()
             self.message.set_text('请填写完整目标坐标，并先选用地图、启动定位。')
         self.draw_target()
+
+    def use_waypoint(self, point, frame):
+        if self.locked() or self.map_panel.busy:
+            raise ValueError('当前导航正在执行操作，请结束后再选择位置点')
+        self.target.set_saved(point, frame)
+        self.setting_waypoint = True
+        try:
+            for entry, key in zip(self.entries[:2], ('x', 'y')):
+                entry.set_text(format(self.target.pose[key], '.15g'))
+            self.entries[2].set_text(format(math.degrees(self.target.pose['yaw']), '.10g'))
+        finally:
+            self.setting_waypoint = False
+        self.map_panel.follow.set_active(False)
+        self.draw_target()
+        self.map_panel.plot.fit()
+        self.message.set_text('已设置保存点“'+point['name']+'”；可预览路径，再开始导航。')
 
     def set_picked_target(self, x, y, yaw):
         if self.locked() or self.map_panel.busy:
@@ -337,6 +367,7 @@ class NavigationPanel(Gtk.Box):
                 button.set_sensitive(bool(name in ('pick', 'plan') and context(frame)
                                           and (name == 'pick' or self.target.pose)))
             self.status.set_text('离线演示 · 目标：'+(self.target.label or '未设置'))
+            self.waypoint_panel.set_sensitive(False)
             return True
         now = time.monotonic()
         if self.drive:
@@ -385,6 +416,8 @@ class NavigationPanel(Gtk.Box):
                     self.target.label = '结果待核对'
                     # No retry until fresh status or explicit cancel.
                 if binding == self.target.context:
+                    if action in ('plan', 'goal') and not error:
+                        self.target.accept_heading(result)
                     if action == 'plan' and not error:
                         self.target.points = result.get('points', [])
                     if action == 'goal' and not error:
@@ -416,8 +449,8 @@ class NavigationPanel(Gtk.Box):
         ready = fresh and self.state.get('localization_ready') and self.state.get('controller_ready')
         if self.received:
             drive = self.preparation_status(frame)
-            nav = ('状态过期 / 导航未启动' if not fresh else '就绪' if ready
-                   else self.state.get('localization_reason', '等待启动 / 就绪'))
+            nav = ('状态过期 / 导航未启动' if not fresh else navigation_status(
+                self.state, self.target.goal_id, connecting=self.drive is not None))
             loc = frame.get('localization') or {}
             if fresh and self.fresh_map() and not loc.get('active'):
                 nav = '定位未启动'
@@ -444,6 +477,8 @@ class NavigationPanel(Gtk.Box):
             self.buttons['pick'].set_sensitive(bool(free and not self.active() and self.fresh_map() and context(frame)))
         for entry in self.entries:
             entry.set_sensitive(free and not self.active())
+        if hasattr(self, "waypoint_panel"):
+            self.waypoint_panel.tick()
         if now >= self.next_poll and not self.polling and not self.busy and not self.shutdown:
             self.next_poll = now+1.
             self.poll()

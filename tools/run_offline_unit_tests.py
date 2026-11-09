@@ -90,7 +90,9 @@ def main():
                ['discover', '-p', 'test_*.py']) for name in APPS]
     suites += [('pico-fairino', ROOT/'scripts/pico4/fairino', pico_python,
                 ['discover', '-p', 'test_*.py']),
-               ('pico-receiver', ROOT/'scripts/pico4', pico_python, ['test_pico'])]
+               ('pico-receiver', ROOT/'scripts/pico4', pico_python, ['test_pico']),
+               ('slam', ROOT/'modules/fairino_slam', base_python,
+                ['discover', '-s', 'tests', '-t', '.', '-p', 'test_*.py'])]
     report = {'started_at': dt.datetime.now().astimezone().isoformat(),
               'scope': 'Offline repository unit tests; no robot connection or motion',
               'guard_scope': 'Linux seccomp denies IPv4/IPv6/packet socket creation in suites and descendants, including loopback. Python audit hooks also deny external DNS and common robot/network executables. Unix sockets remain available; not a general sandbox.',
@@ -102,6 +104,7 @@ def main():
                'FAIRINO_TCP_DIR': str(ROOT/'apps/fairino_tcp_probe'),
                'XENSE_LOG_DIR': str(output/'sdk-logs'),
                'PYTHONPATH': os.pathsep.join([str(guard_dir), str(ROOT/'src'),
+                                            str(ROOT/'modules/fairino_slam/src'),
                                             os.environ.get('PYTHONPATH', '')])}
         check = '''import socket, subprocess, sys
 assert getattr(sys.modules.get('sitecustomize'), 'OFFLINE_AUDIT_INSTALLED', False), 'Audit hook not installed'

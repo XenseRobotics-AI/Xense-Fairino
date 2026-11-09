@@ -124,14 +124,14 @@ core::PreparedGrid StraightLinePlanner::snapshot(const core::Checkpoint & checkp
   return core::prepare_grid(raw, radius, checkpoint);
 }
 
-void StraightLinePlanner::validatePose(const geometry_msgs::msg::PoseStamped & pose) const
+void StraightLinePlanner::validatePose(
+  const geometry_msgs::msg::PoseStamped & pose, bool allow_unspecified) const
 {
   const auto & p = pose.pose.position;
   const auto & q = pose.pose.orientation;
-  const double norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
   if (pose.header.frame_id != global_frame_ ||
     !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
-    !std::isfinite(norm) || std::abs(norm - 1.) > 1e-3)
+    !compat::usable_orientation(q.x, q.y, q.z, q.w, allow_unspecified))
   {
     throw nav2_core::PlannerException("Planner poses must be finite, normalized and in the global frame");
   }
@@ -242,7 +242,7 @@ nav_msgs::msg::Path StraightLinePlanner::createPlan(
       route.push_back(first);
       for (const auto & pose : raw_path.poses) {
         checkpoint();
-        validatePose(pose);
+        validatePose(pose, true);  // Smac XY-only intermediate poses are valid input here.
         route.push_back({pose.pose.position.x, pose.pose.position.y});
       }
       route.push_back(last);

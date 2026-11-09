@@ -37,7 +37,8 @@ public:
 private:
   void checkInflation() const;
   core::PreparedGrid snapshot(const core::Checkpoint & checkpoint) const;
-  void validatePose(const geometry_msgs::msg::PoseStamped & pose) const;
+  void validatePose(
+    const geometry_msgs::msg::PoseStamped & pose, bool allow_unspecified = false) const;
   nav_msgs::msg::Path makePath(
     const std::vector<core::Point> & points,
     const geometry_msgs::msg::PoseStamped & start,

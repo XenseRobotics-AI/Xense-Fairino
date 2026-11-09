@@ -22,82 +22,12 @@ import pexpect
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 PREFIX = 'MAP_VIEWER '
-sys.path.insert(0, str(ROOT / 'tools'))
-from map_mode import execute as map_action
-
-
-class Stream:
-    def __init__(self, args, password):
-        self.args = args
-        self.password = password
-        self.control_password = password
-        self.lock = threading.Lock()
-        self.stop = threading.Event()
-        self.latest = {}
-        self.thread = threading.Thread(target=self.run, daemon=True)
-
-    def snapshot(self):
-        with self.lock:
-            return dict(self.latest)
-
-    def put(self, item):
-        with self.lock:
-            if item['type'] == 'clear_map':
-                self.latest.pop('map', None)
-            self.latest[item['type']] = item
-            if item['type'] == 'frame':
-                self.latest['received'] = time.monotonic()
-
-    def run(self):
-        child = None
-        try:
-            script = (HERE / 'remote_stream.py').read_text()
-            command = (
-                'source /opt/ros/humble/setup.bash && '
-                'export ROS_DOMAIN_ID=1 ROS_LOCALHOST_ONLY=0 RMW_IMPLEMENTATION=rmw_fastrtps_cpp; '
-                'export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/fairino_AMR_project_B/config/fastrtps_udp.xml; '
-                'exec python3 -u -c ' + shlex.quote(script))
-            if self.args.check:
-                command += ' --duration ' + str(self.args.duration)
-            child = pexpect.spawn('ssh', [
-                '-tt', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=8',
-                '-o', 'ServerAliveInterval=3', '-o', 'ServerAliveCountMax=2',
-                self.args.user + '@' + self.args.host, 'bash -c ' + shlex.quote(command)],
-                encoding='utf-8', timeout=1, maxread=1048576, echo=False)
-            asked = False
-            tail = ''
-            connected = time.monotonic()
-            while not self.stop.is_set():
-                event = child.expect([r'(?i)password:', r'\r?\n', pexpect.EOF, pexpect.TIMEOUT])
-                if event == 0:
-                    if asked:
-                        raise RuntimeError('SSH 密码验证失败')
-                    child.sendline(self.password)
-                    self.password = None
-                    asked = True
-                elif event == 1:
-                    line = child.before.strip()
-                    if line.startswith(PREFIX):
-                        self.put(json.loads(line[len(PREFIX):]))
-                    elif line:
-                        tail = (tail + '\n' + line)[-1000:]
-                elif event == 2:
-                    child.close()
-                    if child.exitstatus != 0 or not self.args.check:
-                        raise RuntimeError('SSH 数据连接已结束：' + tail[-500:])
-                    break
-                if time.monotonic() - connected > 20 and 'frame' not in self.snapshot():
-                    raise TimeoutError('连接后未收到地图观察进程的数据：' + tail[-500:])
-        except Exception as exc:
-            self.put({'type': 'error', 'message': str(exc)})
-        finally:
-            self.password = None
-            if child is not None and child.isalive():
-                child.sendcontrol('c')
-                try:
-                    child.expect(pexpect.EOF, timeout=3)
-                except (pexpect.TIMEOUT, pexpect.EOF):
-                    child.close(force=True)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from apps.workbench.slam_support import ensure_slam
+ensure_slam()
+from fairino_slam.mapping.client import execute as map_action
+from fairino_slam.mapping.viewer import Stream, footprint_outline
 
 
 def matching_health(frame, lag=0):
@@ -272,6 +202,12 @@ class MapPlot:
                                          zorder=5, label='控制器全局路径')
         self.local_path, = self.ax.plot([], [], '-', color=COLORS['local'], linewidth=2.4,
                                         zorder=6, label='局部预测路径')
+        self.footprint_artists = {}
+        for key, color, title in (('local', '#e59b38', '局部碰撞轮廓'),
+                                  ('global', '#617bc6', '全局保守轮廓')):
+            artist, = self.ax.plot([], [], '--', color=color, linewidth=1.3,
+                                    zorder=7, label=title)
+            self.footprint_artists[key] = artist
         self.navigation_pose = None
         self.goal_marker, = self.ax.plot([], [], marker='x', linestyle='none', color='#c45c4b',
                                         markersize=12, markeredgewidth=2, zorder=15, label='导航目标')
@@ -286,7 +222,7 @@ class MapPlot:
         self.scale_text = self.ax.text(.035, .035, '', transform=self.ax.transAxes,
                                        fontsize=8, color=COLORS['ink'], zorder=20,
                                        bbox=dict(facecolor=COLORS['paper'], edgecolor='none', alpha=.9, pad=2))
-        self.layers = dict.fromkeys(('particles', 'scans', 'trail', 'uncertainty', 'local_radar', 'paths'), True)
+        self.layers = dict.fromkeys(('particles', 'scans', 'trail', 'uncertainty', 'local_radar', 'paths', 'footprints'), True)
         self.ax.callbacks.connect('xlim_changed', self._scale)
         self.ax.callbacks.connect('ylim_changed', self._scale)
         self._legend_signature = None
@@ -369,6 +305,8 @@ class MapPlot:
         self.uncertainty_note.set_visible(False)
         for artist in (self.path_artist, self.global_path, self.local_path):
             artist.set_visible(self.layers['paths'])
+        for artist in self.footprint_artists.values():
+            artist.set_visible(self.layers['footprints'] and bool(len(artist.get_xdata())))
         target_visible = self.layers['paths'] and self.navigation_pose is not None
         self.goal_marker.set_visible(target_visible)
         self.goal_text.set_visible(target_visible)
@@ -458,7 +396,17 @@ class MapPlot:
                                (self.local_front, local.get('/front/scan', [])), (self.local_back, local.get('/back/scan', []))):
             artist.set_offsets(points_array(values))
         pose = pose_value(frame.get('pose')) if fresh and not frame.get('tf_error') else None
-        candidate = frame.get('map_mode') == 'saved' and not (frame.get('localization') or {}).get('ready')
+        # Nav2 footprints already include robot pose and padding in map frame.
+        # Bind to the displayed map revision so old polygons never cross maps.
+        revision = frame.get('map_revision')
+        footprint_visible = bool(fresh and pose is not None and grid is not None
+                                 and grid.get('frame') == frame.get('frame')
+                                 and type(revision) is int
+                                 and grid.get('map_revision') == revision)
+        for key, artist in self.footprint_artists.items():
+            outline = footprint_outline(frame, key, lag) if footprint_visible else []
+            artist.set_data([p[0] for p in outline], [p[1] for p in outline])
+        candidate = frame.get('map_mode') == 'saved'  and not (frame.get('localization') or {}).get('ready')
         self.robot.set_data([pose[0]] if pose else [], [pose[1]] if pose else [])
         self.robot.set_color('#d18a16' if candidate else '#c53451')
         if pose is not None:
