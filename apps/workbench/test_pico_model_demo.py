@@ -20,6 +20,7 @@ def sample_state(**updates):
                                position=[0.]*20),
                  grippers={'left': .25, 'right': .75}, phase='跟随',
                  sensitivity=.25, wrist_guard_enabled=True,
+                 ik_backend='native', ik_requested_backend='native',
                  wrist_collision={'left': False, 'right': False})
     state.update(updates)
     return state
@@ -69,6 +70,7 @@ class ModelDemoPanelTests(unittest.TestCase):
         self.assertTrue(args[0].endswith('/.local/pico4/env/bin/python'))
         self.assertTrue(args[2].endswith('/vr_demo.py'))
         self.assertIn('--freeze-buttons', args)
+        self.assertEqual(args[args.index('--ik-backend')+1], 'native')
         self.assertIn('--grippers', args)
         self.assertIn('--body-lift', args)
         self.assertEqual(args[args.index('--mode')+1], 'first_person')
@@ -83,10 +85,125 @@ class ModelDemoPanelTests(unittest.TestCase):
         self.assertFalse(self.panel.runtime_target.get_sensitive())
         self.assertFalse(self.panel.ik_backend.get_sensitive())
 
+    def test_demo_allows_both_ik_backends_and_guard_choices_before_launch(self):
+        self.demo()
+        for backend in ('native', 'vendor'):
+            for guarded in (True, False):
+                with self.subTest(backend=backend, guarded=guarded):
+                    self.assertTrue(self.panel.ik_backend.get_sensitive())
+                    self.panel.ik_backend.set_active_id(backend)
+                    self.assertTrue(self.panel.wrist_controls.toggle.get_sensitive())
+                    self.panel.wrist_controls.toggle.set_active(guarded)
+                    self.launch.return_value = NS(stdin=io.StringIO(), poll=lambda: None)
+                    self.panel.start()
+                    args = self.launch.call_args.args[0]
+                    self.assertEqual(args[args.index('--ik-backend')+1], backend)
+                    self.assertEqual('--disable-wrist-guard' in args, not guarded)
+                    self.assertEqual(self.panel.session_ik_backend, backend)
+                    self.assertFalse(self.panel.ik_backend.get_sensitive())
+                    self.credentials.assert_not_called()
+                    self.acquire.assert_not_called()
+                    self.assertEqual(self.panel.process.stdin.getvalue(), '')
+                    self.panel.process.poll = lambda: 0
+                    self.panel.tick()
+                    self.assertFalse(self.panel.ik_backend.get_sensitive())  # exit notification pending
+                    self.panel.events.put(('demo_exit', 0))
+                    self.panel.tick()
+                    self.assertTrue(self.panel.ik_backend.get_sensitive())
+
+    def test_demo_preserves_selected_vendor_and_whole_console_demo_allows_choice(self):
+        self.panel.ik_backend.set_active_id('vendor')
+        self.demo()
+        self.assertEqual(self.panel.ik_backend.get_active_id(), 'vendor')
+        self.assertTrue(self.panel.ik_backend.get_sensitive())
+        other = TeleopPanel(self.credentials, self.acquire, self.release, demo=True)
+        self.addCleanup(other.destroy)
+        self.assertTrue(other.ik_backend.get_sensitive())
+        other.ik_backend.set_active_id('vendor')
+        other.start()
+        args = self.launch.call_args.args[0]
+        self.assertEqual(args[args.index('--ik-backend')+1], 'vendor')
+        self.assertEqual(other.session_ik_backend, 'vendor')
+
+    def test_demo_status_reports_actual_algorithm_and_independent_guard(self):
+        self.demo()
+        self.panel.start()
+        cases = (
+            ('native', True, '联合限位 IK'),
+            ('demo_joint_box_only', False, '本地数值 IK（联合限位关闭）'),
+            ('vendor', True, '原厂 IK + 腕部联合限位检查'),
+            ('vendor', False, '原厂 IK（联合限位关闭）'),
+        )
+        for backend, enabled, label in cases:
+            with self.subTest(backend=backend, enabled=enabled):
+                self.frame(sample_state(ik_backend=backend, wrist_guard_enabled=enabled))
+                self.assertIn('IK：'+label, self.panel.status.get_text())
+        self.assertNotIn('450 Hz', self.panel.ik_backend.get_tooltip_text())
+        self.frame(sample_state(ik_backend='vendor', wrist_limited=True))
+        self.assertIn('联合限位已缩小目标', self.panel.status.get_text())
+        self.assertNotIn('完整手柄目标仍保留', self.panel.status.get_text())
+
+    def test_running_vendor_demo_remains_vendor_while_guard_changes(self):
+        self.demo()
+        self.panel.ik_backend.set_active_id('vendor')
+        self.panel.start()
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.assertIn('guard_off', self.process.stdin.getvalue())
+        self.frame(sample_state(ik_backend='vendor', ik_requested_backend='vendor',
+                                wrist_guard_enabled=False))
+        self.assertEqual(self.panel.session_ik_backend, 'vendor')
+        self.assertEqual(self.panel.ik_backend.get_active_id(), 'vendor')
+        self.assertTrue(self.panel.wrist_controls.toggle.get_sensitive())
+        self.assertFalse(self.panel.ik_backend.get_sensitive())
+        self.assertIn('原厂 IK（联合限位关闭）', self.panel.status.get_text())
+
     def test_demo_receiver_service_is_available_without_robot_credentials(self):
         self.demo()
         self.panel.start_service()
         self.assertEqual(self.launch.call_args.args[0][-2:], ['pico', 'service'])
+        self.credentials.assert_not_called()
+        self.acquire.assert_not_called()
+
+    def test_valid_unconfirmed_tool_can_be_simulated_but_cannot_start_real_robot(self):
+        from apps.fairino_tcp_probe.tool_frames import load_geometry
+        geometry = load_geometry()
+        for side, angle in (('left', 90.), ('right', -90.)):
+            geometry['arms'][side].update(installed=True, confirmed=False, roll_deg=angle)
+        with patch('apps.workbench.teleop.load_geometry', return_value=geometry):
+            self.demo()
+            self.panel.tcp_tool.set_active_id('taccap')
+            for backend in ('native', 'vendor'):
+                with self.subTest(backend=backend):
+                    self.panel.ik_backend.set_active_id(backend)
+                    self.launch.return_value = NS(stdin=io.StringIO(), poll=lambda: None)
+                    self.panel.start()
+                    args = self.launch.call_args.args[0]
+                    self.assertEqual(args[args.index('--tcp-tool')+1], 'taccap')
+                    self.assertEqual(self.panel.session_ik_backend, backend)
+                    self.credentials.assert_not_called()
+                    self.acquire.assert_not_called()
+                    self.panel.process.poll = lambda: 0
+                    self.panel.events.put(('demo_exit', 0))
+                    self.panel.tick()
+            self.panel.runtime_target.set_active_id('robot')
+            self.launch.reset_mock()
+            for backend in ('native', 'vendor'):
+                with self.subTest(real_backend=backend):
+                    self.panel.ik_backend.set_active_id(backend)
+                    self.panel.start()
+                    self.launch.assert_not_called()
+                    self.credentials.assert_not_called()
+                    self.acquire.assert_not_called()
+
+    def test_demo_still_rejects_invalid_tool_geometry(self):
+        from apps.fairino_tcp_probe.tool_frames import load_geometry
+        geometry = load_geometry()
+        geometry['arms']['left'].update(confirmed=False, roll_deg=math.nan)
+        with patch('apps.workbench.teleop.load_geometry', return_value=geometry):
+            self.demo()
+            self.panel.tcp_tool.set_active_id('taccap')
+            self.panel.start()
+        self.launch.assert_not_called()
         self.credentials.assert_not_called()
         self.acquire.assert_not_called()
 

@@ -244,10 +244,9 @@ class TeleopPanel(Gtk.Box):
     def target_changed(self, *_):
         model = self.model_demo_selected()
         if model:
-            self.ik_backend.set_active_id('native')
             self.chassis.set_active(False)
         self.target_help.set_text(
-            '模型演示：PICO 驱动右侧模型；腕部联合限位可开关，不连接或使能机器人。\n'
+            '模型演示：启动前可选择联合限位 IK 或原厂 IK；腕部联合限位可开关。\n'
             '每次从所选双臂 Home 和身体上位开始；可演示双臂、身体升降和夹爪，底盘暂不参与。'
             if model else '真机遥操：启动会连接并使能上半身；可按需启用夹爪、身体及底盘。')
         self.start_button.set_label('启动模型 Demo' if model else '启动遥操 · 使能上半身')
@@ -293,6 +292,13 @@ class TeleopPanel(Gtk.Box):
 
     def update_wrist_option(self):
         native = self.native_ik_selected() and not self.model_demo_selected()
+        self.ik_backend.set_tooltip_text(
+            'Demo 两种 IK 均在本机计算，默认 100 Hz，不连接机器人；启动后不能切换。\n'
+            '原厂 IK 可配合腕部联合限位检查；关闭限位后仍使用原厂 IK。\n'
+            '选择联合限位 IK 后关闭限位，则使用 Demo 专用无腕部联合约束的数值 IK。'
+            if self.model_demo_selected() else
+            '联合限位 IK 默认 100 Hz，原厂 IK 默认 450 Hz；启动后不能切换。\n'
+            '联合限位 IK 将腕部联合限位纳入求解，必须保持腕部保护开启。')
         if native and not self.wrist_controls.toggle.get_active():
             self.updating_wrist = True
             try:
@@ -372,7 +378,8 @@ class TeleopPanel(Gtk.Box):
                 raise ValueError('请选择有效的 IK 解算器')
             self.update_wrist_option()
             mode = self.tcp_tool.get_active_id()
-            tool_config(mode, load_geometry() if mode == 'taccap' else None, require_confirmed=True)
+            tool_config(mode, load_geometry() if mode == 'taccap' else None,
+                        require_confirmed=not self.model_demo_selected())
         except (ValueError, OSError) as exc:
             self.append(str(exc))
             return
@@ -452,6 +459,7 @@ class TeleopPanel(Gtk.Box):
         """Separate local process: never request credentials or acquire robot devices."""
         argv = [str(ROOT/'.local/pico4/env/bin/python'), '-u',
                 str(ROOT/'scripts/pico4/fairino/vr_demo.py'), '--gui-stdio',
+                '--ik-backend', self.ik_backend.get_active_id(),
                 '--mode', self.teleop_mode.get_active_id(), '--freeze-buttons',
                 '--tcp-tool', self.tcp_tool.get_active_id(),
                 '--home-preset', self.home_preset.get_active_id()]
@@ -467,7 +475,7 @@ class TeleopPanel(Gtk.Box):
             self.process = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
             self.session_target = 'model'
-            self.session_ik_backend = 'native'
+            self.session_ik_backend = self.ik_backend.get_active_id()
             self.demo_state, self.demo_received = None, 0.
             self.gripper_feedback = {}
             self.status.set_text('模型 Demo 启动中 · 等待 PICO 手柄数据；机器人未连接')
@@ -496,7 +504,7 @@ class TeleopPanel(Gtk.Box):
         for widget in (self.teleop_mode, self.ik_backend, self.home, self.home_preset, self.grippers, self.tcp_tool,
                        self.tool_settings, self.body_lift, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable)
-        for widget in (self.ik_backend, self.home, self.chassis, *self.gripper_serials.values()):
+        for widget in (self.home, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable and not model)
         for widget in (self.gripper_speed, *self.gripper_limits.values()):
             widget.set_sensitive(editable and self.grippers.get_active())
@@ -539,11 +547,26 @@ class TeleopPanel(Gtk.Box):
         if type(sensitivity) not in (int, float) or not math.isfinite(sensitivity):
             raise ValueError('模型灵敏度无效')
         self.demo_state, self.demo_received = state, time.monotonic()
-        text = f'模型 Demo · {state.get("phase", "跟随")} · 灵敏度 {sensitivity:g} · 仅显示模拟关节'
+        backend = state.get('ik_backend')
+        enabled = state.get('wrist_guard_enabled')
+        if backend == 'vendor':
+            ik_name = ('原厂 IK + 腕部联合限位检查' if enabled is True else
+                       '原厂 IK（联合限位关闭）' if enabled is False else
+                       '原厂 IK（联合限位状态未报告）')
+        elif backend == 'native':
+            ik_name = '联合限位 IK'
+        elif backend == 'demo_joint_box_only':
+            ik_name = '本地数值 IK（联合限位关闭）'
+        else:
+            ik_name = '未报告'
+        text = (f'模型 Demo · {state.get("phase", "跟随")} · 灵敏度 {sensitivity:g} · 仅显示模拟关节'
+                + '\nIK：'+ik_name)
         if state.get('message'):
             text += '\n'+str(state['message'])
         if state.get('ik_partial'):
             text += '\n当前为部分可行解，完整手柄目标仍保留'
+        if backend == 'vendor' and state.get('wrist_limited'):
+            text += '\n腕部联合限位已缩小目标；可向内收腕'
         self.status.set_text(text)
         heading = '双臂正前方已校准' if state.get('heading_calibrated') else '双臂正前方未校准 · 沿用原有追踪方向'
         yaw = state.get('heading_yaw_deg')
@@ -555,7 +578,6 @@ class TeleopPanel(Gtk.Box):
         self.gripper_status.set_text('模型夹爪：'+' · '.join(
             f'{label} {grippers[side]*100:.1f}%' for side, label in [('left', '左'), ('right', '右')]
             if side in grippers) if grippers else '模型夹爪演示未启用')
-        enabled = state.get('wrist_guard_enabled')
         if type(enabled) is bool:
             self.updating_wrist = True
             try:

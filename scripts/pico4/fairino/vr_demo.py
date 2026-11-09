@@ -2,10 +2,10 @@
 """PICO input -> local kinematic model. No robot connection or actuator API.
 
 This is an ideal position model, not a dynamics/latency/collision simulator:
-accepted joint targets become model positions directly. Both production input
-mapping and the production constrained IK are reused. A deliberate demo-only
-switch can replace that IK with individual-joint-box IK to show wrist envelope
-violations; it cannot affect the physical control process.
+accepted joint targets become model positions directly. The local vendor IK or
+the constrained numerical IK can be selected before starting; both share the
+same input mapping. A deliberate demo-only switch can remove the wrist envelope
+(using box-constrained IK for the native backend); physical control is separate.
 """
 import argparse
 import json
@@ -26,6 +26,7 @@ from tcp_core import ARMS, multiply, tcp_forward_matrix
 from tool_frames import DEFAULT_CONFIG, for_arm, load_geometry, tool_config
 from vr_cartesian import CartesianInput
 from vr_controls import JoystickControls, sensitivity_step
+from vr_core import validate
 from vr_heading import heading_alignment
 from vr_home import HOME_PRESETS, HomeMotion, load_home, resolve_home
 from vr_input import POSE_FRAMES, Stream, controller_sides, rotation_mapping
@@ -33,6 +34,7 @@ from vr_lift import LiftInput
 from vr_lift_presets import HIGH_PERCENT, PresetLiftPlanner
 from vr_native_ik import NativeIK
 from vr_native_input import NativeClutch
+from vr_plan import request as vendor_request
 from vr_timing import Deadline
 from wrist_guard import WristGuard
 
@@ -63,13 +65,24 @@ class DemoEngine:
     def __init__(self, *, mode='mirror_same_direction', sensitivity=.25, tools=None,
                  home_preset='default', freeze_buttons=False, body_lift=False,
                  grippers=False, max_openings=None, hand_mapping='auto',
-                 rotation_mode='auto', interpolation_delay_ms=12., wrist_guard=True):
+                 rotation_mode='auto', interpolation_delay_ms=12., wrist_guard=True,
+                 ik_backend='native'):
+        if ik_backend not in ('native', 'vendor'):
+            raise ValueError('模型 IK 须选择 native 或 vendor')
         if type(sensitivity) not in (int, float) or not math.isfinite(sensitivity) or not 0 < sensitivity <= 1.:
             raise ValueError('模型灵敏度须在 0–1 之间且大于零')
         self.mode, self.sensitivity = mode, sensitivity
+        self.ik_backend = ik_backend
         self.hands = controller_sides(mode, hand_mapping)
-        self.kin = ModelKinematics(tools or tool_config())
-        self.native = NativeIK(self.kin.tools)
+        if ik_backend == 'vendor':
+            # Pure local ctypes FK/IK, without any robot SDK/transport. Do not
+            # construct the native solver or require a C++ compiler on this path.
+            from vendor_kinematics import VendorKinematics
+            self.kin = VendorKinematics(tools=tools or tool_config())
+            self.native = None
+        else:
+            self.kin = ModelKinematics(tools or tool_config())
+            self.native = NativeIK(self.kin.tools)
         self.unconstrained = None
         self.guard = WristGuard(wrist_guard)
         self.clutches = {side: NativeClutch(side, mode, rotation_mapping(mode, rotation_mode)) for side in ARMS}
@@ -79,6 +92,8 @@ class DemoEngine:
         self.body_model = load_config()
         self.q = self.body_model.pose(dict(height=HIGH_PERCENT, forward=0., roll=0., yaw=0.), [0.]*20)
         for side, joints in ARMS.items():
+            if ik_backend == 'vendor':
+                self.kin.verify_tcp(self.home['target'][side], side)
             for j, value in zip(joints, self.home['target'][side]):
                 self.q[j-1] = value
         self.freeze_buttons = freeze_buttons
@@ -96,6 +111,7 @@ class DemoEngine:
         self.heading_release = False
         self.last_time = None
         self.partial = False
+        self.wrist_limited = False
         self.sides = ()
         self.stopped = False
 
@@ -118,6 +134,7 @@ class DemoEngine:
             self.trigger.reset()
         self.sides = ()
         self.partial = False
+        self.wrist_limited = False
         self.message = message
 
     def command(self, command):
@@ -153,12 +170,14 @@ class DemoEngine:
         if packet is None:
             self.sides = ()
             self.partial = False
+            self.wrist_limited = False
             return
         for side, entry in packet['arms'].items():
             for j, value in zip(ARMS[side], entry['target']):
                 self.q[j-1] = value
         self.sides = tuple(packet['arms'])
         self.partial = any(a.get('native_ik', {}).get('success') is False for a in packet['arms'].values())
+        self.wrist_limited = any(a.get('wrist_scale', 1.) < 1. for a in packet['arms'].values())
 
     def step(self, frame, now, command=None, input_error=None):
         if type(now) not in (int, float) or not math.isfinite(now):
@@ -227,14 +246,21 @@ class DemoEngine:
             packet = None
             if goals:
                 self.sequence += 1
-                solver = self.native
-                if not self.guard.enabled:
-                    if self.unconstrained is None:
-                        from vr_demo_ik import DemoBoxIK
-                        self.unconstrained = DemoBoxIK(self.kin.tools)
-                    solver = self.unconstrained
-                packet = solver.request(self.kin, hw, goals, self.sequence, now,
-                                        self.cartesian.references, self.guard)
+                if self.ik_backend == 'vendor':
+                    # Retain the real client's arm-angle reference, path checks
+                    # and Cartesian retreat when the optional guard is enabled.
+                    packet = vendor_request(self.kin, hw, goals, self.sequence, now,
+                                            self.cartesian.references, self.guard)
+                    validate(hw, packet, now, self.kin.tools)
+                else:
+                    solver = self.native
+                    if not self.guard.enabled:
+                        if self.unconstrained is None:
+                            from vr_demo_ik import DemoBoxIK
+                            self.unconstrained = DemoBoxIK(self.kin.tools)
+                        solver = self.unconstrained
+                    packet = solver.request(self.kin, hw, goals, self.sequence, now,
+                                            self.cartesian.references, self.guard)
                 self.cartesian.accepted_plan(packet, frame, self.hands)
             self._apply(packet)
             if self.lift:
@@ -253,6 +279,8 @@ class DemoEngine:
             self.message = '模型跟随' if goals else '模型保持；握 Grip 移动'
             if self.partial:
                 self.message += '；目标暂不可达，显示当前可行解'
+            elif self.wrist_limited:
+                self.message += '；原厂 IK 结果受腕部保护限制，已舍弃越界位移'
         except (ValueError, RuntimeError) as exc:
             self.hold('模型已暂停：'+str(exc))
         return self.snapshot(now, frame)
@@ -262,8 +290,11 @@ class DemoEngine:
                  '等待 Home' if self.home_pending else '暂停' if self.paused else '就绪')
         return dict(demo=True, hardware=self.hardware(), grippers=self.grippers.copy() if self.trigger else {},
                     phase=phase, message=self.message, paused=self.paused, sensitivity=self.sensitivity,
-                    mode=self.mode, ik_backend='native' if self.guard.enabled else 'demo_joint_box_only',
-                    ik_partial=self.partial, sides='/'.join(self.sides) or '保持',
+                    mode=self.mode, ik_requested_backend=self.ik_backend,
+                    ik_backend=('demo_joint_box_only' if self.ik_backend == 'native' and not self.guard.enabled
+                                else self.ik_backend),
+                    ik_partial=self.partial, wrist_limited=self.wrist_limited,
+                    sides='/'.join(self.sides) or '保持',
                     grips={s: frame[s]['grip'] for s in ARMS} if frame else {},
                     body=self.body_model.state(self.q),
                     body_lift_preset=self.lift.snapshot(now) if self.lift else None,
@@ -314,6 +345,8 @@ def positive(value):
 def parser():
     result = argparse.ArgumentParser(description='PICO 控制本地模型，无机器人连接')
     result.add_argument('--gui-stdio', action='store_true')
+    result.add_argument('--ik-backend', choices=('native', 'vendor'), default='native',
+                        help='本地模型 IK：native 数值求解，vendor 原厂离线库；均不连接机器人')
     result.add_argument('--mode', choices=tuple(POSE_FRAMES), default='mirror_same_direction')
     result.add_argument('--sensitivity', type=positive, default=.25)
     result.add_argument('--rotation-mode', choices=('auto', *POSE_FRAMES), default='auto')
@@ -359,7 +392,7 @@ def main(argv=None):
                             max_openings={s: getattr(args, s+'_gripper_max_open_percent')/100. for s in ARMS},
                             hand_mapping=args.hand_mapping, rotation_mode=args.rotation_mode,
                             interpolation_delay_ms=args.interpolation_delay_ms,
-                            wrist_guard=not args.disable_wrist_guard)
+                            wrist_guard=not args.disable_wrist_guard, ik_backend=args.ik_backend)
         emit(engine.snapshot(time.monotonic()))
         # No hardware credentials or transport are constructed on this path.
         if commands and commands.closed.is_set():
