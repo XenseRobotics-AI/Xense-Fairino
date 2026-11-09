@@ -1,0 +1,1 @@
+"""Fairino SLAM connection support."""

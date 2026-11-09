@@ -1,0 +1,7 @@
+<library path="fairino_straight_planner">
+  <class name="fairino_straight_planner::StraightLinePlanner"
+         type="fairino_straight_planner::StraightLinePlanner"
+         base_class_type="nav2_core::GlobalPlanner">
+    <description>Safe direct lines and visibility shortcuts around the existing SmacPlanner2D.</description>
+  </class>
+</library>

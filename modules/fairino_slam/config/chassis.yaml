@@ -1,0 +1,26 @@
+# 底盘与导航共用的速度和执行限值。修改后重启电脑端程序，并按文档同步机器人配置。
+version: 1
+speed:
+  default_linear: 0.1    # m/s；导航平移上限、建图键控初始速度
+  default_angular: 0.2   # rad/s；导航旋转上限、建图键控初始速度
+  min_speed: 0.01         # 调速输入的最小正值（平移 m/s，旋转 rad/s）
+  max_linear: 0.20        # m/s；底盘软件上限、建图调速上限
+  max_angular: 0.40       # rad/s；底盘软件上限、建图调速上限
+timeouts:
+  feedback: 0.40         # s；底盘/上身反馈超时
+  link: 0.45             # s；控制心跳及 ACK 超时
+limits:
+  linear:
+    max_acceleration: 0.20  # m/s²；同时生成导航 XY 加减速度限制
+    max_jerk: 0.80          # m/s³
+  angular:
+    max_acceleration: 0.40  # rad/s²；同时生成导航角加减速度限制
+    max_jerk: 1.60          # rad/s³
+  steering:
+    max_velocity: 0.35      # rad/s
+    max_acceleration: 0.70  # rad/s²
+  drive:
+    max_velocity: 6.0          # rad/s；行走轮指令上限，需满足四轮几何速度包络
+    max_acceleration: 6.0      # rad/s²
+    max_jerk: 24.0             # rad/s³
+    feedback_max_velocity: 7.0 # rad/s；实测轮速保护阈值

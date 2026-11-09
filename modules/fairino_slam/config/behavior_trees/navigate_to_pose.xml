@@ -1,0 +1,10 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <!-- Pause on failed plans/local collisions, retain the goal and retry after
+         1 second. Controller faults are terminal. Cancel halts actions and timers. -->
+    <ReplanUntilClear>
+      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="goal_checker"/>
+    </ReplanUntilClear>
+  </BehaviorTree>
+</root>

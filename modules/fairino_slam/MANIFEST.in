@@ -1,0 +1,16 @@
+include README.md THIRD_PARTY_NOTICES.md pyproject.toml setup.py
+include .editorconfig
+recursive-include config *
+recursive-include ros2 *
+recursive-include src/fairino_slam *.py
+recursive-include src/fairino_slam/resources *
+recursive-include tests *.py *.cpp *.json
+recursive-include docs *.md
+recursive-include scripts *.py *.sh
+recursive-include reports *.md *.json
+prune logs
+prune .venv
+prune .local
+prune build
+prune dist
+global-exclude __pycache__ *.py[cod] .DS_Store

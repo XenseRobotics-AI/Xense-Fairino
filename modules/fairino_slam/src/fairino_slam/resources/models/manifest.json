@@ -1,0 +1,11 @@
+{
+  "model": "amr_8dof.urdf",
+  "source": "models/amr_8dof.urdf (original toolkit working tree)",
+  "sha256": "b41369001387ddf343aa55718bc8941f9ab9ba0656f88fedfb82a0fd282fa185",
+  "external_meshes_required": false,
+  "base_footprint_m": {
+    "length": 0.75,
+    "width": 0.6
+  },
+  "note": "Migration snapshot; not a new physical calibration."
+}
