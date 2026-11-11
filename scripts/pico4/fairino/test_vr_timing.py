@@ -53,7 +53,7 @@ class TimingTests(unittest.TestCase):
 
     def test_invalid_timing_is_rejected_before_connection(self):
         for flag, value in (("--command-hz", "0"), ("--command-hz", "nan"),
-                            ("--command-hz", "300"), ("--horizon-ms", "1")):
+                            ("--command-hz", "501"), ("--horizon-ms", "1")):
             with patch("vr_client.Connection") as connect, contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit): main([flag, value])
                 connect.assert_not_called()

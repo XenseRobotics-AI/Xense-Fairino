@@ -10,7 +10,7 @@ import time
 import robot_probe as rp
 from tcp_robot import TCPProbe, load_ros
 from tcp_jog import LEASE
-from vr_core import validate, direct_positions, KIND, LIFT_MODE
+from vr_core import validate, direct_positions, KIND, LIFT_MODE, require_robot_request
 from vr_lift import lift_axis, DEADBAND
 from vr_lift_presets import PresetLiftPlanner
 from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
@@ -29,8 +29,10 @@ class VRProbe(TCPProbe):
     # use Probe.guard; the old TCP velocity-integrator guards do not apply.
     moving_speed_limit = math.inf
     held_speed_limit = 1.0  # deg/s; VR-only trip threshold for held joints.
+    held_speed_check = True
 
     def __init__(self, args):
+        self.held_speed_check = not getattr(args, 'no_held_speed_check', False)
         self.tools = validate_runtime(json.loads(args.tools_json)) if getattr(args, 'tools_json', None) else tool_config()
         self.input_event = threading.Event()
         self.lift = PresetLiftPlanner(json.loads(args.body_config_json)) if getattr(args, 'body_lift', False) else None
@@ -117,6 +119,8 @@ class VRProbe(TCPProbe):
             rate = getattr(self, "accepted_rate", None)
             super().report(True, control_protocol=KIND, arm_speed_limit=None,
                 held_speed_limit_deg_s=self.held_speed_limit,
+                held_speed_check_enabled=self.held_speed_check,
+                held_speed_check_active=self.held_speed_check and self.feedback_speed_check and not self.enabling,
                 timing=timing.payload(), target_count=rate.total if rate else 0,
                 target_rate_hz=rate.hz(now) if rate else 0.,
                 hardware_observed_hz=self.hardware_rate.hz(now) if hasattr(self, "hardware_rate") else 0.,
@@ -303,7 +307,16 @@ class VRProbe(TCPProbe):
             try:
                 if not isinstance(request, dict):
                     raise ValueError("无效双臂请求")
+                backend = require_robot_request(request)
+                if backend in ('native', 'tron2') and (
+                        self.wrist.guard.enabled is not True
+                        or (self.wrist.active or {}).get('enabled') is not True):
+                    raise ValueError(f'{backend} 实机 IK 要求腕部联合限位保护开启')
                 new_request = request.get("id") != (accepted or {}).get("id")
+                if backend != (accepted or {}).get('ik_backend', 'vendor'):
+                    # Changing algorithms cannot repurpose an already accepted
+                    # ID or evade fresh validation of the full target.
+                    new_request = True
                 if request.get('lift_mode') != (accepted or {}).get('lift_mode'):
                     new_request = True
                 # Epoch transitions cannot hide behind a reused request ID.
@@ -438,6 +451,8 @@ def main():
     parser.add_argument('--body-lift', action='store_true')
     parser.add_argument('--body-config-json')
     parser.add_argument('--tools-json')
+    parser.add_argument('--no-held-speed-check', action='store_true',
+                        help='仅关闭保持关节的反馈速度检测，位置偏差及其他保护仍保留')
     add_timing_arguments(parser)
     args = parser.parse_args()
     try:

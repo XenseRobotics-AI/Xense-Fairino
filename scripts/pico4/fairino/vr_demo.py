@@ -2,9 +2,9 @@
 """PICO input -> local kinematic model. No robot connection or actuator API.
 
 This is an ideal position model, not a dynamics/latency/collision simulator:
-accepted joint targets become model positions directly. The local vendor IK or
-the constrained numerical IK can be selected before starting; both share the
-same input mapping. A deliberate demo-only switch can remove the wrist envelope
+accepted joint targets become model positions directly. The local vendor IK,
+the constrained numerical IK or the ART7-adapted TRON2 QP can be selected before
+starting; all share the same input mapping. A deliberate demo-only switch can remove the wrist envelope
 (using box-constrained IK for the native backend); physical control is separate.
 """
 import argparse
@@ -67,8 +67,8 @@ class DemoEngine:
                  grippers=False, max_openings=None, hand_mapping='auto',
                  rotation_mode='auto', interpolation_delay_ms=12., wrist_guard=True,
                  ik_backend='native'):
-        if ik_backend not in ('native', 'vendor'):
-            raise ValueError('模型 IK 须选择 native 或 vendor')
+        if ik_backend not in ('native', 'vendor', 'tron2'):
+            raise ValueError('模型 IK 须选择 native 或 vendor 或 tron2')
         if type(sensitivity) not in (int, float) or not math.isfinite(sensitivity) or not 0 < sensitivity <= 1.:
             raise ValueError('模型灵敏度须在 0–1 之间且大于零')
         self.mode, self.sensitivity = mode, sensitivity
@@ -82,7 +82,11 @@ class DemoEngine:
             self.native = None
         else:
             self.kin = ModelKinematics(tools or tool_config())
-            self.native = NativeIK(self.kin.tools)
+            if ik_backend == 'tron2':
+                from vr_demo_tron_ik import TronDemoIK
+                self.native = TronDemoIK(self.kin.tools)
+            else:
+                self.native = NativeIK(self.kin.tools)
         self.unconstrained = None
         self.guard = WristGuard(wrist_guard)
         self.clutches = {side: NativeClutch(side, mode, rotation_mapping(mode, rotation_mode)) for side in ARMS}
@@ -254,7 +258,7 @@ class DemoEngine:
                     validate(hw, packet, now, self.kin.tools)
                 else:
                     solver = self.native
-                    if not self.guard.enabled:
+                    if self.ik_backend == 'native' and not self.guard.enabled:
                         if self.unconstrained is None:
                             from vr_demo_ik import DemoBoxIK
                             self.unconstrained = DemoBoxIK(self.kin.tools)
@@ -277,10 +281,10 @@ class DemoEngine:
             if self.trigger:
                 self.grippers.update(self.trigger.update(frame, self.hands, ARMS))
             self.message = '模型跟随' if goals else '模型保持；握 Grip 移动'
-            if self.partial:
+            if self.wrist_limited:
+                self.message += '；IK 结果受腕部保护限制，已舍弃越界位移'
+            elif self.partial:
                 self.message += '；目标暂不可达，显示当前可行解'
-            elif self.wrist_limited:
-                self.message += '；原厂 IK 结果受腕部保护限制，已舍弃越界位移'
         except (ValueError, RuntimeError) as exc:
             self.hold('模型已暂停：'+str(exc))
         return self.snapshot(now, frame)
@@ -345,8 +349,8 @@ def positive(value):
 def parser():
     result = argparse.ArgumentParser(description='PICO 控制本地模型，无机器人连接')
     result.add_argument('--gui-stdio', action='store_true')
-    result.add_argument('--ik-backend', choices=('native', 'vendor'), default='native',
-                        help='本地模型 IK：native 数值求解，vendor 原厂离线库；均不连接机器人')
+    result.add_argument('--ik-backend', choices=('native', 'vendor', 'tron2'), default='native',
+                        help='本地模型 IK：native 联合限位，vendor 原厂离线库，tron2 C++ QP；均不连接机器人')
     result.add_argument('--mode', choices=tuple(POSE_FRAMES), default='mirror_same_direction')
     result.add_argument('--sensitivity', type=positive, default=.25)
     result.add_argument('--rotation-mode', choices=('auto', *POSE_FRAMES), default='auto')

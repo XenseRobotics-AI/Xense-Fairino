@@ -7,6 +7,22 @@ from vr_lift import lift_axis
 
 KIND = "fairino_pico_cartesian_v4"
 LIFT_MODE = "preset_v1"
+ROBOT_IK_BACKENDS = ('native', 'vendor', 'tron2')
+
+
+def require_robot_backend(backend):
+    """Real control has an explicit allowlist, independent of Demo choices."""
+    if backend not in ROBOT_IK_BACKENDS:
+        raise ValueError('实机 IK 只允许 native、vendor 或 tron2')
+    return backend
+
+
+def require_robot_request(request):
+    """Reject model-only packets before any real target can be accepted."""
+    if request.get('demo_only'):
+        raise ValueError('模型 Demo 请求不能用于实机控制')
+    # Old vendor/Home/lift packets do not carry an IK backend field.
+    return require_robot_backend(request.get('ik_backend', 'vendor'))
 
 
 def direct_positions(current, targets, held):

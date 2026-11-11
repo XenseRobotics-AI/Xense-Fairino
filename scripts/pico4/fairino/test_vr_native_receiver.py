@@ -15,7 +15,7 @@ from vendor_kinematics import VendorKinematics
 from vr_core import validate
 from vr_native_ik import NativeIK
 from vr_robot import VRProbe
-from wrist_guard import WristGuard, WristBlocked
+from wrist_guard import WristGuard, WristBlocked, policy
 
 
 class EndSimulation(Exception):
@@ -37,7 +37,7 @@ class NativeReceiverTests(unittest.TestCase):
             goals[side] = goal
         return self.native.request(self.kin, hw, goals, sequence, 10., references)
 
-    def run_receiver(self, initial, steps):
+    def run_receiver(self, initial, steps, *, guard_enabled=True, mutate=None):
         """Each step supplies a latest packet, optionally lagging measured q.
 
         The real run, validation, wrist checks, publish_positions, stop_stream
@@ -49,6 +49,9 @@ class NativeReceiverTests(unittest.TestCase):
         p.baseline = p.hw['position'][:]
         p.hold_positions = p.hw['command_position'][:]
         p.tools = self.native.tools
+        if not guard_enabled:
+            p.packet['wrist_guard'] = policy(False, 2)
+            p.wrist.filter(p.packet, p.hw, idle=True)
         p.args.command_hz, p.args.receiver_hz, p.args.feedback_hz = 100., 200., 100.
         clock, cursor, messages, checks = [10.], [0], [], []
         p.node = NS(create_publisher=lambda *args: NS(
@@ -83,6 +86,8 @@ class NativeReceiverTests(unittest.TestCase):
             p.packet['request'] = request
             if measured is not None:
                 p.hw['position'][:7] = measured[:]
+            if mutate is not None:
+                mutate(p, cursor[0], clock)
             p.guard()
 
         original_check = p.wrist.guard.arm_segment
@@ -131,6 +136,41 @@ class NativeReceiverTests(unittest.TestCase):
         self.assertTrue(result.probe.ready)
         self.assertTrue(result.probe.session_enabled)
         self.assertFalse(any('jog_rejected' in event for event in result.probe.events))
+
+    def test_receiver_rejects_demo_or_unknown_backend_before_publishing(self):
+        hw = hardware()
+        valid = self.translated(hw, .4, 1)
+        for metadata in (dict(ik_backend='tron2', demo_only=True),
+                         dict(ik_backend='unknown'),
+                         dict(ik_backend='vendor', demo_only=True)):
+            with self.subTest(metadata=metadata):
+                packet = {**valid, **metadata}
+                # The geometry is valid. The real boundary must still reject it.
+                validate(hw, packet, 10.)
+                result = self.run_receiver(hw, [(packet, None)])
+                self.assertEqual(result.probe.accepted_rate.total, 0)
+                self.assertEqual(result.messages, [])
+                self.assertTrue(any('实机' in event.get('jog_rejected', '')
+                                    for event in result.probe.events))
+
+    def test_demo_marker_cannot_hide_behind_repeated_accepted_request_id(self):
+        hw = hardware()
+        valid = self.translated(hw, .4, 1)
+        demo = {**valid, 'demo_only': True}
+        result = self.run_receiver(hw, [(valid, None), (demo, None)])
+        self.assertEqual(result.probe.accepted_rate.total, 1)
+        self.assertEqual(len(result.messages), 2)  # Original command and hold.
+        self.assertTrue(any('Demo 请求不能用于实机' in event.get('jog_rejected', '')
+                            for event in result.probe.events))
+        self.assertIsNone(result.probe.path)
+
+    def test_legacy_packets_without_backend_still_work(self):
+        hw = hardware()
+        packet = self.translated(hw, .4, 1)
+        packet.pop('ik_backend')
+        result = self.run_receiver(hw, [(packet, None)])
+        self.assertEqual(result.probe.accepted_rate.total, 1)
+        self.assertEqual(len(result.messages), 1)
 
     def test_skipped_middle_packet_checks_published_command_and_measured_not_pc_reference(self):
         hw = hardware()

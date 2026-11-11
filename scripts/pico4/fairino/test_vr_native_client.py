@@ -62,7 +62,7 @@ class NativeClientTests(unittest.TestCase):
         return frame
 
     def run_frames(self, frames, *, mode='mirror_same_direction', auto_home=False,
-                   auxiliary=False, keys=None, read_delay=0., proof_delay=0.):
+                   auxiliary=False, keys=None, read_delay=0., proof_delay=0., interpolation_delay_ms=0.):
         """No SDK/SSH/ROS/session threads; only the actual input/IK logic runs."""
         clock, packets, gui, goals = [10.], [], [], []
         hw = hardware()
@@ -97,7 +97,7 @@ class NativeClientTests(unittest.TestCase):
                 return frame
 
             def sleep(_):
-                clock[0] += .01
+                clock[0] += .002
                 connection.last_status = connection.latest['stamp'] = clock[0]
 
             original_proof = vr_client.verify_both
@@ -112,10 +112,11 @@ class NativeClientTests(unittest.TestCase):
                 return self.native.request(*values)
 
             connection.send = send
-            args = NS(ik_backend='native', native_ik=NS(request=plan), sensitivity=.25,
+            args = NS(ik_backend=getattr(self, 'backend', 'native'),
+                native_ik=NS(request=plan), tron_ik=NS(request=plan), sensitivity=.25,
                 execute=True, mode=mode, hand_mapping='auto', freeze_buttons=True,
-                no_auto_home=not auto_home, interpolation_delay_ms=0.,
-                command_hz=100., receiver_hz=200., feedback_hz=100.,
+                no_auto_home=not auto_home, interpolation_delay_ms=interpolation_delay_ms,
+                command_hz=500., receiver_hz=500., feedback_hz=100.,
                 body_lift=auxiliary, lift_speed_mm_s=15.,
                 gui_input=NS(key=lambda: (keys or {}).get(len(packets), '')))
             if auxiliary:
@@ -164,6 +165,30 @@ class NativeClientTests(unittest.TestCase):
                 self.assertEqual(set(result.packets[3]['request']['arms']), {remaining})
                 self.assertIsNone(result.packets[-1]['request'])
                 self.assertEqual(result.gui[0]['ik_backend'], 'native')
+
+    def test_500hz_loop_interpolates_tcp_position_and_rotation_before_ik(self):
+        frames = [self.frame(), self.frame(right_grip=1.)]
+        frames.extend(self.frame(right_grip=1., position=(i*.0002, 0., 0.), angle=i*.2)
+                      for i in range(1, 13))
+        # An 11 ms test delay puts the sampled target halfway between 2 ms
+        # samples, making both interpolation and the actual 500 Hz cadence
+        # distinguishable from pass-through/holding the latest controller.
+        result = self.run_frames(frames, interpolation_delay_ms=11.)
+        timing = self.events(result, 'timing_config')[0]
+        self.assertEqual((timing['command_hz'], timing['receiver_hz']), (500., 500.))
+        self.assertEqual(timing['horizon_ms'], 0.)
+        baseline = result.goals[0]['left']
+        self.assertEqual(len(result.goals), 13)
+        for index, goals in enumerate(result.goals):
+            expected = max(0., index-5.5)*.05
+            goal = goals['left']
+            self.assertAlmostEqual(np.linalg.norm(goal[:3, 3]-baseline[:3, 3]), expected, places=8)
+            angle = math.degrees(np.linalg.norm(Rotation.from_matrix(
+                goal[:3, :3] @ baseline[:3, :3].T).as_rotvec()))
+            self.assertAlmostEqual(angle, expected, places=8)
+        plans = [row for row in result.logs if 'ik_ms' in row]
+        for before, after in zip(plans, plans[1:]):
+            self.assertAlmostEqual(after['plan_monotonic']-before['plan_monotonic'], .002, places=10)
 
     def test_native_rotation_freeze_and_release_keep_current_command_without_catchup(self):
         result = self.run_frames([self.frame(), self.frame(right_grip=1.),

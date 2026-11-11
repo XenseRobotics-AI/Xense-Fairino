@@ -52,7 +52,7 @@ class TeleopOptionsTests(unittest.TestCase):
 
     def test_ik_selection_reaches_main_client_and_locks_until_exit(self):
         self.assertEqual(self.panel.ik_backend.get_active_id(), 'native')
-        for backend in ('native', 'vendor'):
+        for backend in ('native', 'vendor', 'tron2'):
             with self.subTest(backend=backend):
                 self.panel.ik_backend.set_active_id(backend)
                 self.panel.start()
@@ -72,10 +72,47 @@ class TeleopOptionsTests(unittest.TestCase):
         self.launch.assert_not_called()
         self.assertFalse(self.acquired)
 
+    def test_held_speed_check_defaults_on_and_explicit_off_reaches_real_client(self):
+        self.assertTrue(self.panel.held_speed_check.get_active())
+        for backend, disabled in (('native', False), ('native', True),
+                                  ('vendor', True), ('tron2', True)):
+            with self.subTest(backend=backend, disabled=disabled):
+                self.panel.ik_backend.set_active_id(backend)
+                self.panel.held_speed_check.set_active(not disabled)
+                self.panel.start()
+                argv = self.launch.call_args.args[0]
+                self.assertEqual('--no-held-speed-check' in argv, disabled)
+                self.assertNotIn('--no-wrist-guard', argv)
+                self.assertFalse(self.panel.held_speed_check.get_sensitive())
+                self.panel.process.poll = lambda: 0
+                self.panel.events.put(('vr_exit', 0))
+                self.panel.tick()
+                self.assertTrue(self.panel.held_speed_check.get_sensitive())
+                self.panel.process = None
+                self.launch.return_value = NS(stdin=io.StringIO(), poll=lambda:None)
+
+    def test_held_speed_check_is_not_sent_to_model_demo(self):
+        self.panel.held_speed_check.set_active(False)
+        self.panel.runtime_target.set_active_id('model')
+        self.assertFalse(self.panel.held_speed_check.get_sensitive())
+        self.panel.start()
+        self.assertNotIn('--no-held-speed-check', self.launch.call_args.args[0])
+        self.assertFalse(self.acquired)
+
+    def test_held_speed_status_comes_from_receiver_not_local_checkbox(self):
+        state = dict(phase='就绪', sides='保持', sensitivity=.25, enabled=20,
+                     send_hz=500., accepted_hz=440.)
+        for enabled, title in ((None, '等待接收端确认'), (False, '已关闭'), (True, '已开启')):
+            with self.subTest(enabled=enabled):
+                state['held_speed_check_enabled'] = enabled
+                self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+                self.panel.tick()
+                self.assertIn('保持关节速度检测（1°/s）：'+title, self.panel.status.get_text())
+
     def test_status_displays_reported_ik_backend(self):
         state = dict(phase='就绪', sides='保持', sensitivity=.25, enabled=20,
                      send_hz=100., accepted_hz=100.)
-        for backend, title in [('native', '联合限位 IK'), ('vendor', '原厂 IK')]:
+        for backend, title in [('native', '联合限位 IK'), ('vendor', '原厂 IK'), ('tron2', 'TRON2 QP IK')]:
             with self.subTest(backend=backend):
                 state['ik_backend'] = backend
                 self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
@@ -123,6 +160,63 @@ class TeleopOptionsTests(unittest.TestCase):
                 self.assertTrue(self.panel.teleop_mode.get_sensitive())
                 self.panel.process = None
                 self.launch.return_value = NS(stdin=io.StringIO(), poll=lambda:None)
+
+    def test_tron2_real_launch_retains_home_mapping_and_auxiliary_controls(self):
+        self.panel.ik_backend.set_active_id('tron2')
+        self.panel.teleop_mode.set_active_id('first_person')
+        self.panel.home_preset.set_active_id('right_mirrored')
+        self.panel.home.set_active(False)
+        self.panel.grippers.set_active(True)
+        self.panel.body_lift.set_active(True)
+        self.panel.gripper_limits['left'].set_value(60.)
+        self.panel.start()
+        argv = self.launch.call_args.args[0]
+        self.assertEqual(argv[2], 'vr')
+        for option, value in (('--ik-backend', 'tron2'), ('--mode', 'first_person'),
+                              ('--rotation-mode', 'auto'), ('--hand-mapping', 'auto'),
+                              ('--home-preset', 'right_mirrored')):
+            self.assertEqual(argv[argv.index(option)+1], value)
+        self.assertIn('--no-auto-home', argv)
+        self.assertIn('--grippers', argv)
+        self.assertIn('--body-lift', argv)
+        self.assertNotIn('--no-wrist-guard', argv)
+        self.assertNotIn('--chassis', argv)
+        self.assertEqual(float(argv[argv.index('--left-gripper-max-open-percent')+1]), 60.)
+        self.assertEqual(self.panel.session_target, 'robot')
+        self.assertEqual(self.acquired, ['upper', 'gripper'])
+
+    def test_tron2_partial_and_receiver_hold_reason_are_visible(self):
+        self.panel.ik_backend.set_active_id('tron2')
+        state = dict(phase='就绪', sides='跟随', sensitivity=.25, enabled=20,
+                     send_hz=100., accepted_hz=100., ik_backend='tron2',
+                     ik_partial=True, wrist_limited=False, wrist_pending=False,
+                     receiver_phase='腕部路径拒绝；停止追踪并保持当前位置',
+                     wrist_guard={'message': '腕部保护启用'})
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('TRON2 当前未完全收敛', self.panel.status.get_text())
+        self.assertIn('接收端：腕部路径拒绝', self.panel.status.get_text())
+        self.assertNotIn('缩小目标', self.panel.status.get_text())
+        state['wrist_limited'] = True
+        self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('越界手柄位移已舍弃', self.panel.status.get_text())
+        self.assertNotIn('完整手柄目标仍保留', self.panel.status.get_text())
+
+    def test_constrained_backends_describe_shared_tcp_interpolation_and_actual_rates(self):
+        for backend in ('native', 'tron2'):
+            self.panel.ik_backend.set_active_id(backend)
+            tooltip = self.panel.ik_backend.get_tooltip_text()
+            self.assertIn('默认 500 Hz', tooltip)
+            self.assertIn('位移线性、姿态 SLERP', tooltip)
+            self.assertIn('缓冲 12 ms', tooltip)
+            self.assertNotIn('关节目标线性插值', tooltip)
+            state = dict(phase='就绪', sides='跟随', sensitivity=.25, enabled=20,
+                         send_hz=485., accepted_hz=480., ik_backend=backend)
+            self.panel.events.put(('vr', 'WORKBENCH_VR '+json.dumps(state)))
+            self.panel.tick()
+            self.assertIn('IK 目标下发 485 / 接收 480 Hz', self.panel.status.get_text())
+            self.assertNotIn('线性插值发布', self.panel.status.get_text())
 
     def test_default_mode_remains_mirror_and_invalid_selection_cannot_start(self):
         self.assertEqual(self.panel.teleop_mode.get_active_id(), 'mirror_same_direction')
@@ -194,6 +288,28 @@ class TeleopOptionsTests(unittest.TestCase):
         self.assertTrue(self.panel.wrist_controls.toggle.get_sensitive())
         self.panel.wrist_controls.toggle.set_active(False)
         self.assertFalse(self.panel.wrist_controls.toggle.get_active())
+
+    def test_tron2_requires_guard_before_and_during_actual_session(self):
+        self.panel.ik_backend.set_active_id('vendor')
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.panel.ik_backend.set_active_id('tron2')
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        self.assertIn('TRON2', self.panel.wrist_controls.label.get_text())
+        self.assertIn('求解后检查', self.panel.ik_backend.get_tooltip_text())
+        self.assertIn('默认 500 Hz', self.panel.ik_backend.get_tooltip_text())
+        self.assertIn('位移线性、姿态 SLERP', self.panel.ik_backend.get_tooltip_text())
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.panel.start()
+        self.assertNotIn('--no-wrist-guard', self.launch.call_args.args[0])
+        self.panel.ik_backend.set_active_id('vendor')
+        self.panel.switch_wrist(False)
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        records = [json.loads(line) for line in self.panel.process.stdin.getvalue().splitlines()]
+        self.assertFalse(any('command' in record for record in records))
+        self.assertIn('不能关闭', self.panel.wrist_controls.label.get_text())
 
     def test_vendor_wrist_module_defaults_on_and_hot_switch_uses_same_process(self):
         self.panel.ik_backend.set_active_id('vendor')

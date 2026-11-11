@@ -25,8 +25,10 @@ TELEOP_MODES = {
     'mirror_same_direction': '右手柄 → 左臂 / 左爪，左手柄 → 右臂 / 右爪',
     'first_person': '左手柄 → 左臂 / 左爪，右手柄 → 右臂 / 右爪',
 }
-IK_BACKENDS = {'native': '联合限位 IK', 'vendor': '原厂 IK'}
+IK_BACKENDS = {'native': '联合限位 IK', 'vendor': '原厂 IK', 'tron2': 'TRON2 QP IK'}
+DEMO_IK_BACKENDS = {**IK_BACKENDS, 'tron2': 'TRON2 QP IK（Demo）'}
 NATIVE_GUARD_MESSAGE = '联合限位 IK 要求腕部联合限位保护开启，不能关闭'
+TRON_GUARD_MESSAGE = 'TRON2 QP IK 实机要求腕部联合限位及路径检查开启，不能关闭'
 
 
 class TeleopPanel(Gtk.Box):
@@ -83,12 +85,14 @@ class TeleopPanel(Gtk.Box):
         ik_row = Gtk.Box(spacing=8)
         ik_row.pack_start(Gtk.Label(label='IK 解算器'), False, False, 0)
         self.ik_backend = Gtk.ComboBoxText()
-        for name, title in IK_BACKENDS.items():
+        self.ik_options_model = demo
+        for name, title in (DEMO_IK_BACKENDS if demo else IK_BACKENDS).items():
             self.ik_backend.append(name, title)
         self.ik_backend.set_active_id('native')
         self.ik_backend.set_tooltip_text(
-            '联合限位 IK 默认 100 Hz，原厂 IK 默认 450 Hz；启动后不能切换。\n'
-            '联合限位 IK 将腕部联合限位纳入求解，必须保持腕部保护开启。')
+            '联合限位 IK / TRON2 QP IK 默认 500 Hz，原厂 IK 默认 450 Hz；启动后不能切换。\n'
+            '沿用原厂链路的 TCP 插值：位移线性、姿态 SLERP，默认缓冲 12 ms，再进行 IK 并直接发布关节目标。\n'
+            '联合限位 IK 在求解中约束腕部，TRON2 在求解后检查腕部及路径；实机两者均要求保护开启。')
         ik_row.pack_start(self.ik_backend, False, False, 0)
         settings.pack_start(ik_row, False, False, 0)
         text = ('握 Grip 跟随，松开保持；Trigger 控制对应手臂的夹爪。\n'
@@ -106,6 +110,13 @@ class TeleopPanel(Gtk.Box):
         settings.pack_start(self.wrist_controls, False, False, 0)
         self.ik_backend.connect('changed', self.ik_changed)
         self.ik_changed()
+        self.held_speed_check = Gtk.CheckButton(label='保持关节速度检测（1°/s）· 启动时生效')
+        self.held_speed_check.set_active(True)
+        self.held_speed_check.set_tooltip_text(
+            '默认开启；取消勾选仅关闭当前被标记为保持不动的关节的反馈速度检测。\n'
+            '保持目标偏差超过 0.3°、停止确认、硬件故障、急停、断流及腕部保护仍保留。\n'
+            '仅用于真机；运行中不能切换，停止遥操后可修改。')
+        settings.pack_start(self.held_speed_check, False, False, 0)
         self.home = Gtk.CheckButton(label='启动后先回双臂 Home（会运动）；不勾选则保持当前姿态')
         self.home.set_active(True)
         settings.pack_start(self.home, False, False, 0)
@@ -241,12 +252,25 @@ class TeleopPanel(Gtk.Box):
     def model_demo_selected(self):
         return (self.session_target or self.runtime_target.get_active_id()) == 'model'
 
+    def update_ik_choices(self):
+        model = self.model_demo_selected()
+        if model == self.ik_options_model:
+            return
+        choices = DEMO_IK_BACKENDS if model else IK_BACKENDS
+        selected = self.ik_backend.get_active_id()
+        self.ik_options_model = model
+        self.ik_backend.remove_all()
+        for name, title in choices.items():
+            self.ik_backend.append(name, title)
+        self.ik_backend.set_active_id(selected if selected in choices else 'native')
+
     def target_changed(self, *_):
         model = self.model_demo_selected()
+        self.update_ik_choices()
         if model:
             self.chassis.set_active(False)
         self.target_help.set_text(
-            '模型演示：启动前可选择联合限位 IK 或原厂 IK；腕部联合限位可开关。\n'
+            '模型演示：启动前可选择联合限位 IK、原厂 IK 或 TRON2 QP IK；腕部联合限位可开关。\n'
             '每次从所选双臂 Home 和身体上位开始；可演示双臂、身体升降和夹爪，底盘暂不参与。'
             if model else '真机遥操：启动会连接并使能上半身；可按需启用夹爪、身体及底盘。')
         self.start_button.set_label('启动模型 Demo' if model else '启动遥操 · 使能上半身')
@@ -259,7 +283,7 @@ class TeleopPanel(Gtk.Box):
             self.wrist_controls.set_tooltip_text(
                 '模型中可关闭左腕 J6/J7、右腕 J13/J14 的联合限位。\n'
                 '红色腕部表示进入标定的前臂与腕壳干涉区（近似），不代表全身或环境碰撞检测。\n'
-                '切换会暂停；重新启用前需回到保护范围内，可先回 Home。真机联合限位 IK 始终开启保护。')
+                '切换会暂停；重新启用前需回到保护范围内，可先回 Home。真机联合限位 IK / TRON2 始终开启保护。')
         else:
             self.wrist_controls.set_tooltip_text(self.robot_wrist_tooltip)
         self.chassis_status.set_text('模型 Demo 暂不包含底盘运动' if model else '底盘遥操未启用')
@@ -290,37 +314,47 @@ class TeleopPanel(Gtk.Box):
     def native_ik_selected(self):
         return (self.session_ik_backend or self.ik_backend.get_active_id()) == 'native'
 
+    def required_wrist_message(self):
+        if self.model_demo_selected():
+            return None
+        backend = self.session_ik_backend or self.ik_backend.get_active_id()
+        return {'native': NATIVE_GUARD_MESSAGE, 'tron2': TRON_GUARD_MESSAGE}.get(backend)
+
     def update_wrist_option(self):
-        native = self.native_ik_selected() and not self.model_demo_selected()
+        required = self.required_wrist_message()
         self.ik_backend.set_tooltip_text(
-            'Demo 两种 IK 均在本机计算，默认 100 Hz，不连接机器人；启动后不能切换。\n'
-            '原厂 IK 可配合腕部联合限位检查；关闭限位后仍使用原厂 IK。\n'
+            'Demo 三种 IK 均在本机计算，不连接机器人；启动后不能切换。\n'
+            'TRON2 QP IK 已适配当前机械臂模型。\n'
+            '原厂 IK 和 TRON2 QP IK 可配合腕部联合限位检查；关闭限位不切换这两种 IK。\n'
             '选择联合限位 IK 后关闭限位，则使用 Demo 专用无腕部联合约束的数值 IK。'
             if self.model_demo_selected() else
-            '联合限位 IK 默认 100 Hz，原厂 IK 默认 450 Hz；启动后不能切换。\n'
-            '联合限位 IK 将腕部联合限位纳入求解，必须保持腕部保护开启。')
-        if native and not self.wrist_controls.toggle.get_active():
+            '联合限位 IK / TRON2 QP IK 默认 500 Hz，原厂 IK 默认 450 Hz；启动后不能切换。\n'
+            '沿用原厂链路的 TCP 插值：位移线性、姿态 SLERP，默认缓冲 12 ms，再进行 IK 并直接发布关节目标。\n'
+            '联合限位 IK 在求解中约束腕部；TRON2 在求解后检查腕部及路径，必要时缩小目标重新求解。\n'
+            '这两种 IK 在实机上均要求腕部保护开启。')
+        if required and not self.wrist_controls.toggle.get_active():
             self.updating_wrist = True
             try:
                 self.wrist_controls.toggle.set_active(True)
             finally:
                 self.updating_wrist = False
-        self.wrist_controls.toggle.set_sensitive(not self.closed and not native)
+        self.wrist_controls.toggle.set_sensitive(not self.closed and not required)
         self.wrist_controls.toggle.set_label('腕部联合限位 · 模型 Demo 可启用 / 停用' if self.model_demo_selected()
-                                            else '腕部联合限位 · 联合限位 IK 要求开启' if native
+                                            else '腕部联合限位 · 当前 IK 要求开启' if required
                                             else '腕部联合限位 · 运行中可启用 / 停用')
 
     def ik_changed(self, *_):
         self.update_wrist_option()
-        self.wrist_controls.update({'message': NATIVE_GUARD_MESSAGE}
-                                   if self.native_ik_selected() and not self.model_demo_selected() else {})
+        message = self.required_wrist_message()
+        self.wrist_controls.update({'message': message} if message else {})
 
     def switch_wrist(self, enabled):
         if self.updating_wrist:
             return
-        if self.native_ik_selected() and not self.model_demo_selected():
+        message = self.required_wrist_message()
+        if message:
             self.update_wrist_option()
-            self.wrist_controls.update({'message': NATIVE_GUARD_MESSAGE})
+            self.wrist_controls.update({'message': message})
             return
         if self.process is not None and self.process.poll() is None:
             self.command('guard_on' if enabled else 'guard_off')
@@ -374,7 +408,9 @@ class TeleopPanel(Gtk.Box):
         try:
             if self.teleop_mode.get_active_id() not in TELEOP_MODES:
                 raise ValueError('请选择有效的遥操方式')
-            if self.ik_backend.get_active_id() not in IK_BACKENDS:
+            backend = self.ik_backend.get_active_id()
+            choices = DEMO_IK_BACKENDS if self.model_demo_selected() else IK_BACKENDS
+            if backend not in choices:
                 raise ValueError('请选择有效的 IK 解算器')
             self.update_wrist_option()
             mode = self.tcp_tool.get_active_id()
@@ -418,6 +454,8 @@ class TeleopPanel(Gtk.Box):
             argv.extend(['--home-preset', self.home_preset.get_active_id()])
             if not self.wrist_controls.toggle.get_active():
                 argv.append('--no-wrist-guard')
+            if not self.held_speed_check.get_active():
+                argv.append('--no-held-speed-check')
             if not self.home.get_active():
                 argv.append('--no-auto-home')
             if self.grippers.get_active():
@@ -497,6 +535,7 @@ class TeleopPanel(Gtk.Box):
                 setattr(self, name, False)
 
     def update_options(self):
+        self.update_ik_choices()
         running = self.process is not None and self.process.poll() is None
         editable = not running and self.session_target is None and not self.closed
         model = self.model_demo_selected()
@@ -506,6 +545,7 @@ class TeleopPanel(Gtk.Box):
             widget.set_sensitive(editable)
         for widget in (self.home, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable and not model)
+        self.held_speed_check.set_sensitive(editable and not model)
         for widget in (self.gripper_speed, *self.gripper_limits.values()):
             widget.set_sensitive(editable and self.grippers.get_active())
         self.gripper_speed.set_sensitive(editable and self.grippers.get_active() and not model)
@@ -557,6 +597,10 @@ class TeleopPanel(Gtk.Box):
             ik_name = '联合限位 IK'
         elif backend == 'demo_joint_box_only':
             ik_name = '本地数值 IK（联合限位关闭）'
+        elif backend == 'tron2':
+            ik_name = ('TRON2 QP IK + 腕部联合限位检查' if enabled is True else
+                       'TRON2 QP IK（联合限位关闭）' if enabled is False else
+                       'TRON2 QP IK（联合限位状态未报告）')
         else:
             ik_name = '未报告'
         text = (f'模型 Demo · {state.get("phase", "跟随")} · 灵敏度 {sensitivity:g} · 仅显示模拟关节'
@@ -637,9 +681,18 @@ class TeleopPanel(Gtk.Box):
                         + f'IK：{ik_name} · '
                         + ('TCP：夹爪固定指尖中心 · ' if state.get('tcp_tool') == 'taccap' else 'TCP：法兰中心 · ')+
                         f'Grip 左 {grips.get("left", 0):.2f} / 右 {grips.get("right", 0):.2f} · '
-                        f'使能 {state["enabled"]}/20 · 下发 {state["send_hz"]:.0f} / 接收 {state["accepted_hz"]:.0f} Hz')
+                        f'使能 {state["enabled"]}/20 · IK 目标下发 {state["send_hz"]:.0f} / 接收 {state["accepted_hz"]:.0f} Hz')
+                    held_check = state.get('held_speed_check_enabled')
+                    self.status.set_text(self.status.get_text()+'\n保持关节速度检测（1°/s）：'+
+                        ('已开启' if held_check is True else '已关闭' if held_check is False else '等待接收端确认'))
                     if state.get('ik_backend') == 'native' and state.get('ik_partial'):
                         self.status.set_text(self.status.get_text()+'\n当前为部分可行解，完整手柄目标仍保留')
+                    elif state.get('ik_backend') == 'tron2' and state.get('ik_partial'):
+                        self.status.set_text(self.status.get_text()+(
+                            '\n腕部保护已缩小目标，越界手柄位移已舍弃' if state.get('wrist_limited') else
+                            '\nTRON2 当前未完全收敛，完整手柄目标仍保留'))
+                    if state.get('receiver_phase') and state['receiver_phase'] != state['phase']:
+                        self.status.set_text(self.status.get_text()+'\n接收端：'+str(state['receiver_phase']))
                     heading = '双臂正前方已校准' if state.get('heading_calibrated') else '双臂正前方未校准 · 沿用原有追踪方向'
                     heading_yaw = state.get('heading_yaw_deg')
                     if (state.get('heading_calibrated') and type(heading_yaw) in (int, float)

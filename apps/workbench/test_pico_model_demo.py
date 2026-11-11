@@ -85,9 +85,9 @@ class ModelDemoPanelTests(unittest.TestCase):
         self.assertFalse(self.panel.runtime_target.get_sensitive())
         self.assertFalse(self.panel.ik_backend.get_sensitive())
 
-    def test_demo_allows_both_ik_backends_and_guard_choices_before_launch(self):
+    def test_demo_allows_all_ik_backends_and_guard_choices_before_launch(self):
         self.demo()
-        for backend in ('native', 'vendor'):
+        for backend in ('native', 'vendor', 'tron2'):
             for guarded in (True, False):
                 with self.subTest(backend=backend, guarded=guarded):
                     self.assertTrue(self.panel.ik_backend.get_sensitive())
@@ -111,6 +111,51 @@ class ModelDemoPanelTests(unittest.TestCase):
                     self.panel.tick()
                     self.assertTrue(self.panel.ik_backend.get_sensitive())
 
+    def test_tron2_switching_from_demo_to_robot_retains_backend_and_restores_guard(self):
+        self.assertTrue(self.panel.ik_backend.set_active_id('tron2'))
+        self.assertEqual(self.panel.ik_backend.get_active_text(), 'TRON2 QP IK')
+        self.demo()
+        self.assertTrue(self.panel.ik_backend.set_active_id('tron2'))
+        self.assertEqual(self.panel.ik_backend.get_active_text(), 'TRON2 QP IK（Demo）')
+        self.panel.wrist_controls.toggle.set_active(False)
+        self.panel.runtime_target.set_active_id('robot')
+        self.assertEqual(self.panel.ik_backend.get_active_id(), 'tron2')
+        self.assertEqual(self.panel.ik_backend.get_active_text(), 'TRON2 QP IK')
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        self.launch.assert_not_called()
+        self.credentials.assert_not_called()
+        self.acquire.assert_not_called()
+
+    def test_forced_unknown_backend_is_rejected_before_credentials_or_launch(self):
+        # Even a programmatically injected row must not pass the launch boundary.
+        self.panel.ik_backend.append('unknown', 'forced unknown backend')
+        self.panel.ik_backend.set_active_id('unknown')
+        self.panel.start()
+        self.launch.assert_not_called()
+        self.credentials.assert_not_called()
+        self.acquire.assert_not_called()
+        buffer = self.panel.log.get_buffer()
+        text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        self.assertIn('请选择有效的 IK 解算器', text)
+
+    def test_demo_session_keeps_tron2_until_exit_even_if_target_widget_is_changed(self):
+        self.demo()
+        self.panel.ik_backend.set_active_id('tron2')
+        self.panel.start()
+        self.panel.runtime_target.set_active_id('robot')
+        self.assertEqual(self.panel.ik_backend.get_active_id(), 'tron2')
+        self.assertEqual(self.panel.session_ik_backend, 'tron2')
+        self.process.poll = lambda: 0
+        self.panel.events.put(('demo_exit', 0))
+        self.panel.tick()
+        self.assertEqual(self.panel.ik_backend.get_active_id(), 'tron2')
+        self.assertEqual(self.panel.ik_backend.get_active_text(), 'TRON2 QP IK')
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        self.credentials.assert_not_called()
+        self.acquire.assert_not_called()
+
     def test_demo_preserves_selected_vendor_and_whole_console_demo_allows_choice(self):
         self.panel.ik_backend.set_active_id('vendor')
         self.demo()
@@ -125,6 +170,17 @@ class ModelDemoPanelTests(unittest.TestCase):
         self.assertEqual(args[args.index('--ik-backend')+1], 'vendor')
         self.assertEqual(other.session_ik_backend, 'vendor')
 
+    def test_whole_console_demo_includes_tron2(self):
+        other = TeleopPanel(self.credentials, self.acquire, self.release, demo=True)
+        self.addCleanup(other.destroy)
+        self.assertTrue(other.ik_backend.set_active_id('tron2'))
+        other.start()
+        args = self.launch.call_args.args[0]
+        self.assertEqual(args[args.index('--ik-backend')+1], 'tron2')
+        self.assertEqual(other.session_target, 'model')
+        self.credentials.assert_not_called()
+        self.acquire.assert_not_called()
+
     def test_demo_status_reports_actual_algorithm_and_independent_guard(self):
         self.demo()
         self.panel.start()
@@ -133,6 +189,8 @@ class ModelDemoPanelTests(unittest.TestCase):
             ('demo_joint_box_only', False, '本地数值 IK（联合限位关闭）'),
             ('vendor', True, '原厂 IK + 腕部联合限位检查'),
             ('vendor', False, '原厂 IK（联合限位关闭）'),
+            ('tron2', True, 'TRON2 QP IK + 腕部联合限位检查'),
+            ('tron2', False, 'TRON2 QP IK（联合限位关闭）'),
         )
         for backend, enabled, label in cases:
             with self.subTest(backend=backend, enabled=enabled):

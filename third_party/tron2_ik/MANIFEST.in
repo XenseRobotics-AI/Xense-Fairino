@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+recursive-include cpp *.hpp *.cpp
+recursive-include src/tron2_ik/assets/tron2 *.urdf *.STL

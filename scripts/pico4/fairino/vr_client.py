@@ -27,7 +27,7 @@ from tcp_keyboard import verify_both
 from tcp_core import ARMS, MODEL_ID
 from vendor_kinematics import VendorKinematics
 from tool_frames import DEFAULT_CONFIG, load_geometry, tool_config, packet_tool_id
-from vr_core import validate, KIND, LIFT_MODE
+from vr_core import validate, KIND, LIFT_MODE, ROBOT_IK_BACKENDS, require_robot_backend
 from vr_lift import LiftInput
 from vr_lift_presets import HIGH_PERCENT, HOLD_SECONDS, LOW_PERCENT, SPEED_DEG_S
 from vr_input import Clutch, Stream, MAPPING_ID, POSE_FRAMES, controller_sides, rotation_mapping
@@ -42,9 +42,13 @@ from vr_exit import ExitLog, connection_state, exit_notice
 from control_modes import CHASSIS_DIRECTIONS
 
 HERE = Path(__file__).resolve().parent
+GUARDED_IK_BACKENDS = ('native', 'tron2')
+IK_LABELS = {'native': '联合限位 IK · 完整 TCP 目标直接求解', 'vendor': '原厂 IK',
+             'tron2': 'TRON2 QP IK · ART7 模型 · 外层腕部路径保护'}
 
 
 def remote_command(args):
+    require_robot_backend(getattr(args, 'ik_backend', 'vendor'))
     bundle = {name: (SHARED/(name+".py")).read_text() for name in ("wrist_guard", "probe_core", "robot_probe")}
     bundle.update({name: (TCP/(name+".py")).read_text() for name in ("tcp_core", "tool_frames", "tcp_frames", "tcp_jog", "tcp_robot")})
     bundle.update({name: (HERE/(name+".py")).read_text() for name in ("vr_timing", "vr_core", "vr_link_check", "vr_robot")})
@@ -53,6 +57,8 @@ def remote_command(args):
     bundle['vr_lift_presets'] = (HERE/'vr_lift_presets.py').read_text()
     encoded = base64.b64encode(zlib.compress(json.dumps(bundle).encode())).decode()
     argv = ["vr_robot.py", *Timing.from_args(args).argv()]
+    if getattr(args, 'no_held_speed_check', False):
+        argv.append('--no-held-speed-check')
     argv.extend(['--tools-json', json.dumps(getattr(args, 'tools', tool_config()), allow_nan=False)])
     if getattr(args, "link_check", False):
         argv.extend(["--link-check", "--duration", str(args.duration)])
@@ -142,6 +148,7 @@ def heading_controls_released(frame, chassis_enabled):
 
 
 def operate(args, kin, stream, connection):
+    ik_backend = require_robot_backend(getattr(args, 'ik_backend', 'vendor'))
     timing = Timing.from_args(args)
     cadence = Deadline(timing.command_hz, time.monotonic())
     targets_rate, feedback_rate = RateMeter(), RateMeter()
@@ -150,11 +157,12 @@ def operate(args, kin, stream, connection):
     hands = controller_sides(control_mode, getattr(args, "hand_mapping", "auto"))
     freeze_buttons = getattr(args, "freeze_buttons", False)
     # Existing direct callers may still supply the old vendor-only namespace.
-    # The CLI explicitly selects native by default and loads it before connecting.
-    ik_backend = getattr(args, 'ik_backend', 'vendor')
-    if ik_backend == 'native' and args.execute:
+    # The CLI explicitly selects native by default. Both C++ backends load
+    # before opening PICO or the robot connection, and share continuous input.
+    if ik_backend in GUARDED_IK_BACKENDS and args.execute:
         from vr_native_input import NativeClutch
-        clutch_type, plan_request = NativeClutch, args.native_ik.request
+        planner = args.native_ik if ik_backend == 'native' else args.tron_ik
+        clutch_type, plan_request = NativeClutch, planner.request
     else:
         clutch_type, plan_request = Clutch, request
     clutches = {side: clutch_type(side, mode=control_mode, rotation_mode=rotation_mode) for side in ARMS}
@@ -195,8 +203,10 @@ def operate(args, kin, stream, connection):
     tools = getattr(kin, 'tools', tool_config())
     print('TCP：'+('法兰中心' if tools['mode'] == 'flange' else '夹爪固定指尖中心')+
           ' · '+tools['id'], flush=True)
-    print('IK：'+('联合限位 IK · 完整 TCP 目标直接求解' if ik_backend == 'native'
-                 else '原厂 IK'), flush=True)
+    print('IK：'+IK_LABELS[ik_backend], flush=True)
+    held_speed_check = not getattr(args, 'no_held_speed_check', False)
+    print('保持关节速度检测（1°/s）：'+('已开启' if held_speed_check else '已关闭')+
+          '；保持位置偏差、停止确认及其他保护仍保留。', flush=True)
     if args.execute:
         print('所选起始位姿：'+home.get('description', home['name']), flush=True)
         print("即将使能 J1–J20；" + ("先自动回双臂 Home，完成后握 Grip 遥操。" if home_pending else "保持当前姿态，握 Grip 遥操。"), flush=True)
@@ -219,7 +229,8 @@ def operate(args, kin, stream, connection):
         else:
             print("双击 X/Y 或 +/- 调灵敏度 0.25/0.5/1；左摇杆按压校准双臂正前方，空格暂停。", flush=True)
         print("Esc/Ctrl+C 退出并全部下使能。", flush=True)
-        print('联合限位 IK 的腕部保护始终开启，不能关闭。' if ik_backend == 'native' else
+        print(('联合限位 IK' if ik_backend == 'native' else 'TRON2 QP IK')+
+              ' 的腕部保护始终开启，不能关闭。' if ik_backend in GUARDED_IK_BACKENDS else
               '腕部联合限位默认开启；g 启用 / G 停用，切换暂停并保持使能，松开 Grip 后重握。', flush=True)
         labels = {"left": "左", "right": "右"}
         print(f"位移 {control_mode} / 旋转 {rotation_mode}；" + "，".join(
@@ -232,9 +243,12 @@ def operate(args, kin, stream, connection):
     with action_path.open("a", buffering=1) as log, keyboard():
         log.write(json.dumps({"local_time": time.time(), "event": "timing_config", **timing.payload()})+"\n")
         log.write(json.dumps({"local_time": time.time(), "event": "tcp_tool_config", **tools})+"\n")
+        log.write(json.dumps({'local_time': time.time(), 'event': 'held_speed_check_config',
+            'held_speed_check_enabled': held_speed_check, 'held_speed_limit_deg_s': 1.0})+'\n')
         log.write(json.dumps({'local_time': time.time(), 'event': 'ik_config',
-            'ik_backend': ik_backend, 'command_tracking': 'direct_constrained_ik'
-            if ik_backend == 'native' else 'vendor_wrist_scaled_ik'})+'\n')
+            'ik_backend': ik_backend, 'command_tracking': {
+                'native': 'direct_constrained_ik', 'vendor': 'vendor_wrist_scaled_ik',
+                'tron2': 'tron2_qp_external_wrist_checked_ik'}[ik_backend]})+'\n')
         while True:
             now = time.monotonic()
             stop_reason = None
@@ -284,8 +298,9 @@ def operate(args, kin, stream, connection):
                 args.exit_reason = 'keyboard_stop'
                 return 0
             if character in ("g", "G"):
-                if ik_backend == 'native' and character == 'G':
-                    stop_reason = '联合限位 IK 的腕部保护必须保持开启；已暂停，请松开 Grip 后重握'
+                if ik_backend in GUARDED_IK_BACKENDS and character == 'G':
+                    stop_reason = ('联合限位 IK' if ik_backend == 'native' else 'TRON2 QP IK')+\
+                        ' 的腕部保护必须保持开启；已暂停，请松开 Grip 后重握'
                 else:
                     connection.wrist.switch(character == "g")
                     stop_reason = "切换腕部模块：暂停并等待静止；确认后松开 Grip 再重握"
@@ -537,8 +552,11 @@ def operate(args, kin, stream, connection):
                           f'vx {vx:+.3f} / vy {vy:+.3f} m/s / wz {wz:+.3f} rad/s', flush=True)
                 if getattr(args, "gui_input", None):
                     from vr_gui_ipc import status as gui_status
-                    gui_status(phase=phase, sensitivity=sensitivity, sides=sides,
+                    gui_status(phase=phase, receiver_phase=status.get('phase', ''),
+                        sensitivity=sensitivity, sides=sides,
                         wrist_guard=wrist_state, wrist_pending=not wrist_ready,
+                        held_speed_check_enabled=status.get('held_speed_check_enabled'),
+                        held_speed_check_active=status.get('held_speed_check_active'),
                         wrist_limited=any(a.get('wrist_scale', 1.) < 1.
                                           for a in (outgoing or {}).get('arms', {}).values()),
                         ik_partial=any(a.get('native_ik', {}).get('success') is False
@@ -571,12 +589,14 @@ def positive(value):
 
 def configure_ik(args):
     """Resolve backend timing before any connection or device initialization."""
-    if args.ik_backend == 'native' and args.no_wrist_guard:
-        raise ValueError('联合限位 IK 要求腕部保护开启，不能使用 --no-wrist-guard')
+    require_robot_backend(args.ik_backend)
+    if args.ik_backend in GUARDED_IK_BACKENDS and args.no_wrist_guard:
+        raise ValueError(('联合限位 IK' if args.ik_backend == 'native' else 'TRON2 QP IK')+
+                         ' 要求腕部保护开启，不能使用 --no-wrist-guard')
     if args.command_hz is None:
-        args.command_hz = 100. if args.ik_backend == 'native' else 450.
+        args.command_hz = 500. if args.ik_backend in GUARDED_IK_BACKENDS else 450.
     if args.receiver_hz is None:
-        args.receiver_hz = 200. if args.ik_backend == 'native' else 500.
+        args.receiver_hz = 500.
     Timing.from_args(args)
 
 
@@ -590,14 +610,16 @@ def main(argv=None):
     parser.add_argument("--duration", type=positive, default=10., help="通信压测持续秒数")
     parser.add_argument("--observe-ros", action="store_true", help="仅用于 --link-check：增加只读硬件状态订阅；不发布运动目标")
     add_timing_arguments(parser, command_default=None, receiver_default=None,
-        command_help='TCP 采样/IK/下发频率：native 默认 100 Hz，vendor 默认 450 Hz',
-        receiver_help='机器人接收轮询频率：native 默认 200 Hz，vendor 默认 500 Hz')
-    parser.add_argument('--ik-backend', choices=('native', 'vendor'), default='native',
-                        help='native 联合限位 IK（默认），vendor 原厂 IK')
+        command_help='TCP 线性/SLERP 插值、IK 和下发频率：native/tron2 默认 500 Hz，vendor 默认 450 Hz',
+        receiver_help='机器人接收轮询频率：各 IK 后端默认 500 Hz')
+    parser.add_argument('--ik-backend', choices=ROBOT_IK_BACKENDS, default='native',
+                        help='native 联合限位 IK（默认），vendor 原厂 IK，tron2 TRON2 C++ QP + 外层腕部保护')
     parser.add_argument("--host", default="192.168.58.1")
     parser.add_argument("--user", default="fairino")
     parser.add_argument("--no-wrist-guard", action="store_true",
                         help="仅 vendor 后端可用；停用外部腕部保护，运行中 g 启用、G 停用")
+    parser.add_argument('--no-held-speed-check', action='store_true',
+                        help='本次会话关闭保持关节的 1°/s 反馈速度检测；保留位置偏差及其他保护')
     parser.add_argument("--sensitivity", type=positive, default=.25, help="位移和旋转灵敏度")
     parser.add_argument("--mode", choices=tuple(POSE_FRAMES), default="first_person",
                         help="first_person 同向；mirror 面对面镜像；mirror_same_direction 面对面且保持房间方向")
@@ -685,6 +707,11 @@ def main(argv=None):
             # Compile/load locally before opening PICO or any robot connection.
             from vr_native_ik import NativeIK
             args.native_ik = NativeIK(tools=args.tools)
+        elif args.execute and args.ik_backend == 'tron2':
+            # Optional native dependencies must be ready before any device or
+            # robot connection; failure must never silently choose another IK.
+            from vr_tron_ik import TronIK
+            args.tron_ik = TronIK(tools=args.tools)
         if args.execute:
             stream = Stream()
             stream.open()

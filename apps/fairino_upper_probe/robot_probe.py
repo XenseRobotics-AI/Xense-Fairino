@@ -140,7 +140,8 @@ class Probe:
                            held_positions=self.hold_positions,
                            moving_joints=getattr(self, "moving_joints", None),
                            moving_speed_limit=getattr(self, "moving_speed_limit", 2.0),
-                           held_speed_limit=getattr(self, "held_speed_limit", 0.5))
+                           held_speed_limit=getattr(self, "held_speed_limit", 0.5),
+                           held_speed_check=getattr(self, "held_speed_check", True))
             if self.session_enabled and not all(self.hw["enabled"]):
                 raise RuntimeError("有上半身关节退出使能，结束本次控制")
         except RuntimeError as exc:
