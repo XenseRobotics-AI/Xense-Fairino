@@ -49,9 +49,15 @@ def forward_matrix(q_rad):
     q = finite_vector(q_rad, 7, '七轴角度')
     t = identity()
     for v,d,a,offset in zip(q,D_MM,ALPHA,THETA):
-        b = multiply(rotation(2,v+offset),rotation(0,a))
-        b[2][3] = d
-        t = multiply(t,b)
+        # Multiply by the standard DH transform directly. This remains an
+        # independent stdlib FK; expanding the sparse rotation/translation
+        # avoids fourteen generic 4x4 products per high-rate validation.
+        c,s = math.cos(v+offset),math.sin(v+offset)
+        ca,sa = math.cos(a),math.sin(a)
+        for row in t[:3]:
+            x,y,z,p = row
+            lateral = -x*s+y*c
+            row[:] = [x*c+y*s, lateral*ca+z*sa, -lateral*sa+z*ca, p+z*d]
     return t
 
 
