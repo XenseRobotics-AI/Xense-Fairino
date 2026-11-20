@@ -25,7 +25,8 @@ TELEOP_MODES = {
     'mirror_same_direction': '右手柄 → 左臂 / 左爪，左手柄 → 右臂 / 右爪',
     'first_person': '左手柄 → 左臂 / 左爪，右手柄 → 右臂 / 右爪',
 }
-IK_BACKENDS = {'native': '联合限位 IK', 'vendor': '原厂 IK', 'tron2': 'TRON2 QP IK'}
+IK_BACKENDS = {'native': '联合限位 IK', 'vendor': '原厂 IK', 'tron2': 'TRON2 QP IK',
+               'fairino_qp': 'Fairino QP IK（手臂+躯干）'}
 DEMO_IK_BACKENDS = {**IK_BACKENDS, 'tron2': 'TRON2 QP IK（Demo）'}
 NATIVE_GUARD_MESSAGE = '联合限位 IK 要求腕部联合限位保护开启，不能关闭'
 TRON_GUARD_MESSAGE = 'TRON2 QP IK 实机要求腕部联合限位及路径检查开启，不能关闭'
@@ -108,8 +109,6 @@ class TeleopPanel(Gtk.Box):
         self.wrist_controls = GuardControls(self.switch_wrist)
         self.robot_wrist_tooltip = self.wrist_controls.get_tooltip_text()
         settings.pack_start(self.wrist_controls, False, False, 0)
-        self.ik_backend.connect('changed', self.ik_changed)
-        self.ik_changed()
         self.held_speed_check = Gtk.CheckButton(label='保持关节速度检测（1°/s）· 启动时生效')
         self.held_speed_check.set_active(True)
         self.held_speed_check.set_tooltip_text(
@@ -245,7 +244,9 @@ class TeleopPanel(Gtk.Box):
         self.log = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         scroll.add(self.log)
         self.pack_start(scroll, False, True, 0)
+        self.ik_backend.connect('changed', self.ik_changed)
         self.runtime_target.connect('changed', self.target_changed)
+        self.ik_changed()
         self.target_changed()
         GLib.timeout_add(100, self.tick)
 
@@ -270,7 +271,7 @@ class TeleopPanel(Gtk.Box):
         if model:
             self.chassis.set_active(False)
         self.target_help.set_text(
-            '模型演示：启动前可选择联合限位 IK、原厂 IK 或 TRON2 QP IK；腕部联合限位可开关。\n'
+            '模型演示：启动前可选择联合限位 IK、原厂 IK、TRON2 QP IK 或 Fairino QP IK；腕部联合限位可开关。\n'
             '每次从所选双臂 Home 和身体上位开始；可演示双臂、身体升降和夹爪，底盘暂不参与。'
             if model else '真机遥操：启动会连接并使能上半身；可按需启用夹爪、身体及底盘。')
         self.start_button.set_label('启动模型 Demo' if model else '启动遥操 · 使能上半身')
@@ -318,20 +319,21 @@ class TeleopPanel(Gtk.Box):
         if self.model_demo_selected():
             return None
         backend = self.session_ik_backend or self.ik_backend.get_active_id()
-        return {'native': NATIVE_GUARD_MESSAGE, 'tron2': TRON_GUARD_MESSAGE}.get(backend)
+        return {'native': NATIVE_GUARD_MESSAGE, 'tron2': TRON_GUARD_MESSAGE,
+                'fairino_qp': 'Fairino QP IK 实机要求腕部联合限位及路径检查开启，不能关闭'}.get(backend)
 
     def update_wrist_option(self):
         required = self.required_wrist_message()
         self.ik_backend.set_tooltip_text(
-            'Demo 三种 IK 均在本机计算，不连接机器人；启动后不能切换。\n'
-            'TRON2 QP IK 已适配当前机械臂模型。\n'
+            'Demo 的 IK 均在本机计算，不连接机器人；启动后不能切换。\n'
+            'Fairino QP IK 联动双臂和躯干；回 Home 时先收臂，再回到本次会话的躯干起始姿态。\n'
             '原厂 IK 和 TRON2 QP IK 可配合腕部联合限位检查；关闭限位不切换这两种 IK。\n'
             '选择联合限位 IK 后关闭限位，则使用 Demo 专用无腕部联合约束的数值 IK。'
             if self.model_demo_selected() else
-            '联合限位 IK / TRON2 QP IK 默认 500 Hz，原厂 IK 默认 450 Hz；启动后不能切换。\n'
+            '联合限位 IK / TRON2 QP IK 默认 500 Hz，原厂 IK 默认 450 Hz，Fairino QP IK 默认 200 Hz。\n'
             '沿用原厂链路的 TCP 插值：位移线性、姿态 SLERP，默认缓冲 12 ms，再进行 IK 并直接发布关节目标。\n'
             '联合限位 IK 在求解中约束腕部；TRON2 在求解后检查腕部及路径，必要时缩小目标重新求解。\n'
-            '这两种 IK 在实机上均要求腕部保护开启。')
+            '联合限位 IK、TRON2 和 Fairino QP 在实机上均要求腕部保护开启。')
         if required and not self.wrist_controls.toggle.get_active():
             self.updating_wrist = True
             try:
@@ -344,7 +346,7 @@ class TeleopPanel(Gtk.Box):
                                             else '腕部联合限位 · 运行中可启用 / 停用')
 
     def ik_changed(self, *_):
-        self.update_wrist_option()
+        self.update_options()
         message = self.required_wrist_message()
         self.wrist_controls.update({'message': message} if message else {})
 
@@ -464,7 +466,7 @@ class TeleopPanel(Gtk.Box):
                 for side in ('left', 'right'):
                     argv.extend([f'--{side}-gripper-sn', self.gripper_serials[side].get_text().strip()])
                     argv.extend([f'--{side}-gripper-max-open-percent', str(self.gripper_limits[side].get_value())])
-            if self.body_lift.get_active():
+            if backend != 'fairino_qp' and self.body_lift.get_active():
                 argv.append('--body-lift')
             if self.chassis.get_active():
                 argv.extend(['--chassis', '--chassis-host', base_credentials[0],
@@ -503,7 +505,7 @@ class TeleopPanel(Gtk.Box):
                 '--home-preset', self.home_preset.get_active_id()]
         if not self.wrist_controls.toggle.get_active():
             argv.append('--disable-wrist-guard')
-        if self.body_lift.get_active():
+        if self.ik_backend.get_active_id() != 'fairino_qp' and self.body_lift.get_active():
             argv.append('--body-lift')
         if self.grippers.get_active():
             argv.append('--grippers')
@@ -545,6 +547,10 @@ class TeleopPanel(Gtk.Box):
             widget.set_sensitive(editable)
         for widget in (self.home, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable and not model)
+        whole_body = self.ik_backend.get_active_id() == 'fairino_qp'
+        if whole_body:
+            self.body_lift.set_active(False)
+        self.body_lift.set_sensitive(editable and not whole_body)
         self.held_speed_check.set_sensitive(editable and not model)
         for widget in (self.gripper_speed, *self.gripper_limits.values()):
             widget.set_sensitive(editable and self.grippers.get_active())
@@ -597,10 +603,10 @@ class TeleopPanel(Gtk.Box):
             ik_name = '联合限位 IK'
         elif backend == 'demo_joint_box_only':
             ik_name = '本地数值 IK（联合限位关闭）'
-        elif backend == 'tron2':
-            ik_name = ('TRON2 QP IK + 腕部联合限位检查' if enabled is True else
-                       'TRON2 QP IK（联合限位关闭）' if enabled is False else
-                       'TRON2 QP IK（联合限位状态未报告）')
+        elif backend in ('tron2', 'fairino_qp'):
+            name = 'TRON2 QP IK' if backend == 'tron2' else DEMO_IK_BACKENDS[backend]
+            ik_name = name + (' + 腕部联合限位检查' if enabled is True else
+                              '（联合限位关闭）' if enabled is False else '（联合限位状态未报告）')
         else:
             ik_name = '未报告'
         text = (f'模型 Demo · {state.get("phase", "跟随")} · 灵敏度 {sensitivity:g} · 仅显示模拟关节'
@@ -687,10 +693,11 @@ class TeleopPanel(Gtk.Box):
                         ('已开启' if held_check is True else '已关闭' if held_check is False else '等待接收端确认'))
                     if state.get('ik_backend') == 'native' and state.get('ik_partial'):
                         self.status.set_text(self.status.get_text()+'\n当前为部分可行解，完整手柄目标仍保留')
-                    elif state.get('ik_backend') == 'tron2' and state.get('ik_partial'):
+                    elif state.get('ik_backend') in ('tron2', 'fairino_qp') and state.get('ik_partial'):
                         self.status.set_text(self.status.get_text()+(
                             '\n腕部保护已缩小目标，越界手柄位移已舍弃' if state.get('wrist_limited') else
-                            '\nTRON2 当前未完全收敛，完整手柄目标仍保留'))
+                            '\n' + ('TRON2' if state['ik_backend'] == 'tron2' else 'Fairino QP')
+                            + ' 当前未完全收敛，完整手柄目标仍保留'))
                     if state.get('receiver_phase') and state['receiver_phase'] != state['phase']:
                         self.status.set_text(self.status.get_text()+'\n接收端：'+str(state['receiver_phase']))
                     heading = '双臂正前方已校准' if state.get('heading_calibrated') else '双臂正前方未校准 · 沿用原有追踪方向'

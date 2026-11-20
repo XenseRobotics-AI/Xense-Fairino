@@ -76,7 +76,7 @@ class RobotModel:
             segments.append((f'j{number}_flange', transform[:3, 3], flange[:3]))
         return transforms, segments
 
-    def measured_positions(self, hardware):
+    def measured_positions(self, hardware, *, demo=False):
         if not hardware:
             return {}
         names, values = hardware.get('joint_names', []), hardware.get('position', [])
@@ -84,6 +84,8 @@ class RobotModel:
             raise ValueError('上半身关节反馈格式不符')
         measured = dict(zip(names, values))
         result = {model: measured[physical] for physical, model in VERIFIED_UPPER.items()}
+        if demo:
+            result.update(j15=measured['j16'], j16=measured['j17'])
         if self.body.config.get('upright_confirmed'):
             result.update({name: measured[name]*sign for name, sign in BODY_SIGNS.items()})
             # Display convention only: the saved user-declared vertical reference

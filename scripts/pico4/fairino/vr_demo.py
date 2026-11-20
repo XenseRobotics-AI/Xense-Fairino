@@ -3,7 +3,7 @@
 
 This is an ideal position model, not a dynamics/latency/collision simulator:
 accepted joint targets become model positions directly. The local vendor IK,
-the constrained numerical IK or the ART7-adapted TRON2 QP can be selected before
+the constrained numerical IK, TRON2 QP or Fairino whole-body QP can be selected before
 starting; all share the same input mapping. A deliberate demo-only switch can remove the wrist envelope
 (using box-constrained IK for the native backend); physical control is separate.
 """
@@ -26,7 +26,7 @@ from tcp_core import ARMS, multiply, tcp_forward_matrix
 from tool_frames import DEFAULT_CONFIG, for_arm, load_geometry, tool_config
 from vr_cartesian import CartesianInput
 from vr_controls import JoystickControls, sensitivity_step
-from vr_core import validate
+from vr_core import TORSO_JOINTS, validate
 from vr_heading import heading_alignment
 from vr_home import HOME_PRESETS, HomeMotion, load_home, resolve_home
 from vr_input import POSE_FRAMES, Stream, controller_sides, rotation_mapping
@@ -67,8 +67,10 @@ class DemoEngine:
                  grippers=False, max_openings=None, hand_mapping='auto',
                  rotation_mode='auto', interpolation_delay_ms=12., wrist_guard=True,
                  ik_backend='native'):
-        if ik_backend not in ('native', 'vendor', 'tron2'):
-            raise ValueError('模型 IK 须选择 native 或 vendor 或 tron2')
+        if ik_backend not in ('native', 'vendor', 'tron2', 'fairino_qp'):
+            raise ValueError('模型 IK 须选择 native 或 vendor 或 tron2 或 fairino_qp')
+        if ik_backend == 'fairino_qp' and body_lift:
+            raise ValueError('Fairino QP 已控制躯干，不能同时启用身体预设升降')
         if type(sensitivity) not in (int, float) or not math.isfinite(sensitivity) or not 0 < sensitivity <= 1.:
             raise ValueError('模型灵敏度须在 0–1 之间且大于零')
         self.mode, self.sensitivity = mode, sensitivity
@@ -85,14 +87,23 @@ class DemoEngine:
             if ik_backend == 'tron2':
                 from vr_demo_tron_ik import TronDemoIK
                 self.native = TronDemoIK(self.kin.tools)
+            elif ik_backend == 'fairino_qp':
+                from vr_demo_fairino_ik import FairinoDemoIK
+                self.native = FairinoDemoIK(self.kin.tools, clock=lambda: self.last_time)
             else:
                 self.native = NativeIK(self.kin.tools)
         self.unconstrained = None
         self.guard = WristGuard(wrist_guard)
         self.clutches = {side: NativeClutch(side, mode, rotation_mapping(mode, rotation_mode)) for side in ARMS}
-        self.cartesian = CartesianInput(self.clutches, interpolation_delay_ms)
-        self.joysticks = JoystickControls()
+        if ik_backend == 'fairino_qp':
+            from vr_fairino_input import FairinoInput
+            self.cartesian = FairinoInput(self.clutches, self.native, interpolation_delay_ms)
+        else:
+            self.cartesian = CartesianInput(self.clutches, interpolation_delay_ms)
+        self.joysticks = JoystickControls(right_a_home=ik_backend == 'fairino_qp' and not freeze_buttons)
         self.home = load_home(resolve_home(home_preset))
+        if ik_backend == 'fairino_qp':
+            self.native.set_home(self.home['target'])  # fairino_ik posture target
         self.body_model = load_config()
         self.q = self.body_model.pose(dict(height=HIGH_PERCENT, forward=0., roll=0., yaw=0.), [0.]*20)
         for side, joints in ARMS.items():
@@ -125,12 +136,13 @@ class DemoEngine:
         return dict(joint_names=[f'j{i}' for i in range(1, 21)], position=self.q[:],
                     command_position=self.q[:], velocity=[0.]*20)
 
-    def hold(self, message):
+    def hold(self, message, *, reset_joysticks=True):
         self.paused = True
         self.home_pending = False
         self.home_motion = None
         self.cartesian.reset()
-        self.joysticks.reset()
+        if reset_joysticks:
+            self.joysticks.reset()
         if self.lift:
             self.lift.reset()
             self.lift_input.reset()
@@ -154,7 +166,8 @@ class DemoEngine:
             if self.home_motion is not None or self.home_pending:
                 self.hold('已中止模型 Home；松开两侧 Grip 后重握')
             else:
-                self.hold('准备模型 Home；请松开两侧 Grip')
+                # Keep a buffered release armed for a second press during Home.
+                self.hold('准备模型 Home；请松开两侧 Grip', reset_joysticks=self.ik_backend != 'fairino_qp')
                 self.home_pending = True
         elif command in ('guard_on', 'guard_off'):
             enabled = command == 'guard_on'
@@ -178,6 +191,9 @@ class DemoEngine:
             return
         for side, entry in packet['arms'].items():
             for j, value in zip(ARMS[side], entry['target']):
+                self.q[j-1] = value
+        if self.ik_backend == 'fairino_qp' and 'torso' in packet:
+            for j, value in zip(TORSO_JOINTS, packet['torso']['target'], strict=True):
                 self.q[j-1] = value
         self.sides = tuple(packet['arms'])
         self.partial = any(a.get('native_ik', {}).get('success') is False for a in packet['arms'].values())
@@ -220,14 +236,24 @@ class DemoEngine:
                 self.command('faster' if controls['sensitivity'] > 0 else 'slower')
                 return self.snapshot(now, frame)
             if controls['home']:
+                if controls.get('cancel_home'):
+                    self.hold('已中止模型 Home；松开两侧 Grip 后重握')
+                    return self.snapshot(now, frame)
                 self.command('home')
+                if self.ik_backend == 'fairino_qp' and not self.home_pending:
+                    return self.snapshot(now, frame)
             hw = self.hardware()
-            if self.home_motion is not None and not self.released(frame):
+            grip_samples = (frame.get('samples') or [frame]) if self.ik_backend == 'fairino_qp' else [frame]
+            if self.home_motion is not None and any(not self.released(sample) for sample in grip_samples):
                 self.hold('Grip 已握下，中止模型 Home；松开后重握')
                 return self.snapshot(now, frame)
             if self.home_pending or self.home_motion is not None:
                 if self.home_pending and self.released(frame):
-                    self.home_motion = HomeMotion(self.home, hw, now, self.guard)
+                    if self.ik_backend == 'fairino_qp':
+                        from vr_fairino_home import FairinoHomeMotion
+                        self.home_motion = FairinoHomeMotion(self.home, hw, now, self.guard, self.native)
+                    else:
+                        self.home_motion = HomeMotion(self.home, hw, now, self.guard)
                     self.home_pending = False
                 if self.home_motion is not None:
                     if self.home_motion.complete(hw, now):
@@ -235,7 +261,9 @@ class DemoEngine:
                     else:
                         self.sequence += 1
                         self._apply(self.home_motion.request(self.kin, hw, now, self.sequence, now))
-                        self.message = '模型正在回 Home；握任一 Grip 可中止'
+                        self.message = ('模型躯干正在回会话起始姿态；握任一 Grip 可中止'
+                                        if self.ik_backend == 'fairino_qp' and self.home_motion.returning_torso
+                                        else '模型正在回 Home；握任一 Grip 可中止')
                 return self.snapshot(now, frame)
             if self.paused:
                 if self.released(frame) and (not self.heading_release or
@@ -349,8 +377,8 @@ def positive(value):
 def parser():
     result = argparse.ArgumentParser(description='PICO 控制本地模型，无机器人连接')
     result.add_argument('--gui-stdio', action='store_true')
-    result.add_argument('--ik-backend', choices=('native', 'vendor', 'tron2'), default='native',
-                        help='本地模型 IK：native 联合限位，vendor 原厂离线库，tron2 C++ QP；均不连接机器人')
+    result.add_argument('--ik-backend', choices=('native', 'vendor', 'tron2', 'fairino_qp'), default='native',
+                        help='本地模型 IK：native 联合限位，vendor 原厂离线库，tron2 C++ QP，fairino_qp 手臂和躯干 QP；均不连接机器人')
     result.add_argument('--mode', choices=tuple(POSE_FRAMES), default='mirror_same_direction')
     result.add_argument('--sensitivity', type=positive, default=.25)
     result.add_argument('--rotation-mode', choices=('auto', *POSE_FRAMES), default='auto')
@@ -405,7 +433,8 @@ def main(argv=None):
         stream.open()
         cadence = Deadline(args.command_hz, time.monotonic())
         last_display = 0.
-        print('模型演示：握 Grip 遥操；右摇杆按压回 Home；左摇杆按压校准正前方。', flush=True)
+        home_button = '右摇杆按压或右手柄 A 键' if args.ik_backend == 'fairino_qp' and not args.freeze_buttons else '右摇杆按压'
+        print(f'模型演示：握 Grip 遥操；{home_button}回 Home；左摇杆按压校准正前方。', flush=True)
         while not engine.stopped:
             if commands and commands.closed.is_set():
                 engine.command('stop')

@@ -44,12 +44,14 @@ class _DoubleTap:
 
 
 class JoystickControls:
-    def __init__(self):
+    def __init__(self, *, right_a_home=False):
+        self.right_a_home = right_a_home
         self.last_sample = None
         self.reset()
 
     def reset(self):
         self.armed = False
+        self.a_released = False
         self.left_click = self.right_click = False
         self.taps = {'primary': _DoubleTap(), 'secondary': _DoubleTap()}
 
@@ -73,12 +75,21 @@ class JoystickControls:
                     self.reset()
             self.last_sample = stamp
             left, right = sample['left'], sample['right']
+            home_edge = False
+            if self.right_a_home:
+                down = right.get('primary', False)
+                home_edge = down and self.a_released
+                self.a_released = not down
             lc, rc = left.get('axis_click', False), right.get('axis_click', False)
             if not self.armed:
                 self.armed = not lc and not rc
             else:
-                result['home'] |= rc and not self.right_click
+                home_edge |= rc and not self.right_click
                 result['calibrate_heading'] |= lc and not self.left_click
+            if home_edge:
+                if self.right_a_home and result['home']:
+                    result['cancel_home'] = True
+                result['home'] = True
             self.left_click, self.right_click = lc, rc
             x, y = left.get('primary', False), left.get('secondary', False)
             if lc or rc or (x and y):
@@ -100,6 +111,7 @@ class JoystickControls:
         # Calibration wins even if the same batch contains a Home or tap edge.
         if result['calibrate_heading']:
             result['home'] = False
+            result.pop('cancel_home', None)
         if result['calibrate_heading'] or result['home']:
             result['sensitivity'] = 0
             for tap in self.taps.values():

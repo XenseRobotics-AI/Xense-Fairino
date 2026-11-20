@@ -111,6 +111,37 @@ class ModelDemoPanelTests(unittest.TestCase):
                     self.panel.tick()
                     self.assertTrue(self.panel.ik_backend.get_sensitive())
 
+    def test_fairino_qp_local_launch_disables_lift_and_reports_guard(self):
+        self.demo()
+        self.panel.body_lift.set_active(True)
+        self.assertTrue(self.panel.ik_backend.set_active_id('fairino_qp'))
+        self.assertFalse(self.panel.body_lift.get_active())
+        self.assertFalse(self.panel.body_lift.get_sensitive())
+        self.panel.body_lift.set_active(True)  # Programmatic changes cannot leak into argv.
+        self.panel.start()
+        args = self.launch.call_args.args[0]
+        self.assertEqual(args[args.index('--ik-backend')+1], 'fairino_qp')
+        self.assertNotIn('--body-lift', args)
+        self.credentials.assert_not_called()
+        for guard, text in ((True, '腕部联合限位检查'), (False, '联合限位关闭')):
+            self.frame(sample_state(ik_backend='fairino_qp', wrist_guard_enabled=guard))
+            self.assertIn('Fairino QP IK（手臂+躯干）', self.panel.status.get_text())
+            self.assertIn(text, self.panel.status.get_text())
+        self.process.poll = lambda: 0
+        self.panel.events.put(('demo_exit', 0))
+        self.panel.tick()
+        self.panel.runtime_target.set_active_id('robot')
+        self.assertEqual(self.panel.ik_backend.get_active_id(), 'fairino_qp')
+        self.assertFalse(self.panel.body_lift.get_sensitive())
+        self.assertTrue(self.panel.wrist_controls.toggle.get_active())
+        self.assertFalse(self.panel.wrist_controls.toggle.get_sensitive())
+        self.panel.body_lift.set_active(True)
+        self.panel.start()
+        argv = self.launch.call_args.args[0]
+        self.assertIn('fairino_qp', argv)
+        self.assertNotIn('--body-lift', argv)
+        self.assertNotIn('--no-wrist-guard', argv)
+
     def test_tron2_switching_from_demo_to_robot_retains_backend_and_restores_guard(self):
         self.assertTrue(self.panel.ik_backend.set_active_id('tron2'))
         self.assertEqual(self.panel.ik_backend.get_active_text(), 'TRON2 QP IK')

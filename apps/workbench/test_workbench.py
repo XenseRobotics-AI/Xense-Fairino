@@ -160,6 +160,21 @@ class ModelTests(unittest.TestCase):
         self.assertAlmostEqual(positions['j19'], 9.)
         self.assertAlmostEqual(positions['j20'], -9.)
 
+    def test_demo_only_torso_display_matches_adapter_mapping(self):
+        import math
+        from tools.ik_experiments.fairino_qp_art7 import TORSO_MAPPING, torso_angles
+        model = RobotModel()
+        q = [.01*i for i in range(20)]
+        names = [f'j{i}' for i in range(1, 21)]
+        hardware = dict(joint_names=names[::-1], position=q[::-1])
+        default = model.measured_positions(hardware)
+        demo = model.measured_positions(hardware, demo=True)
+        self.assertEqual(set(demo)-set(default), {'j15', 'j16'})
+        self.assertEqual(default, {k: demo[k] for k in default})
+        self.assertNotIn('j17', demo)
+        for (_, name, _), angle in zip(TORSO_MAPPING, torso_angles(q, math.radians(model.body.neutral))):
+            self.assertEqual(demo[name], angle)
+
     def test_saved_high_low_calibration_drives_same_height_and_chest_attitude(self):
         import numpy as np
         model = RobotModel()

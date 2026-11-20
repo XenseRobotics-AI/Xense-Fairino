@@ -34,6 +34,31 @@ class HeldSpeedCheckTests(unittest.TestCase):
             p.guard()
         self.assertIn('fault_snapshot', p.events[-1])
 
+    def test_fairino_qp_raises_only_held_j16_to_ten_degrees(self):
+        # 2026-11-20 real-robot stops: J16 -1.842 and -1.010 deg/s while its command stayed fixed.
+        p = fake_probe(VRProbe)
+        p.held_speed_overrides = {16: 10.}
+        p.moving_joints = list(range(1, 15))
+        for speed in (-1.842, -1.010, 9.99):
+            p.hw['velocity'][15] = math.radians(speed)
+            p.guard()
+        p.hw['velocity'][15] = math.radians(10.01)
+        with self.assertRaisesRegex(RuntimeError, r'J16 速度 .*10.0°/s'):
+            p.guard()
+        p.hw['velocity'][15] = 0.
+        for joint in (15, 17, 18, 19, 20):
+            p.hw['velocity'][joint-1] = math.radians(1.01)
+            with self.assertRaisesRegex(RuntimeError, rf'J{joint} 速度 .*1.0°/s'):
+                p.guard()
+            p.hw['velocity'][joint-1] = 0.
+
+    def test_held_j16_override_is_fairino_qp_only(self):
+        # Constructor only; TCPProbe.__init__ (ROS node) is replaced.
+        with patch('vr_robot.TCPProbe.__init__', lambda self, args: None):
+            for body, expected in ((None, None), (object(), {16: 10.})):
+                p = VRProbe(NS(body=body, tools_json=None, body_lift=False, no_held_speed_check=False))
+                self.assertEqual(p.held_speed_overrides, expected)
+
     def test_disabled_check_accepts_observed_speed_peaks_without_position_drift(self):
         # Magnitudes from the recorded J16/J17 stops, in the hardware's rad/s.
         for moving in (list(range(1, 15)), None):

@@ -42,9 +42,11 @@ from vr_exit import ExitLog, connection_state, exit_notice
 from control_modes import CHASSIS_DIRECTIONS
 
 HERE = Path(__file__).resolve().parent
-GUARDED_IK_BACKENDS = ('native', 'tron2')
+GUARDED_NAMES = {'native': '联合限位 IK', 'tron2': 'TRON2 QP IK', 'fairino_qp': 'Fairino QP IK'}
+GUARDED_IK_BACKENDS = tuple(GUARDED_NAMES)
 IK_LABELS = {'native': '联合限位 IK · 完整 TCP 目标直接求解', 'vendor': '原厂 IK',
-             'tron2': 'TRON2 QP IK · ART7 模型 · 外层腕部路径保护'}
+             'tron2': 'TRON2 QP IK · ART7 模型 · 外层腕部路径保护',
+             'fairino_qp': 'Fairino QP IK · 双臂与躯干 · 外层腕部路径保护'}
 
 
 def remote_command(args):
@@ -66,7 +68,13 @@ def remote_command(args):
             argv.append("--observe-ros")
     elif not args.execute:
         argv.append("--prepare-check" if args.prepare_check else "--check")
-    if getattr(args, 'body_lift', False):
+    if getattr(args, 'ik_backend', None) == 'fairino_qp':
+        if getattr(args, 'body_lift', False):
+            raise ValueError('Fairino QP 与 --body-lift 互斥')
+        planner = getattr(args, 'fairino_ik', None)
+        config = planner.body.config if planner is not None else json.loads((SHARED/'body_control/body_config.json').read_text())
+        argv.extend(['--ik-backend', 'fairino_qp', '--body-config-json', json.dumps(config)])
+    elif getattr(args, 'body_lift', False):
         config = json.loads((SHARED/'body_control/body_config.json').read_text())
         argv.extend(['--body-lift', '--body-config-json', json.dumps(config)])
     loader = ("import base64,zlib,json,sys,types;"
@@ -147,6 +155,20 @@ def heading_controls_released(frame, chassis_enabled):
     return True
 
 
+def wait_for_body_start(connection, planner):
+    """Keep the receiver unarmed while its controller acquires the measured hold."""
+    deadline = time.monotonic()+60.
+    while True:
+        status = connection.latest
+        if connection.done.is_set() or status.get('error') or time.monotonic() > deadline:
+            raise RuntimeError(status.get('error') or '未收到使能前的身体保持姿态')
+        if status.get('body_start_ready') and time.monotonic()-connection.last_status <= .25:
+            planner.start_path(status['hardware'])
+            return
+        connection.send()
+        time.sleep(.01)
+
+
 def operate(args, kin, stream, connection):
     ik_backend = require_robot_backend(getattr(args, 'ik_backend', 'vendor'))
     timing = Timing.from_args(args)
@@ -156,18 +178,25 @@ def operate(args, kin, stream, connection):
     rotation_mode = rotation_mapping(control_mode, getattr(args, "rotation_mode", "auto"))
     hands = controller_sides(control_mode, getattr(args, "hand_mapping", "auto"))
     freeze_buttons = getattr(args, "freeze_buttons", False)
+    whole_body = ik_backend == 'fairino_qp'
     # Existing direct callers may still supply the old vendor-only namespace.
     # The CLI explicitly selects native by default. Both C++ backends load
     # before opening PICO or the robot connection, and share continuous input.
     if ik_backend in GUARDED_IK_BACKENDS and args.execute:
         from vr_native_input import NativeClutch
-        planner = args.native_ik if ik_backend == 'native' else args.tron_ik
+        planner = getattr(args, {'native': 'native_ik', 'tron2': 'tron_ik', 'fairino_qp': 'fairino_ik'}[ik_backend])
         clutch_type, plan_request = NativeClutch, planner.request
     else:
         clutch_type, plan_request = Clutch, request
     clutches = {side: clutch_type(side, mode=control_mode, rotation_mode=rotation_mode) for side in ARMS}
-    cartesian = CartesianInput(clutches, timing.interpolation_delay_ms)
-    joysticks = JoystickControls()
+    if whole_body and args.execute:
+        from vr_fairino_home import FairinoHomeMotion
+        from vr_fairino_ik import WORLD_FROM_V
+        from vr_fairino_input import FairinoInput
+        cartesian = FairinoInput(clutches, planner, timing.interpolation_delay_ms)
+    else:
+        cartesian = CartesianInput(clutches, timing.interpolation_delay_ms)
+    joysticks = JoystickControls(right_a_home=whole_body and not freeze_buttons)
     heading_yaw_deg = None
     heading_message = '正前方未校准；沿用 PICO 追踪方向'
     heading_release_required = False
@@ -222,14 +251,19 @@ def operate(args, kin, stream, connection):
             print('夹爪遥操已显式启用：控制某臂的 Trigger 连续控制同侧夹爪；Grip 仍控制手臂跟随。', flush=True)
             print(f'夹爪速度 {grippers.speed:g} rad/s（电机轴），目标传输最多 100 Hz；'
                   '自动使用各爪允许的最大持续力矩（当前 EL05 为 1.1 Nm）。', flush=True)
-        print("Home 仅移动双臂；请松开两侧 Grip，途中握任一 Grip 或按空格可中止。", flush=True)
+        if whole_body:
+            print("Home 先移动双臂，再恢复会话起始躯干姿态；握 Grip 或按空格中止。", flush=True)
+            if not freeze_buttons:
+                print("物理右 A 键也可触发或中止 Home。", flush=True)
+        else:
+            print("Home 仅移动双臂；请松开两侧 Grip，途中握任一 Grip 或按空格可中止。", flush=True)
         if freeze_buttons:
             print("按住 A/X 冻结旋转（只平移）；按住 B/Y 冻结位移（只旋转）；同时按住冻结两者。", flush=True)
             print("按键仅影响该手柄控制的手臂；松开不补走；仍须握 Grip。+/- 调灵敏度，空格暂停。", flush=True)
         else:
             print("双击 X/Y 或 +/- 调灵敏度 0.25/0.5/1；左摇杆按压校准双臂正前方，空格暂停。", flush=True)
         print("Esc/Ctrl+C 退出并全部下使能。", flush=True)
-        print(('联合限位 IK' if ik_backend == 'native' else 'TRON2 QP IK')+
+        print(GUARDED_NAMES[ik_backend]+
               ' 的腕部保护始终开启，不能关闭。' if ik_backend in GUARDED_IK_BACKENDS else
               '腕部联合限位默认开启；g 启用 / G 停用，切换暂停并保持使能，松开 Grip 后重握。', flush=True)
         labels = {"left": "左", "right": "右"}
@@ -237,8 +271,11 @@ def operate(args, kin, stream, connection):
             f"{labels[hand]}手柄 → 机器人{labels[arm]}臂" for arm, hand in hands.items()), flush=True)
         print(f"TCP 插值 v3：位移线性 / 姿态 SLERP → IK；采样/下发 {timing.command_hz:g} Hz，缓冲 {timing.interpolation_delay_ms:g} ms。", flush=True)
         print(f"机器人单点保持，无额外关节追赶段；接收轮询 {timing.receiver_hz:g} Hz / 回传 {timing.feedback_hz:g} Hz。", flush=True)
-        print(f"坐标映射 {MAPPING_ID}：双臂按厂家整机 URDF 对齐胸部，X 前 / Y 左 / Z 上。", flush=True)
-        print("方向随胸部变化；腰部或折叠结构倾斜时，胸部轴不保证与地面对齐。", flush=True)
+        if whole_body:
+            print("手柄位移和旋转固定在底盘坐标系；腰和折叠结构运动时映射方向保持。", flush=True)
+        else:
+            print(f"坐标映射 {MAPPING_ID}：双臂按厂家整机 URDF 对齐胸部，X 前 / Y 左 / Z 上。", flush=True)
+            print("方向随胸部变化；腰部或折叠结构倾斜时，胸部轴不保证与地面对齐。", flush=True)
         print("保留模型关节限位、独立正解校验、急停和断流停止。", flush=True)
     with action_path.open("a", buffering=1) as log, keyboard():
         log.write(json.dumps({"local_time": time.time(), "event": "timing_config", **timing.payload()})+"\n")
@@ -248,7 +285,8 @@ def operate(args, kin, stream, connection):
         log.write(json.dumps({'local_time': time.time(), 'event': 'ik_config',
             'ik_backend': ik_backend, 'command_tracking': {
                 'native': 'direct_constrained_ik', 'vendor': 'vendor_wrist_scaled_ik',
-                'tron2': 'tron2_qp_external_wrist_checked_ik'}[ik_backend]})+'\n')
+                'tron2': 'tron2_qp_external_wrist_checked_ik',
+                'fairino_qp': 'fairino_qp_fixed_base_arm_torso'}[ik_backend]})+'\n')
         while True:
             now = time.monotonic()
             stop_reason = None
@@ -268,6 +306,10 @@ def operate(args, kin, stream, connection):
                 if event.get("checked"):
                     checked = True
                     proof, details = verify_both(kin, event["hardware"])
+                    if whole_body:
+                        hw = event['hardware']
+                        # Before controller activation, the previous command can be stale.
+                        args.fairino_ik.start_path(hw if args.prepare_check else dict(hw, command_position=hw['position']))
                     print("机器人检查通过，未使能、未移动。", flush=True)
                     print(json.dumps(details, ensure_ascii=False), flush=True)
             if connection.done.is_set():
@@ -299,7 +341,7 @@ def operate(args, kin, stream, connection):
                 return 0
             if character in ("g", "G"):
                 if ik_backend in GUARDED_IK_BACKENDS and character == 'G':
-                    stop_reason = ('联合限位 IK' if ik_backend == 'native' else 'TRON2 QP IK')+\
+                    stop_reason = GUARDED_NAMES[ik_backend]+\
                         ' 的腕部保护必须保持开启；已暂停，请松开 Grip 后重握'
                 else:
                     connection.wrist.switch(character == "g")
@@ -362,6 +404,8 @@ def operate(args, kin, stream, connection):
                             'reason': str(exc)}, ensure_ascii=False)+'\n')
                     stop_reason = heading_message
                     last_display = 0.
+                if controls.get('cancel_home'):
+                    stop_reason = '用户中止 Home；松开 Grip 后可继续遥操'
                 if (controls["home"] or character == "h") and not stop_reason:
                     if home_motion is not None or home_pending:
                         stop_reason = "用户中止 Home；松开 Grip 后可继续遥操"
@@ -371,10 +415,15 @@ def operate(args, kin, stream, connection):
                         cartesian.reset()
                         print("准备回 Home：松开两侧 Grip，等待双臂停止。", flush=True)
                         log.write(json.dumps({"local_time": time.time(), "event": "home_requested"})+"\n")
-                if home_motion is not None and any(frame[s]["grip"] > .3 for s in ARMS):
+                samples = (frame.get('samples') or [frame]) if whole_body else [frame]
+                if home_motion is not None and any(f[s]["grip"] > .3 for f in samples for s in ARMS):
                     stop_reason = "Grip 已握下，中止 Home；松开后可继续遥操"
-            if proof is None and frame is not None:
+            if proof is None and frame is not None and (not whole_body or status.get('body_start_ready')):
+                if whole_body:
+                    planner.start_path(hw)
                 proof, _ = verify_both(kin, hw)
+                if whole_body:
+                    proof['body_reference'] = list(hw['command_position'][15:20])
             now = time.monotonic()
             if frame is not None and not 0. <= now-frame.get('received_monotonic', now) <= .25:
                 stop_reason = 'PICO 输入超过 0.25 秒未更新；请松开 Grip 后重试'
@@ -396,16 +445,22 @@ def operate(args, kin, stream, connection):
                         outgoing, last_sides = None, ()
                         if (all(frame[s]["grip"] <= .3 for s in ARMS)
                                 and max(abs(v) for v in hw["velocity"]) < .005):
-                            home_motion = HomeMotion(home, hw, now, connection.wrist.guard())
+                            if whole_body:
+                                home_motion = FairinoHomeMotion(home, hw, now, connection.wrist.guard(), planner)
+                                duration = home_motion.arms.duration
+                            else:
+                                home_motion = HomeMotion(home, hw, now, connection.wrist.guard())
+                                duration = home_motion.duration
                             home_pending = False
-                            print(f"双臂回 Home，预计 {home_motion.duration:.1f} 秒；头腰保持。", flush=True)
+                            print(f"双臂回 Home，预计 {duration:.1f} 秒；头腰保持。", flush=True)
                             log.write(json.dumps({"local_time": time.time(), "event": "home_started",
-                                "duration": home_motion.duration, "joint_degrees": home["joint_degrees"]})+"\n")
+                                "duration": duration, "joint_degrees": home["joint_degrees"]})+"\n")
                     if home_motion is not None:
                         if home_motion.complete(hw, now):
                             home_motion = None
                             paused, outgoing, last_sides = True, None, ()
-                            print("双臂 Home 已到位；握 Grip 开始遥操。", flush=True)
+                            print("双臂与躯干 Home 已到位；握 Grip 开始遥操。" if whole_body else
+                                  "双臂 Home 已到位；握 Grip 开始遥操。", flush=True)
                             log.write(json.dumps({"local_time": time.time(), "event": "home_completed"})+"\n")
                         else:
                             sequence += 1
@@ -415,6 +470,8 @@ def operate(args, kin, stream, connection):
                             log.write(json.dumps({"local_time": time.time(), "event": "home_target", "request": outgoing})+"\n")
                 except ValueError as exc:
                     home_pending, home_motion = False, None
+                    if whole_body:
+                        cartesian.reset()
                     paused, outgoing, last_sides = True, None, ()
                     print(f"Home 已中止：{exc}", flush=True)
                     log.write(json.dumps({"local_time": time.time(), "event": "home_aborted", "reason": str(exc)}, ensure_ascii=False)+"\n")
@@ -447,11 +504,15 @@ def operate(args, kin, stream, connection):
                             outgoing = plan_request(kin, hw, goals, sequence, status["stamp"],
                                                     cartesian.references, connection.wrist.guard())
                             ik_ms = 1000*(time.monotonic()-ik_started)
-                            validate(hw, outgoing, status["stamp"], tools)
+                            if whole_body:
+                                validate(hw, outgoing, status["stamp"], tools, planner.body)
+                            else:
+                                validate(hw, outgoing, status["stamp"], tools)
                             cartesian.accepted_plan(outgoing, frame, hands)
                             targets_rate.mark(now)
                             log.write(json.dumps({"local_time": time.time(), "plan_monotonic": now, "vr_stamp": frame["stamp"],
-                                "sensitivity": sensitivity, "mapping": MAPPING_ID, "ik_backend": ik_backend,
+                                "sensitivity": sensitivity, "mapping": 'fairino_qp_fixed_base' if whole_body else MAPPING_ID,
+                                "ik_backend": ik_backend,
                                 "mode": control_mode, "rotation_mode": rotation_mode, "controller_sides": hands,
                                 "heading_yaw_deg": heading_yaw_deg,
                                 "input": {s: {k: v for k, v in frame[s].items() if k != "pose"} for s in ARMS},
@@ -461,8 +522,9 @@ def operate(args, kin, stream, connection):
                                 "pico_pc_sample_age_ms": 1000*(now-frame.get("received_monotonic", now)),
                                 "freeze": {s: {"position": c.frozen_position, "rotation": c.frozen_rotation}
                                            for s, c in clutches.items()},
-                                "tcp_chest_mm": {side: tcp_in_chest(side, goal).flatten().tolist()
-                                                 for side, goal in goals.items()},
+                                ("tcp_world_mm" if whole_body else "tcp_chest_mm"): {
+                                    side: (WORLD_FROM_V[side] @ goal if whole_body else
+                                           tcp_in_chest(side, goal)).flatten().tolist() for side, goal in goals.items()},
                                 "request": outgoing}, allow_nan=False)+"\n")
                         last_sides = sides
                     except ValueError as exc:
@@ -591,10 +653,12 @@ def configure_ik(args):
     """Resolve backend timing before any connection or device initialization."""
     require_robot_backend(args.ik_backend)
     if args.ik_backend in GUARDED_IK_BACKENDS and args.no_wrist_guard:
-        raise ValueError(('联合限位 IK' if args.ik_backend == 'native' else 'TRON2 QP IK')+
+        raise ValueError(GUARDED_NAMES[args.ik_backend]+
                          ' 要求腕部保护开启，不能使用 --no-wrist-guard')
+    if args.ik_backend == 'fairino_qp' and getattr(args, 'body_lift', False):
+        raise ValueError('Fairino QP 与 --body-lift 互斥')
     if args.command_hz is None:
-        args.command_hz = 500. if args.ik_backend in GUARDED_IK_BACKENDS else 450.
+        args.command_hz = {'fairino_qp': 200., 'vendor': 450.}.get(args.ik_backend, 500.)
     if args.receiver_hz is None:
         args.receiver_hz = 500.
     Timing.from_args(args)
@@ -610,10 +674,10 @@ def main(argv=None):
     parser.add_argument("--duration", type=positive, default=10., help="通信压测持续秒数")
     parser.add_argument("--observe-ros", action="store_true", help="仅用于 --link-check：增加只读硬件状态订阅；不发布运动目标")
     add_timing_arguments(parser, command_default=None, receiver_default=None,
-        command_help='TCP 线性/SLERP 插值、IK 和下发频率：native/tron2 默认 500 Hz，vendor 默认 450 Hz',
+        command_help='TCP 线性/SLERP 插值、IK 和下发频率：native/tron2 默认 500 Hz，vendor 450 Hz，fairino_qp 200 Hz',
         receiver_help='机器人接收轮询频率：各 IK 后端默认 500 Hz')
     parser.add_argument('--ik-backend', choices=ROBOT_IK_BACKENDS, default='native',
-                        help='native 联合限位 IK（默认），vendor 原厂 IK，tron2 TRON2 C++ QP + 外层腕部保护')
+                        help='native 联合限位 IK（默认），vendor 原厂 IK，tron2 双臂 QP，fairino_qp 手臂与躯干 QP')
     parser.add_argument("--host", default="192.168.58.1")
     parser.add_argument("--user", default="fairino")
     parser.add_argument("--no-wrist-guard", action="store_true",
@@ -703,6 +767,10 @@ def main(argv=None):
             args.gui_input = GuiInput()
             password = args.gui_input.authenticate()
         kin = VendorKinematics(tools=args.tools)
+        if args.ik_backend == 'fairino_qp':
+            from vr_fairino_ik import FairinoQPIK
+            args.fairino_ik = FairinoQPIK(args.tools)
+            args.fairino_ik.set_home(load_home(args.home_file)['target'])  # fairino_ik posture target
         if args.execute and args.ik_backend == 'native':
             # Compile/load locally before opening PICO or any robot connection.
             from vr_native_ik import NativeIK
@@ -721,6 +789,9 @@ def main(argv=None):
             password = getpass.getpass(f'SSH 密码（{args.user}@{args.host}）：')
         connection = Connection(args, worker_command=remote_command(args), log_directory=logs, password=password)
         exit_log.write('connected', connection=connection_state(connection))
+        if args.execute and args.ik_backend == 'fairino_qp' and (args.grippers or args.chassis):
+            # These optional sessions can enable independently of the upper-body proof.
+            wait_for_body_start(connection, args.fairino_ik)
         if args.execute and args.grippers:
             from vr_grippers import GripperTeleop
             grippers = GripperTeleop(args, password)

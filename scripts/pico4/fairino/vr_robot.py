@@ -10,7 +10,8 @@ import time
 import robot_probe as rp
 from tcp_robot import TCPProbe, load_ros
 from tcp_jog import LEASE
-from vr_core import validate, direct_positions, KIND, LIFT_MODE, require_robot_request
+from vr_core import validate, direct_positions, KIND, LIFT_MODE, TORSO_JOINTS, require_robot_request
+from body_core import BodyModel
 from vr_lift import lift_axis, DEADBAND
 from vr_lift_presets import PresetLiftPlanner
 from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
@@ -20,6 +21,26 @@ STOP_CONFIRM_TIMEOUT = 3.
 STOP_SPEED_RAD_S = .005
 HOLD_COMMAND_TOLERANCE_RAD = 1e-5
 LIFT_SAMPLE_MAX_GAP_S = .05
+TORSO_COMMAND_DEG_S = 6.
+TORSO_HOME_COMMAND_DEG_S = 9.  # Fairino QP torso return is planned at 8 deg/s.
+TORSO_COMMAND_SLOP_DEG = .02
+TORSO_FEEDBACK_DEG_S = 15.
+# Fairino QP: J16 (waist yaw) shakes from fast arm motion while its command is held.
+# Observed 1.0-1.8 deg/s on the real robot with the J16 command fixed to 0.02 deg.
+FAIRINO_HELD_J16_DEG_S = 10.
+
+
+def session_body(args):
+    if getattr(args, 'ik_backend', None) != 'fairino_qp':
+        return None
+    if getattr(args, 'body_lift', False):
+        raise ValueError('Fairino QP 与 --body-lift 互斥')
+    if not getattr(args, 'body_config_json', None):
+        raise ValueError('Fairino QP 需要身体标定 --body-config-json')
+    config = json.loads(args.body_config_json)
+    if not isinstance(config, dict) or config.get('upright_confirmed') is not True:
+        raise ValueError('Fairino QP 需要已确认的身体标定')
+    return BodyModel(config)
 
 
 class VRProbe(TCPProbe):
@@ -32,6 +53,8 @@ class VRProbe(TCPProbe):
     held_speed_check = True
 
     def __init__(self, args):
+        self.body = args.body if hasattr(args, 'body') else session_body(args)
+        self.held_speed_overrides = {16: FAIRINO_HELD_J16_DEG_S} if self.body is not None else None
         self.held_speed_check = not getattr(args, 'no_held_speed_check', False)
         self.tools = validate_runtime(json.loads(args.tools_json)) if getattr(args, 'tools_json', None) else tool_config()
         self.input_event = threading.Event()
@@ -44,7 +67,9 @@ class VRProbe(TCPProbe):
 
     def kinematics_matches(self, proof):
         return (super().kinematics_matches(proof)
-                and proof.get('tool_id', 'flange') == self.tools['id'])
+                and proof.get('tool_id', 'flange') == self.tools['id']
+                and (getattr(self, 'body', None) is None or
+                     proof.get('body_reference') == self.hw['command_position'][15:20]))
 
     def read_input(self):
         try:
@@ -79,6 +104,12 @@ class VRProbe(TCPProbe):
                 return
 
     def guard(self, link=True, cancel=True):
+        if getattr(self, 'body', None) is not None and self.session_enabled and self.hw:
+            for j in TORSO_JOINTS:
+                if abs(math.degrees(self.hw['velocity'][j-1])) > TORSO_FEEDBACK_DEG_S:
+                    reason = f'J{j} 躯干实测速度超过 {TORSO_FEEDBACK_DEG_S:g}°/s'
+                    self.emit(fault_snapshot=dict(reason=reason, stamp=time.monotonic(), hardware=self.hw))
+                    raise RuntimeError(reason)
         rp.Probe.guard(self, link, cancel)
         deadline = getattr(self, 'lift_stop_deadline', None)
         if deadline is not None:
@@ -117,8 +148,11 @@ class VRProbe(TCPProbe):
             if now >= self.feedback_clock.next:
                 self.feedback_clock.advance(now)
             rate = getattr(self, "accepted_rate", None)
+            if getattr(self, 'body', None) is not None:
+                extra['body_start_ready'] = self.hold_positions is not None
             super().report(True, control_protocol=KIND, arm_speed_limit=None,
                 held_speed_limit_deg_s=self.held_speed_limit,
+                held_speed_overrides_deg_s=getattr(self, 'held_speed_overrides', None),
                 held_speed_check_enabled=self.held_speed_check,
                 held_speed_check_active=self.held_speed_check and self.feedback_speed_check and not self.enabling,
                 timing=timing.payload(), target_count=rate.total if rate else 0,
@@ -126,7 +160,8 @@ class VRProbe(TCPProbe):
                 hardware_observed_hz=self.hardware_rate.hz(now) if hasattr(self, "hardware_rate") else 0.,
                 command_trace=getattr(self, "command_trace", None),
                 last_target_age_ms=getattr(self, "last_target_age_ms", None),
-                body=self.lift.model.state(self.hw['position']) if getattr(self, 'lift', None) and self.hw else None,
+                body=(self.body.state(self.hw['position']) if getattr(self, 'body', None) and self.hw
+                      else self.lift.model.state(self.hw['position']) if getattr(self, 'lift', None) and self.hw else None),
                 body_lift_preset=self.lift.snapshot(now) if getattr(self, 'lift', None) else None,
                 body_lift_epoch=getattr(self, 'last_lift_epoch', 0),
                 body_lift_enabled=bool(getattr(self, 'lift', None)), **extra)
@@ -197,6 +232,7 @@ class VRProbe(TCPProbe):
             raise
 
     def stop_stream(self, reason, preserve_lift_gesture=False):
+        self.path_offset_mm = self.torso_time = None
         # Reset even if no position target has been published yet: a partially
         # completed one-second gesture must not survive pause/Home/disconnect.
         # Only normal arm release under a fresh preset heartbeat can preserve
@@ -265,6 +301,7 @@ class VRProbe(TCPProbe):
         self.last_lift_epoch = getattr(self, 'last_lift_epoch', 0)
         self.last_lift_sample_time = None
         self.stream_identity = None
+        self.path_offset_mm = self.torso_time = None
         self.prepare()
         if self.args.check or self.args.prepare_check:
             return
@@ -276,6 +313,7 @@ class VRProbe(TCPProbe):
                 raise RuntimeError("双臂轨迹接口未就绪")
             self.pump()
         self.phase = ('双臂就绪；右摇杆上/下持续 1 秒到高位/下位，触发后回中仍继续到位' if getattr(self, 'lift', None)
+                      else '双臂与躯干就绪；松开 Grip 停止，J15、J17 保持' if getattr(self, 'body', None)
                       else '双臂就绪；各自握住 Grip 移动，松开停止；J15–J20 保持')
         self.report(True)
         accepted = None
@@ -308,7 +346,19 @@ class VRProbe(TCPProbe):
                 if not isinstance(request, dict):
                     raise ValueError("无效双臂请求")
                 backend = require_robot_request(request)
-                if backend in ('native', 'tron2') and (
+                body = getattr(self, 'body', None)
+                whole_body = backend == 'fairino_qp'
+                if whole_body and (getattr(self, 'lift', None) or getattr(self.args, 'body_lift', False)):
+                    raise ValueError('Fairino QP 与 --body-lift 互斥')
+                if whole_body and body is None:
+                    raise ValueError('Fairino QP 需要身体标定')
+                if body is not None and not whole_body and not (
+                        'ik_backend' not in request and request.get('source') == 'home'
+                        and 'lift_mode' not in request and 'torso' not in request):
+                    raise ValueError('Fairino QP 会话仅接受本后端或双臂 Home 指令')
+                if (whole_body != ('torso' in request) or (whole_body and 'lift_mode' in request)):
+                    raise ValueError('躯干目标必须匹配 Fairino QP 后端，且与预设升降互斥')
+                if (body is not None or backend in ('native', 'tron2')) and (
                         self.wrist.guard.enabled is not True
                         or (self.wrist.active or {}).get('enabled') is not True):
                     raise ValueError(f'{backend} 实机 IK 要求腕部联合限位保护开启')
@@ -319,6 +369,8 @@ class VRProbe(TCPProbe):
                     new_request = True
                 if request.get('lift_mode') != (accepted or {}).get('lift_mode'):
                     new_request = True
+                if whole_body and request['torso'] != (accepted or {}).get('torso'):
+                    new_request = True
                 # Epoch transitions cannot hide behind a reused request ID.
                 # They must pass both protocol validation and ID monotonicity.
                 if request.get('lift_mode') == LIFT_MODE and request.get('lift_epoch') != self.last_lift_epoch:
@@ -328,7 +380,7 @@ class VRProbe(TCPProbe):
                 if new_request:
                     if type(request.get("id")) is not int or request["id"] <= self.last_request:
                         raise ValueError("已丢弃旧双臂请求")
-                    targets = validate(self.hw, request, now, getattr(self, 'tools', None))
+                    targets = validate(self.hw, request, now, getattr(self, 'tools', None), body)
                     now = time.monotonic()
                     validated = now
                     if request.get('lift_mode') == LIFT_MODE and getattr(self, 'lift', None) is None:
@@ -336,6 +388,15 @@ class VRProbe(TCPProbe):
                     if request.get('lift_mode') == LIFT_MODE and request['lift_epoch'] < self.last_lift_epoch:
                         raise ValueError('已丢弃旧身体升降会话 lift_epoch；请暂停后重新回中')
                     current = self.hold_positions[:] if self.path is None else self.path[-1][1][:]
+                    if whole_body:
+                        torso = request['torso']
+                        if self.path_offset_mm is not None and torso['path_offset_mm'] != self.path_offset_mm:
+                            raise ValueError('躯干支点偏移在同一流内改变')
+                        dt = 0. if self.torso_time is None else min(LEASE, now-self.torso_time)
+                        rate = TORSO_HOME_COMMAND_DEG_S if request.get('source') == 'home' else TORSO_COMMAND_DEG_S
+                        limit = math.radians(rate*dt + TORSO_COMMAND_SLOP_DEG)
+                        if any(abs(angle-current[j-1]) > limit for j, angle in zip(TORSO_JOINTS, torso['target'])):
+                            raise ValueError('躯干目标超过接收端指令速率限制')
                     for side, target in targets.items():
                         offset = 0 if side == "left" else 7
                         self.wrist.guard.arm_segment(
@@ -405,15 +466,23 @@ class VRProbe(TCPProbe):
                 if new_request or was_moving or cancelled_lift:
                     if self.path is None:
                         self.stationary_enabled()
-                    points = direct_positions(current, targets, self.hold_positions)
+                    points = direct_positions(current, targets, self.hold_positions, accepted.get('torso'))
                     if lift is not None:
                         points[-1][1][17:20] = lift.sample(points[-1][1], now)[17:20]
                         self.hold_positions[17:20] = points[-1][1][17:20]
                     self.moving_joints = list(range(1, 15))
                     if was_moving or cancelled_lift or self.lift_stop_deadline is not None:
                         self.moving_joints += [18, 19, 20]
+                    if whole_body and any(points[-1][1][j-1] != current[j-1] for j in TORSO_JOINTS):
+                        self.moving_joints.extend(TORSO_JOINTS)
                     self.publish_positions(points, now)
                     published = time.monotonic()
+                    if body is not None:
+                        self.torso_time = published
+                    if whole_body:
+                        self.path_offset_mm = accepted['torso']['path_offset_mm']
+                        for j in TORSO_JOINTS:
+                            self.hold_positions[j-1] = points[-1][1][j-1]
                     if was_moving:
                         # Keep the time at which this successfully published
                         # target was sampled, so a slow publish is detected too.
@@ -449,6 +518,7 @@ def main():
     parser.add_argument("--duration", type=float, default=10.)
     parser.add_argument("--observe-ros", action="store_true")
     parser.add_argument('--body-lift', action='store_true')
+    parser.add_argument('--ik-backend', choices=('fairino_qp',))
     parser.add_argument('--body-config-json')
     parser.add_argument('--tools-json')
     parser.add_argument('--no-held-speed-check', action='store_true',
@@ -458,7 +528,8 @@ def main():
     try:
         Timing.from_args(args)
         args.tools = validate_runtime(json.loads(args.tools_json)) if args.tools_json else tool_config()
-    except ValueError as exc:
+        args.body = session_body(args)
+    except (KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     if args.link_check:
         # This branch runs before the ownership lock, ROS initialization or any

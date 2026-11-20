@@ -44,7 +44,7 @@ def snapshot(raw):
 def check_hardware(hw, age, gpio, selected=None, baseline=None,
                    allow_enabled=False, check_speed=True, held_positions=None,
                    moving_joints=None, moving_speed_limit=2.0, held_speed_limit=0.5,
-                   held_speed_check=True):
+                   held_speed_check=True, held_speed_overrides=None):
     active = set(moving_joints) if moving_joints is not None else {selected}
     if hw is None or age > FEEDBACK_TIMEOUT:
         raise RuntimeError("上半身反馈缺失或超时")
@@ -59,7 +59,8 @@ def check_hardware(hw, age, gpio, selected=None, baseline=None,
         for i, velocity in enumerate(hw["velocity"]):
             if i + 1 not in active and not held_speed_check:
                 continue
-            limit = moving_speed_limit if i + 1 in active else held_speed_limit
+            limit = (moving_speed_limit if i + 1 in active else
+                     (held_speed_overrides or {}).get(i + 1, held_speed_limit))
             speed = math.degrees(velocity)
             if abs(speed) > limit:
                 raise RuntimeError(f"J{i+1} 速度 {speed:+.3f}°/s 超过辨认程序阈值 {limit:.1f}°/s")

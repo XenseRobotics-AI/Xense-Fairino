@@ -7,13 +7,62 @@ from vr_lift import lift_axis
 
 KIND = "fairino_pico_cartesian_v4"
 LIFT_MODE = "preset_v1"
-ROBOT_IK_BACKENDS = ('native', 'vendor', 'tron2')
+ROBOT_IK_BACKENDS = ('native', 'vendor', 'tron2', 'fairino_qp')
+TORSO_JOINTS = (16, 18, 19, 20)
+# Hardware number, URDF joint, direction and manufacturer limits (rad).
+TORSO_LIMITS = ((20, 'j20', -1, 0., .9599), (19, 'j19', 1, 0., 2.2689),
+                (18, 'j18', -1, -1.0472, 1.0472), (17, 'j16', 1, -.4887, .4887),
+                (16, 'j15', 1, -3.002, 3.002))
+TORSO_ROLL_DEG = .2
+PATH_LIMIT_MM = 5.
+PATH_TOL_MM = .05
+TORSO_JUMP_RAD = math.radians(1.5)
+BODY_EPS = 1e-9  # Roundoff at an inclusive body-state boundary (mm, %, degrees).
+
+
+def torso_in_limits(q, body):
+    neutral = math.radians(body.neutral)
+    return all(lo <= sign*q[j-1] + (neutral if name == 'j18' else 0.) <= hi
+               for j, name, sign, lo, hi in TORSO_LIMITS)
+
+
+def torso_target(torso):
+    if not isinstance(torso, dict):
+        raise ValueError('躯干目标格式无效')
+    return finite_vector(torso.get('target'), len(TORSO_JOINTS), '躯干四轴目标')
+
+
+def validate_torso(hw, torso, body):
+    if body is None:
+        raise ValueError('Fairino QP 需要身体标定配置')
+    target = torso_target(torso)
+    offset = torso.get('path_offset_mm')
+    if type(offset) not in (float, int) or not math.isfinite(offset) or abs(offset) > PATH_LIMIT_MM+BODY_EPS:
+        raise ValueError('躯干升降路径偏移超限')
+    current = finite_vector(hw.get('command_position'), 20, '二十轴指令位置')
+    if abs(math.degrees(current[16])) > TORSO_ROLL_DEG+BODY_EPS:
+        raise ValueError('请用身体程序回正侧倾')
+    q = current[:]
+    for j, value in zip(TORSO_JOINTS, target):
+        if abs(value-current[j-1]) > TORSO_JUMP_RAD:
+            raise ValueError('躯干指令跳变过大')
+        q[j-1] = value
+    if not torso_in_limits(q, body):
+        raise ValueError('躯干目标超出 URDF 限位')
+    state = body.state(q)
+    if not (-1.-BODY_EPS <= state['height'] <= 101.+BODY_EPS
+            and -1.-BODY_EPS <= state['forward'] <= 46.+BODY_EPS
+            and abs(state['yaw']) <= 91.+BODY_EPS):
+        raise ValueError('躯干目标超出身体包络')
+    if any(abs(value-offset) > PATH_TOL_MM for value in
+           (state['forward_offset_mm'], body.state(current)['forward_offset_mm'])):
+        raise ValueError('躯干目标或指令偏离本次升降路径')
 
 
 def require_robot_backend(backend):
     """Real control has an explicit allowlist, independent of Demo choices."""
     if backend not in ROBOT_IK_BACKENDS:
-        raise ValueError('实机 IK 只允许 native、vendor 或 tron2')
+        raise ValueError('实机 IK 只允许 native、vendor、tron2 或 fairino_qp')
     return backend
 
 
@@ -25,10 +74,13 @@ def require_robot_request(request):
     return require_robot_backend(request.get('ik_backend', 'vendor'))
 
 
-def direct_positions(current, targets, held):
+def direct_positions(current, targets, held, torso=None):
     """One t=0 target: JTC holds this sample, with no added joint ramp."""
     end = finite_vector(current, 20, "当前二十轴指令")
     end[14:] = finite_vector(held, 20, "二十轴保持位置")[14:]
+    if torso is not None:
+        for j, value in zip(TORSO_JOINTS, torso_target(torso)):
+            end[j-1] = value
     for side, joints in ARMS.items():
         goal = check_arm_limits(targets.get(side, [end[j-1] for j in joints]))
         for j, value in zip(joints, goal):
@@ -51,7 +103,7 @@ def matrix(value):
     return t
 
 
-def validate(hw, request, now, tools=None):
+def validate(hw, request, now, tools=None, body=None):
     if not isinstance(request, dict) or request.get("kind") != KIND or request.get("model") != MODEL_ID:
         raise ValueError("双臂协议或运动学模型不匹配")
     tools = validate_runtime(tools if tools is not None else tool_config())
@@ -89,6 +141,12 @@ def validate(hw, request, now, tools=None):
         if mm > .02 or deg > .01:
             raise ValueError("双臂目标未通过机器人端独立 TCP 正解校验")
         targets[side] = target
+    if request.get('ik_backend') == 'fairino_qp':
+        if 'lift_mode' in request:
+            raise ValueError('Fairino QP 与身体预设升降互斥')
+        validate_torso(hw, request.get('torso'), body)
+    elif 'torso' in request:
+        raise ValueError('仅 Fairino QP 允许躯干目标')
     return targets
 
 

@@ -357,7 +357,7 @@ class ModelView(Gtk.Box):
         self.update_tool_note()
         self.fresh = hardware is not None and live_arms
         if self.fresh:
-            self.positions = self.model.measured_positions(hardware)
+            self.positions = self.model.measured_positions(hardware, demo=demo)
             if not self.received_pose:
                 self.received_pose = True
                 self.reset_camera()

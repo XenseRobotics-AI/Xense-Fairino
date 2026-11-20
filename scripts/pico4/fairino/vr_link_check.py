@@ -90,8 +90,10 @@ def run_server(args):
     accepted, skipped = 0, 0
     accepted_times, feedback_times, validation_ms, dispatch_ms = [], [], [], []
     traces = []
-    hw = snapshot({"joint_names": JOINTS, "position": [0.]*20,
-        "command_position": [0.]*20, "velocity": [0.]*20,
+    body = getattr(args, 'body', None)
+    q = synthetic_pose(body, [0.]*20)
+    hw = snapshot({"joint_names": JOINTS, "position": q[:],
+        "command_position": q[:], "velocity": [0.]*20,
         "stateword": [0x2240]*20, "errorcode": [0]*20, "hexerrorcode_curerrcode": 0})
     while not stop.is_set() and time.monotonic()-started < args.duration+20:
         now = time.monotonic()
@@ -103,7 +105,9 @@ def run_server(args):
                 if request["id"] <= accepted:
                     raise ValueError("压测请求序号倒退")
                 t = time.monotonic()
-                validate(hw, request, now, getattr(args, 'tools', None))
+                if body is not None and request.get('ik_backend') != 'fairino_qp':
+                    raise ValueError('通信压测收到错误的 IK 后端')
+                validate(hw, request, now, getattr(args, 'tools', None), body)
                 validated = time.monotonic()
                 validation_ms.append(1000*(validated-t))
                 dispatch_ms.append(1000*(t-packet["server_read"]))
@@ -153,6 +157,12 @@ def run_server(args):
     return 1 if errors else 0
 
 
+def synthetic_pose(body, q):
+    if body is None:
+        return q
+    return body.pose(dict(height=66.7, forward=0., roll=0., yaw=0.), q)
+
+
 def run_client(args, kin, connection):
     from tcp_core import ARMS
     from probe_core import snapshot, JOINTS
@@ -161,7 +171,9 @@ def run_client(args, kin, connection):
     from vr_plan import request
     timing = Timing.from_args(args)
     q_by_side = load_home()["target"]
-    q = q_by_side["left"]+q_by_side["right"]+[0.]*6
+    planner = getattr(args, 'fairino_ik', None)
+    body = planner.body if planner is not None else None
+    q = synthetic_pose(body, q_by_side["left"]+q_by_side["right"]+[0.]*6)
     hw = snapshot({"joint_names": JOINTS, "position": q[:], "command_position": q[:],
         "velocity": [0.]*20, "stateword": [0x2240]*20,
         "errorcode": [0]*20, "hexerrorcode_curerrcode": 0})
@@ -209,12 +221,15 @@ def run_client(args, kin, connection):
         for side in ARMS:
             angles = [v+.004*math.sin((now-start)*.5+j*.4) for j, v in enumerate(q_by_side[side])]
             goals[side] = kin.forward_tcp(angles, side)[0]
+            if planner is not None:
+                goals[side] = planner.teleop_tcp(side, q, goals[side])
         sequence += 1
         compute_start = time.monotonic()
-        outgoing = request(kin, hw, goals, sequence, connection.latest["stamp"])
+        solve = planner.request if planner is not None else request
+        outgoing = solve(kin, hw, goals, sequence, connection.latest["stamp"])
         ik_ms.append(1000*(time.monotonic()-compute_start))
         validation_start = time.monotonic()
-        validate(hw, outgoing, connection.latest["stamp"], getattr(kin, 'tools', None))
+        validate(hw, outgoing, connection.latest["stamp"], getattr(kin, 'tools', None), body)
         local_validation_ms.append(1000*(time.monotonic()-validation_start))
         sent_at[sequence] = time.monotonic()
         sent_times.append(sent_at[sequence])
@@ -241,6 +256,9 @@ def run_client(args, kin, connection):
         "server_feedback_wait": distribution(response_wait_ms),
         "acknowledgement_median_ms": sorted(acknowledgement_ms)[len(acknowledgement_ms)//2] if acknowledgement_ms else None,
         "note": "真实厂家双臂 IK + SSH/JSON + 机器人 FK；transport RTT 用两端各自时钟的时长相减，无单程时钟假设。只读 ROS 模式订阅硬件反馈；不含运动话题发布、控制器采纳和电机响应，不是物理端到端延迟。"}
+    if planner is not None:
+        summary['ik_backend'] = 'fairino_qp'
+        summary['note'] = '本地 Fairino QP + SSH/JSON + 接收端独立正解；ROS 观察仅订阅，目标使用合成身体姿态。'
     path = connection.log_path.with_suffix(".link-check.json")
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2)+"\n")
     print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
