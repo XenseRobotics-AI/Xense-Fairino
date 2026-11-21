@@ -260,13 +260,18 @@ class TeleopPanel(Gtk.Box):
         self.chassis_status = Gtk.Label(label='底盘遥操未启用', xalign=0)
         self.chassis_status.set_line_wrap(True)
         self.pack_start(self.chassis_status, False, False, 0)
+        # The console output lives in its own window: the page is too small for it.
+        self.log = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR, monospace=True)
         scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_min_content_height(80)
-        scroll.set_propagate_natural_height(False)
-        self.log = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroll.add(self.log)
-        self.pack_start(scroll, False, True, 0)
+        self.log_window = Gtk.Window(title='PICO 遥操日志')
+        self.log_window.set_default_size(1100, 700)
+        self.log_window.add(scroll)
+        self.log_window.connect('delete-event', lambda window, _: window.hide_on_delete())
+        log_button = Gtk.Button(label='打开日志窗口')
+        log_button.connect('clicked', self.show_log)
+        self.pack_start(log_button, False, False, 0)
         for enabled in self.dx_sides.values():
             enabled.connect('toggled', lambda *_: self.update_options())
         self.ik_backend.connect('changed', self.ik_changed)
@@ -434,6 +439,10 @@ class TeleopPanel(Gtk.Box):
         except (ValueError, OSError) as exc:
             self.append(str(exc))
 
+    def show_log(self, *_):
+        self.log_window.show_all()
+        self.log_window.present()
+
     def append(self, message):
         buffer = self.log.get_buffer()
         buffer.insert(buffer.get_end_iter(), message + '\n')
@@ -468,6 +477,7 @@ class TeleopPanel(Gtk.Box):
         if self.session_target or self.upper_lease or self.gripper_lease or self.base_lease:
             self.append('上一会话正在退出，等待控制占用释放后再启动')
             return
+        self.show_log()
         try:
             if self.teleop_mode.get_active_id() not in TELEOP_MODES:
                 raise ValueError('请选择有效的遥操方式')
@@ -832,6 +842,7 @@ class TeleopPanel(Gtk.Box):
     def close(self):
         self.command('stop')
         self.closed = True
+        self.log_window.destroy()
         if self.service and self.service.poll() is None:
             os.killpg(self.service.pid, signal.SIGTERM)
 
