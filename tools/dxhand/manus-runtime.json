@@ -1,0 +1,42 @@
+{
+  "runtime/linux-x86_64/libgpr.so.9": {
+    "symlink": "libgpr.so.9.0.0",
+    "sha256": "e6257857205175377a5ec84cfb74ca56f11d63d85b94081be542b0502af58762"
+  },
+  "runtime/linux-x86_64/libgpr.so.9.0.0": {
+    "sha256": "c761b6ee4a770dad80f05fe8f52446ae930df970a2c6ed222678501603c8a76a"
+  },
+  "runtime/linux-x86_64/libgrpc++.so.1": {
+    "symlink": "libgrpc++.so.1.28.1",
+    "sha256": "d997b8fac0ed0612cd3eaef536c5f0788937b7c5067c24aa557e114ee2177fbb"
+  },
+  "runtime/linux-x86_64/libgrpc++.so.1.28.1": {
+    "sha256": "228031a702cf3303f27270a16ad8bf0a4e6a04ec9a04c177f4742f895fddfb66"
+  },
+  "runtime/linux-x86_64/libgrpc.so.9": {
+    "symlink": "libgrpc.so.9.0.0",
+    "sha256": "79e9ccadeda5a517ce0e1926e5c790a83ed8056fb08de2cf5a0c889146e29be8"
+  },
+  "runtime/linux-x86_64/libgrpc.so.9.0.0": {
+    "sha256": "8dafe9125fe492e064d910b55f1c6fd254f1002c0cb79a9b763f7379c1287e36"
+  },
+  "runtime/linux-x86_64/libprotobuf.so.22": {
+    "symlink": "libprotobuf.so.22.0.2",
+    "sha256": "d8ffafeb2aabe4bf3acbe5dcb548e2f9a5b9eecabec689bfbcfc928e0b6438d7"
+  },
+  "runtime/linux-x86_64/libprotobuf.so.22.0.2": {
+    "sha256": "9910e0ccde7293c2d1cfe5c1f8d4aa91019389e7218b1f194f803e0a7b2d0c49"
+  },
+  "vendor/manus/include/ManusSDK.h": {
+    "sha256": "0beeec96f323c0bc87df707940f379f3dca0ec5b31bea9e49b90979ad7bb5b62"
+  },
+  "vendor/manus/include/ManusSDKTypeInitializers.h": {
+    "sha256": "4e9c6607138ece3351eaf072634920ba1b16bde89483151c50700713745062e9"
+  },
+  "vendor/manus/include/ManusSDKTypes.h": {
+    "sha256": "f20bfe782e043c8aaa2f7e89eee6df6b701ecb7711150f7ab3d7a1a66d86d892"
+  },
+  "vendor/manus/lib/libManusSDK.so": {
+    "sha256": "91b42c423e36031c7bade01964c341c9f9423b28aeadd300056792d982c0ccaf"
+  }
+}
