@@ -10,6 +10,7 @@ case "$COMMAND" in
   console) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" "$@" ;;
   teleop) exec "$FAIRINO_PYTHON" "$ROOT/apps/workbench/app.py" --page teleop "$@" ;;
   slam) exec "$FAIRINO_PYTHON" "$ROOT/tools/slam.py" "$@" ;;
+  dxhand) exec "$ROOT/.local/dxhand/env/bin/python" -B "$ROOT/scripts/dxhand/dxhand_service.py" "$@" ;;
   gripper) exec "$FAIRINO_PYTHON" "$ROOT/apps/gripper_control/app.py" "$@" ;;
   status) exec "$FAIRINO_PYTHON" "$ROOT/tools/inspect_robot.py" "$@" ;;
   network) exec "$FAIRINO_PYTHON" "$ROOT/tools/network_check.py" "$@" ;;
@@ -41,6 +42,7 @@ case "$COMMAND" in
   bash run.sh teleop                    打开遥操界面，不自动使能
   bash run.sh vr --grippers --body-lift  PICO 显式启用 Trigger 夹爪和右摇杆升降
   bash run.sh vr --tcp-tool taccap --grippers --gripper-speed-rad-s 0.75  已核对安装后的指尖 TCP 遥操
+  bash run.sh dxhand --bench --left /dev/ttyACM0  独立台架，启动会使能并回零，空格切换跟随
   bash run.sh gripper                   独立夹爪调试：扫描、开度、闭合、保持
   bash setup.sh all                     安装所有功能的项目内环境
   bash setup.sh base                    安装键控/诊断 Python 环境
