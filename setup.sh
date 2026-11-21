@@ -34,6 +34,7 @@ console_setup() {
 case "${1:-all}" in
   base) base_setup ;;
   console) console_setup ;;
+  dxhand) shift; exec python3.12 -B "$ROOT/tools/dxhand/setup_dxhand.py" "$@" ;;
   pico) exec bash "$ROOT/scripts/pico4/setup.sh" ;;
   diagnostics)
     base_setup
