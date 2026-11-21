@@ -93,6 +93,23 @@ class InputTests(unittest.TestCase):
 @unittest.skipUnless(extension_path().is_file(), 'Fairino QP native extension absent')
 class DemoFlowTests(unittest.TestCase):
     @isolated
+    def test_dxhand_released_grips_keep_whole_body_solver_engaged(self):
+        engine = DemoEngine(ik_backend='fairino_qp', dxhand=True, interpolation_delay_ms=0.)
+        initial = np.array(engine.q)
+        for i in range(11):
+            now = 2. + i*.01
+            packet = frame(now, left=hand(position=(0., -.001*i, -.001*i)))
+            state = engine.step(dict(packet, samples=[packet]), now)
+            if i:
+                self.assertEqual(state['sides'], 'left/right', state['message'])
+        self.assertGreater(np.max(np.abs(np.array(engine.q)-initial)), .001)
+        engine.command('pause')
+        held = engine.q[:]
+        engine.step(frame(2.12, right=hand(grip=1.)), 2.12)
+        np.testing.assert_array_equal(engine.q, held)
+        self.assertEqual(engine.sides, ())
+
+    @isolated
     def test_follow_release_physical_a_and_two_stage_home(self):
         e = DemoEngine(ik_backend='fairino_qp', sensitivity=1., interpolation_delay_ms=0.,
                        mode='first_person', hand_mapping='crossed')

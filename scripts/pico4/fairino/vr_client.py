@@ -38,6 +38,7 @@ from vr_timing import Timing, Deadline, RateMeter, add_timing_arguments
 from mounts import tcp_in_chest
 from vr_plan import request
 from vr_cartesian import CartesianInput
+from vr_dxhand import DxHandTeleop, service_command
 from vr_exit import ExitLog, connection_state, exit_notice
 from control_modes import CHASSIS_DIRECTIONS
 
@@ -111,7 +112,7 @@ def key():
 
 
 def wait_for_input(stream, duration=30., require_triggers=False, require_lift=False,
-                   require_chassis=False):
+                   require_chassis=False, require_grips=True):
     deadline = time.monotonic()+duration
     previous = None
     while time.monotonic() < deadline:
@@ -125,9 +126,9 @@ def wait_for_input(stream, duration=30., require_triggers=False, require_lift=Fa
                 all(frame[s].get('joystick_available') and not frame[s]['axis_click'] for s in ARMS)
                 and math.hypot(frame['left']['axis_x'], frame['left']['axis_y']) <= .2
                 and abs(frame['right']['axis_x']) <= .2)
-            if all(frame[s]["grip"] <= .3 for s in ARMS) and triggers_ready and lift_ready and chassis_ready:
+            if (not require_grips or all(frame[s]["grip"] <= .3 for s in ARMS)) and triggers_ready and lift_ready and chassis_ready:
                 return frame
-            message = "启动前请松开左右 Grip" + (' 和 Trigger，确认扳机数据可用。' if require_triggers else '。')
+            message = ("启动前请松开左右 Grip" if require_grips else "等待启动条件") + (' 和 Trigger，确认扳机数据可用。' if require_triggers else '。')
             if require_lift:
                 message += '右摇杆需回中并松开按压。'
             if require_chassis:
@@ -138,7 +139,7 @@ def wait_for_input(stream, duration=30., require_triggers=False, require_lift=Fa
             print(message, flush=True)
             previous = message
         time.sleep(.02)
-    raise RuntimeError("未确认新鲜双手柄数据及 Grip 已释放；没有启动机器人控制。")
+    raise RuntimeError("未确认新鲜双手柄数据及启动条件；没有启动机器人控制。")
 
 
 def heading_controls_released(frame, chassis_enabled):
@@ -178,6 +179,10 @@ def operate(args, kin, stream, connection):
     rotation_mode = rotation_mapping(control_mode, getattr(args, "rotation_mode", "auto"))
     hands = controller_sides(control_mode, getattr(args, "hand_mapping", "auto"))
     freeze_buttons = getattr(args, "freeze_buttons", False)
+    dxhand = getattr(args, 'dxhand_control', None)
+    automatic = dxhand is not None
+    manual_hold = False
+    last_input_time = last_tick = None
     whole_body = ik_backend == 'fairino_qp'
     # Existing direct callers may still supply the old vendor-only namespace.
     # The CLI explicitly selects native by default. Both C++ backends load
@@ -193,9 +198,9 @@ def operate(args, kin, stream, connection):
         from vr_fairino_home import FairinoHomeMotion
         from vr_fairino_ik import WORLD_FROM_V
         from vr_fairino_input import FairinoInput
-        cartesian = FairinoInput(clutches, planner, timing.interpolation_delay_ms)
+        cartesian = FairinoInput(clutches, planner, timing.interpolation_delay_ms, automatic=automatic)
     else:
-        cartesian = CartesianInput(clutches, timing.interpolation_delay_ms)
+        cartesian = CartesianInput(clutches, timing.interpolation_delay_ms, automatic=automatic)
     joysticks = JoystickControls(right_a_home=whole_body and not freeze_buttons)
     heading_yaw_deg = None
     heading_message = '正前方未校准；沿用 PICO 追踪方向'
@@ -206,6 +211,7 @@ def operate(args, kin, stream, connection):
         for side, q in home["target"].items():
             kin.verify_tcp(q, side)
     home_pending = args.execute and not getattr(args, "no_auto_home", False)
+    initial_home_required = automatic and home_pending
     home_motion = None
     sensitivity = args.sensitivity
     paused = True
@@ -238,9 +244,13 @@ def operate(args, kin, stream, connection):
           '；保持位置偏差、停止确认及其他保护仍保留。', flush=True)
     if args.execute:
         print('所选起始位姿：'+home.get('description', home['name']), flush=True)
-        print("即将使能 J1–J20；" + ("先自动回双臂 Home，完成后握 Grip 遥操。" if home_pending else "保持当前姿态，握 Grip 遥操。"), flush=True)
+        if automatic:
+            print("达显启动会回零；手与双臂就绪后自动对齐跟随。空格或界面按钮暂停，再按恢复。", flush=True)
+        else:
+            print("即将使能 J1–J20；" + ("先自动回双臂 Home，完成后握 Grip 遥操。" if home_pending else "保持当前姿态，握 Grip 遥操。"), flush=True)
         print("左手 X 双击降低灵敏度、Y 双击提高；右摇杆按压：回 Home（再按中止）；左摇杆按压：校准双臂正前方。", flush=True)
-        print("方向校准：头显打开 Head / Controller / Send，松开两侧 Grip、两摇杆回中，机器人停稳后面向正前方按左摇杆；空格暂停。", flush=True)
+        if not automatic:
+            print("方向校准：头显打开 Head / Controller / Send，松开两侧 Grip、两摇杆回中，机器人停稳后面向正前方按左摇杆；空格暂停。", flush=True)
         if chassis:
             print(f'底盘将回正并使能：{CHASSIS_DIRECTIONS[control_mode]}；'
                   f'最高 {args.chassis_linear:g} m/s、{args.chassis_angular:g} rad/s。回中停止，暂停后先回中。', flush=True)
@@ -251,7 +261,9 @@ def operate(args, kin, stream, connection):
             print('夹爪遥操已显式启用：控制某臂的 Trigger 连续控制同侧夹爪；Grip 仍控制手臂跟随。', flush=True)
             print(f'夹爪速度 {grippers.speed:g} rad/s（电机轴），目标传输最多 100 Hz；'
                   '自动使用各爪允许的最大持续力矩（当前 EL05 为 1.1 Nm）。', flush=True)
-        if whole_body:
+        if automatic:
+            print("Home 期间手指保持；右摇杆按压或空格中止。", flush=True)
+        elif whole_body:
             print("Home 先移动双臂，再恢复会话起始躯干姿态；握 Grip 或按空格中止。", flush=True)
             if not freeze_buttons:
                 print("物理右 A 键也可触发或中止 Home。", flush=True)
@@ -259,7 +271,7 @@ def operate(args, kin, stream, connection):
             print("Home 仅移动双臂；请松开两侧 Grip，途中握任一 Grip 或按空格可中止。", flush=True)
         if freeze_buttons:
             print("按住 A/X 冻结旋转（只平移）；按住 B/Y 冻结位移（只旋转）；同时按住冻结两者。", flush=True)
-            print("按键仅影响该手柄控制的手臂；松开不补走；仍须握 Grip。+/- 调灵敏度，空格暂停。", flush=True)
+            print("按键仅影响该手柄控制的手臂；松开不补走；+/- 调灵敏度，空格暂停。", flush=True)
         else:
             print("双击 X/Y 或 +/- 调灵敏度 0.25/0.5/1；左摇杆按压校准双臂正前方，空格暂停。", flush=True)
         print("Esc/Ctrl+C 退出并全部下使能。", flush=True)
@@ -289,7 +301,11 @@ def operate(args, kin, stream, connection):
                 'fairino_qp': 'fairino_qp_fixed_base_arm_torso'}[ik_backend]})+'\n')
         while True:
             now = time.monotonic()
+            tick_start = now
             stop_reason = None
+            if automatic and last_tick is not None and now-last_tick > .2:
+                stop_reason = '达显控制心跳中断，重新对齐'
+            last_tick = now
             while True:
                 try:
                     event = connection.events.get_nowait()
@@ -303,6 +319,8 @@ def operate(args, kin, stream, connection):
                     print(event["cleanup_warning"], flush=True)
                 if "jog_rejected" in event:
                     stop_reason = event["jog_rejected"]
+                    if automatic:
+                        manual_hold = True
                 if event.get("checked"):
                     checked = True
                     proof, details = verify_both(kin, event["hardware"])
@@ -348,12 +366,20 @@ def operate(args, kin, stream, connection):
                     stop_reason = "切换腕部模块：暂停并等待静止；确认后松开 Grip 再重握"
             wrist_state = status.get("wrist_guard", {})
             wrist_ready = connection.wrist.ready(wrist_state) and connection.wrist.released
+            hand_ready = dxhand.ready if automatic else True
+            if automatic and character == " ":
+                manual_hold = not manual_hold
             frame = None
             try:
                 frame = stream.read()
                 # Input callbacks can arrive after this iteration began.
                 # Compute input ages and sampling times after the snapshot.
                 now = time.monotonic()
+                if automatic:
+                    stamp = frame['received_monotonic']
+                    if last_input_time is not None and stamp-last_input_time > .25:
+                        stop_reason = 'PICO 数据曾中断，重新对齐'
+                    last_input_time = stamp
                 stream_bad_since = None
             except ValueError as exc:
                 stop_reason = str(exc)
@@ -366,12 +392,14 @@ def operate(args, kin, stream, connection):
                 controls = joysticks.update(frame, now)
                 if controls["sensitivity"]:
                     sensitivity = sensitivity_step(sensitivity, controls["sensitivity"])
-                    stop_reason = f"灵敏度已改为 {sensitivity:g}，请松开两侧 Grip"
+                    stop_reason = f"灵敏度已改为 {sensitivity:g}" + ("，重新对齐" if automatic else "，请松开两侧 Grip")
                 elif character in ("+", "=", "-"):
                     sensitivity = sensitivity_step(sensitivity, -1 if character == "-" else 1)
-                    stop_reason = f"灵敏度已改为 {sensitivity:g}，请松开两侧 Grip"
+                    stop_reason = f"灵敏度已改为 {sensitivity:g}" + ("，重新对齐" if automatic else "，请松开两侧 Grip")
                 if character == " ":
                     stop_reason = "用户暂停，请松开两侧 Grip 后重握"
+                    if automatic:
+                        stop_reason = "达显已暂停；再按一次恢复" if manual_hold else "达显准备重新对齐"
                 if controls["calibrate_heading"]:
                     # Change only the arms' tracking frame. Both success and
                     # rejection enter the shared hold path for every actuator.
@@ -386,14 +414,15 @@ def operate(args, kin, stream, connection):
                             raise ValueError('请等待机器人停止并就绪后重新按左摇杆校准')
                         calibration_now = time.monotonic()
                         alignment, yaw_deg = heading_alignment(
-                            frame, calibration_now, require_chassis_neutral=chassis is not None)
+                            frame, calibration_now, require_chassis_neutral=chassis is not None,
+                            require_grip_release=not automatic)
                         if chassis is not None:
                             chassis.require_stationary(calibration_now)
                         cartesian.reset()
                         for clutch in clutches.values():
                             clutch.set_heading(alignment)
                         heading_yaw_deg = yaw_deg
-                        heading_message = f'已校准正前方（{yaw_deg:+.1f}°）；松开左摇杆按键后重新握 Grip'
+                        heading_message = f'已校准正前方（{yaw_deg:+.1f}°）；松开左摇杆按键后' + ('自动对齐' if automatic else '重新握 Grip')
                         log.write(json.dumps({'local_time': time.time(), 'event': 'heading_calibrated',
                             'yaw_deg': yaw_deg, 'tracking_to_heading': alignment.tolist(),
                             'head': frame['head'], 'mode': control_mode, 'rotation_mode': rotation_mode},
@@ -405,18 +434,18 @@ def operate(args, kin, stream, connection):
                     stop_reason = heading_message
                     last_display = 0.
                 if controls.get('cancel_home'):
-                    stop_reason = '用户中止 Home；松开 Grip 后可继续遥操'
+                    stop_reason = '用户中止 Home' if automatic else '用户中止 Home；松开 Grip 后可继续遥操'
                 if (controls["home"] or character == "h") and not stop_reason:
                     if home_motion is not None or home_pending:
-                        stop_reason = "用户中止 Home；松开 Grip 后可继续遥操"
+                        stop_reason = '用户中止 Home' if automatic else '用户中止 Home；松开 Grip 后可继续遥操'
                     else:
                         home_pending = True
                         paused, outgoing, last_sides = True, None, ()
                         cartesian.reset()
-                        print("准备回 Home：松开两侧 Grip，等待双臂停止。", flush=True)
+                        print("准备回 Home，等待双臂停止。" if automatic else "准备回 Home：松开两侧 Grip，等待双臂停止。", flush=True)
                         log.write(json.dumps({"local_time": time.time(), "event": "home_requested"})+"\n")
                 samples = (frame.get('samples') or [frame]) if whole_body else [frame]
-                if home_motion is not None and any(f[s]["grip"] > .3 for f in samples for s in ARMS):
+                if not automatic and home_motion is not None and any(f[s]["grip"] > .3 for f in samples for s in ARMS):
                     stop_reason = "Grip 已握下，中止 Home；松开后可继续遥操"
             if proof is None and frame is not None and (not whole_body or status.get('body_start_ready')):
                 if whole_body:
@@ -426,7 +455,11 @@ def operate(args, kin, stream, connection):
                     proof['body_reference'] = list(hw['command_position'][15:20])
             now = time.monotonic()
             if frame is not None and not 0. <= now-frame.get('received_monotonic', now) <= .25:
-                stop_reason = 'PICO 输入超过 0.25 秒未更新；请松开 Grip 后重试'
+                stop_reason = 'PICO 输入超过 0.25 秒未更新' + ('，重新对齐' if automatic else '；请松开 Grip 后重试')
+            if automatic and home_motion is not None and not (hand_ready and status.get('ready') and wrist_ready):
+                stop_reason = "就绪状态中断，已中止 Home"
+            if automatic and (stop_reason or home_pending or home_motion is not None or not hand_ready):
+                dxhand.update(frame, hands, False)
             if stop_reason:
                 home_pending, home_motion = False, None
                 paused = True
@@ -439,11 +472,11 @@ def operate(args, kin, stream, connection):
                     log.write(json.dumps({"local_time": time.time(), "event": "input_paused", "reason": stop_reason,
                         "input": {s: {k: v for k, v in frame[s].items() if k != "pose"} for s in ARMS} if frame else None}, ensure_ascii=False)+"\n")
                     last_message = stop_reason
-            elif frame and status.get("ready") and wrist_ready and (home_pending or home_motion is not None):
+            elif frame and status.get("ready") and wrist_ready and hand_ready and (home_pending or home_motion is not None):
                 try:
                     if home_pending:
                         outgoing, last_sides = None, ()
-                        if (all(frame[s]["grip"] <= .3 for s in ARMS)
+                        if ((automatic or all(frame[s]["grip"] <= .3 for s in ARMS))
                                 and max(abs(v) for v in hw["velocity"]) < .005):
                             if whole_body:
                                 home_motion = FairinoHomeMotion(home, hw, now, connection.wrist.guard(), planner)
@@ -458,8 +491,10 @@ def operate(args, kin, stream, connection):
                     if home_motion is not None:
                         if home_motion.complete(hw, now):
                             home_motion = None
+                            initial_home_required = False
                             paused, outgoing, last_sides = True, None, ()
-                            print("双臂与躯干 Home 已到位；握 Grip 开始遥操。" if whole_body else
+                            print("Home 已到位，准备重新对齐。" if automatic else
+                                  "双臂与躯干 Home 已到位；握 Grip 开始遥操。" if whole_body else
                                   "双臂 Home 已到位；握 Grip 开始遥操。", flush=True)
                             log.write(json.dumps({"local_time": time.time(), "event": "home_completed"})+"\n")
                         else:
@@ -475,15 +510,16 @@ def operate(args, kin, stream, connection):
                     paused, outgoing, last_sides = True, None, ()
                     print(f"Home 已中止：{exc}", flush=True)
                     log.write(json.dumps({"local_time": time.time(), "event": "home_aborted", "reason": str(exc)}, ensure_ascii=False)+"\n")
-            elif frame and status.get("ready") and wrist_ready:
+            elif (frame and status.get("ready") and wrist_ready and hand_ready
+                  and not manual_hold and not initial_home_required):
                 if paused:
-                    if (all(frame[s]["grip"] <= .3 for s in ARMS)
+                    if ((automatic or all(frame[s]["grip"] <= .3 for s in ARMS))
                             and (not heading_release_required or
                                  heading_controls_released(frame, chassis is not None))
                             and max(abs(x) for x in hw["velocity"][:14]) < .005):
                         paused = False
                         heading_release_required = False
-                        print(f"双臂就绪 · 灵敏度 {sensitivity:g}；握住对应 Grip 移动", flush=True)
+                        print("双臂就绪，达显自动对齐" if automatic else f"双臂就绪 · 灵敏度 {sensitivity:g}；握住对应 Grip 移动", flush=True)
                         last_message = None
                 else:
                     try:
@@ -533,7 +569,9 @@ def operate(args, kin, stream, connection):
                         last_sides = ()
                         cartesian.reset()
                         joysticks.reset()
-                        print(f"已停止：{exc}；请松开两侧 Grip 后重试", flush=True)
+                        if automatic:
+                            manual_hold = True
+                        print(f"已停止：{exc}；" + ("按暂停/恢复重试" if automatic else "请松开两侧 Grip 后重试"), flush=True)
             else:
                 paused = True
                 outgoing = None
@@ -576,10 +614,25 @@ def operate(args, kin, stream, connection):
                 last_lift_value = lift_value
             if grippers is not None:
                 grippers.update(frame, hands, auxiliary_active)
+            if automatic:
+                send_time = time.monotonic()
+                if (frame and send_time-frame['received_monotonic'] > .25
+                        or send_time-tick_start > .2 or send_time-status_received > .25):
+                    home_pending, home_motion = False, None
+                    outgoing, last_sides, paused = None, (), True
+                    cartesian.reset()
+                follow_hands = bool(auxiliary_active and outgoing and len(outgoing['arms']) == len(ARMS))
+                if not follow_hands:
+                    dxhand.update(frame, hands, False)
             connection.send(request=outgoing, kinematics=proof if frame else None)
-            if grippers is not None and getattr(args, 'gui_input', None) and now-last_gripper_display >= .1:
-                from vr_gui_ipc import gripper_status
-                gripper_status(grippers.snapshot())
+            if automatic and follow_hands:
+                dxhand.update(frame, hands, not connection.done.is_set())
+            if getattr(args, 'gui_input', None) and now-last_gripper_display >= .1:
+                if grippers is not None:
+                    from vr_gui_ipc import gripper_status
+                    gripper_status(grippers.snapshot())
+                elif automatic:
+                    print('WORKBENCH_DXHAND ' + json.dumps(dxhand.snapshot(), ensure_ascii=False), flush=True)
                 last_gripper_display = now
             if now-last_display > 1.:
                 sides = "/".join(last_sides) if outgoing else "保持"
@@ -587,6 +640,15 @@ def operate(args, kin, stream, connection):
                     (("位移", c.frozen_position), ("旋转", c.frozen_rotation)) if active)
                     for s, c in clutches.items() if c.frozen_position or c.frozen_rotation)
                 phase = "回 Home 中" if home_motion is not None else "等待回 Home" if home_pending else status.get('phase', '')
+                if automatic:
+                    if manual_hold:
+                        phase = "已暂停 · 再按暂停/恢复重新对齐"
+                    elif initial_home_required and not home_pending and home_motion is None:
+                        phase = "初始 Home 中断 · 请重新回 Home"
+                    elif not hand_ready:
+                        phase = "等待达显手就绪"
+                    ds = dxhand.snapshot()
+                    print('达显：' + ' / '.join(f"{s} {h['phase']}" for s,h in ds.get('hands', {}).items()), flush=True)
                 rate_data = {"send_hz": targets_rate.hz(now) if outgoing else 0.,
                     "accepted_hz": status.get("target_rate_hz", 0.),
                     "feedback_hz": feedback_rate.hz(now), "missed_loop_slots": cadence.skipped,
@@ -629,7 +691,7 @@ def operate(args, kin, stream, connection):
                         grips={s: frame[s]["grip"] for s in ARMS} if frame else {},
                         triggers={s: frame[s].get('trigger') for s in ARMS} if frame else {},
                         grippers=grippers.snapshot() if grippers is not None else None,
-                        chassis=chassis_state,
+                        dxhand=dxhand.snapshot() if automatic else None, chassis=chassis_state,
                         body=status.get('body'), lift_axis=lift_value,
                         body_lift_preset=status.get('body_lift_preset'),
                         body_lift_enabled=bool(lift_input),
@@ -697,7 +759,12 @@ def main(argv=None):
                         help='双臂起始位姿；默认原对称屈肘，其他预设需显式选择')
     parser.add_argument("--home-file", type=Path, help="自定义双臂 Home 七轴配置文件，覆盖 --home-preset")
     parser.add_argument("--no-auto-home", action="store_true", help="本次启动保持姿态，不自动回 Home；右摇杆回 Home 仍可用")
-    parser.add_argument('--grippers', action=argparse.BooleanOptionalAction, default=False,
+    end_effector = parser.add_mutually_exclusive_group()
+    end_effector.add_argument('--dxhand', action='store_true', help='本机达显手自动跟随，使用法兰 TCP')
+    for side in ('left', 'right'):
+        parser.add_argument(f'--dxhand-{side}', metavar='USB', help='启用此手；单设备可用 auto')
+        parser.add_argument(f'--dxhand-{side}-calibration', metavar='FILE', help='可选 Manus 校准文件')
+    end_effector.add_argument('--grippers', action=argparse.BooleanOptionalAction, default=False,
                         help='显式使能 TacCap 夹爪遥操；控制某臂的 Trigger 连续控制对应夹爪，Grip 仍控制双臂跟随')
     parser.add_argument('--left-gripper-sn', default='',
                         help='机器人左爪固件 SN；留空使用安装绑定 '+INSTALLATION_SERIALS['left'])
@@ -713,7 +780,7 @@ def main(argv=None):
     parser.add_argument('--tool-config', type=Path, default=DEFAULT_CONFIG,
                         help='左右夹爪安装角度和固定指尖中心配置')
     parser.add_argument('--body-lift', action=argparse.BooleanOptionalAction, default=False,
-                        help=f'右摇杆持续推1秒：上到高位{HIGH_PERCENT:g}%、下到下位{LOW_PERCENT:.1f}%，30°/s；回中继续到位，暂停/Home中止')
+                        help=f'右摇杆持续推1秒：上到高位{HIGH_PERCENT:g}%%、下到下位{LOW_PERCENT:.1f}%%，30°/s；回中继续到位，暂停/Home中止')
     parser.add_argument('--chassis', action=argparse.BooleanOptionalAction, default=False,
                         help='同时回正并使能底盘：左杆平移、右杆左右旋转；方向随 --mode，回中停止')
     parser.add_argument('--chassis-host', default='192.168.58.3', help='底盘 SSH 主机，与上半身共用用户和密码')
@@ -728,6 +795,11 @@ def main(argv=None):
     if args.observe_ros and not args.link_check:
         parser.error("--observe-ros 只能与 --link-check 一起使用")
     try:
+        if args.dxhand:
+            service_command(args)
+        elif any(getattr(args, 'dxhand_' + s + suffix) is not None
+                 for s in ARMS for suffix in ('', '_calibration')):
+            raise ValueError('灵巧手参数需要 --dxhand')
         configure_ik(args)
         try:
             check_speeds(args.chassis_linear, args.chassis_angular)
@@ -744,12 +816,12 @@ def main(argv=None):
             require_confirmed=args.execute)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
-    stream = connection = grippers = chassis = None
+    stream = connection = dxhand = grippers = chassis = None
     code = 0
     logs = ROOT/".local/pico4/fairino-logs"
     exit_log = ExitLog(logs)
     exit_log.write('started', execute=args.execute, link_check=args.link_check,
-                   grippers_requested=args.grippers, body_lift_requested=args.body_lift,
+                   dxhand_requested=args.dxhand, grippers_requested=args.grippers, body_lift_requested=args.body_lift,
                    chassis_requested=args.chassis, mode=args.mode,
                    ik_backend=args.ik_backend,
                    controller_sides=controller_sides(args.mode, args.hand_mapping),
@@ -784,14 +856,18 @@ def main(argv=None):
             stream = Stream()
             stream.open()
             wait_for_input(stream, require_triggers=args.grippers, require_lift=args.body_lift,
-                           require_chassis=args.chassis)
+                           require_chassis=args.chassis, require_grips=not args.dxhand)
         if (args.grippers or args.chassis) and args.execute and password is None:
             password = getpass.getpass(f'SSH 密码（{args.user}@{args.host}）：')
         connection = Connection(args, worker_command=remote_command(args), log_directory=logs, password=password)
         exit_log.write('connected', connection=connection_state(connection))
-        if args.execute and args.ik_backend == 'fairino_qp' and (args.grippers or args.chassis):
+        if args.execute and args.ik_backend == 'fairino_qp' and (args.grippers or args.chassis or args.dxhand):
             # These optional sessions can enable independently of the upper-body proof.
             wait_for_body_start(connection, args.fairino_ik)
+        if args.execute and args.dxhand:
+            dxhand = DxHandTeleop(args)
+            dxhand.start()
+            args.dxhand_control = dxhand
         if args.execute and args.grippers:
             from vr_grippers import GripperTeleop
             grippers = GripperTeleop(args, password)
@@ -833,6 +909,8 @@ def main(argv=None):
                 cleanup_errors[name] = dict(error_type=type(exc).__name__, error=str(exc))
                 exit_notice(f'{name} 清理异常：{exc}', error=True)
                 return None
+        if dxhand is not None:
+            cleanup('dxhand_stop', dxhand.close)
         if chassis is not None:
             cleanup('chassis_stop', chassis.close)
         if grippers is not None:
@@ -847,6 +925,22 @@ def main(argv=None):
                 else:
                     exit_notice("未收到全部下使能确认，请现场检查。", error=True)
                     code = 1
+        dxhand_final = None
+        if dxhand is not None:
+            finished = bool(cleanup('dxhand_finish', dxhand.finish))
+            dxhand_final = dxhand.snapshot()
+            if dxhand_final.get('event') == 'stopped':
+                for side, hand_status in dxhand_final['hands'].items():
+                    sent = json.dumps(hand_status['driver_off_sent'])
+                    exit_notice(f'达显 {side} driver_off_sent={sent}，disable_confirmed=false。')
+            else:
+                exit_notice('未收到达显退出回执。', error=True)
+            exit_notice('物理下使能需现场核验。')
+            if args.gui_stdio:
+                receipt = dxhand_final if dxhand_final.get('event') == 'stopped' else dict(event='unconfirmed')
+                exit_notice('WORKBENCH_DXHAND ' + json.dumps(receipt, ensure_ascii=False))
+            if not finished:
+                code = 1
         grippers_confirmed = None
         if grippers is not None:
             grippers_confirmed = bool(cleanup('grippers_finish', grippers.finish))
@@ -880,7 +974,7 @@ def main(argv=None):
         if cleanup_errors:
             code = 1
         exit_log.write('cleanup_finished', first_reason=termination['reason'], return_code=code,
-                       upper_disabled_confirmed=upper_confirmed,
+                       upper_disabled_confirmed=upper_confirmed, dxhand=dxhand_final,
                        grippers_disabled_confirmed=grippers_confirmed,
                        chassis_disabled_confirmed=chassis_disabled,
                        chassis_cleanup_confirmed=chassis_confirmed, chassis=chassis_final,

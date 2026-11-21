@@ -88,8 +88,11 @@ class CartesianBuffer:
 
 class CartesianInput:
     """Map every received frame, then sample Cartesian goals once per IK tick."""
-    def __init__(self, clutches, delay_ms=12.):
+    def __init__(self, clutches, delay_ms=12., *, automatic=False):
+        self.automatic = automatic
         self.clutches = clutches
+        for clutch in clutches.values():
+            clutch.automatic = automatic
         self.buffer = CartesianBuffer(delay_ms)
         self.references = {}
 
@@ -100,9 +103,13 @@ class CartesianInput:
             clutch.reset()
 
     def goals(self, frame, hw, kin, hands, sensitivity, freeze_buttons, now):
-        current = {s: kin.forward_tcp([hw["command_position"][j-1] for j in js], s)[0]
+        position = hw["position" if self.automatic else "command_position"]
+        current = {s: kin.forward_tcp([position[j-1] for j in js], s)[0]
                    for s, js in ARMS.items()}
-        for sample in frame.get("samples", [frame]):
+        samples = frame.get("samples", [frame])
+        if self.automatic and not all(c.engaged for c in self.clutches.values()):
+            samples = [frame]  # Anchor to the latest pose, dropping all pre-hold history.
+        for sample in samples:
             stamp = sample.get("received_monotonic", now)
             for side, joints in ARMS.items():
                 c = self.clutches[side]

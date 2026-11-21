@@ -66,13 +66,17 @@ class DemoEngine:
                  home_preset='default', freeze_buttons=False, body_lift=False,
                  grippers=False, max_openings=None, hand_mapping='auto',
                  rotation_mode='auto', interpolation_delay_ms=12., wrist_guard=True,
-                 ik_backend='native'):
+                 ik_backend='native', dxhand=False):
         if ik_backend not in ('native', 'vendor', 'tron2', 'fairino_qp'):
             raise ValueError('模型 IK 须选择 native 或 vendor 或 tron2 或 fairino_qp')
         if ik_backend == 'fairino_qp' and body_lift:
             raise ValueError('Fairino QP 已控制躯干，不能同时启用身体预设升降')
         if type(sensitivity) not in (int, float) or not math.isfinite(sensitivity) or not 0 < sensitivity <= 1.:
             raise ValueError('模型灵敏度须在 0–1 之间且大于零')
+        if dxhand and (grippers or (tools and tools['mode'] != 'flange')):
+            raise ValueError('达显模型只使用法兰 TCP')
+        self.dxhand = dxhand
+        self.manual_hold = False
         self.mode, self.sensitivity = mode, sensitivity
         self.ik_backend = ik_backend
         self.hands = controller_sides(mode, hand_mapping)
@@ -97,9 +101,9 @@ class DemoEngine:
         self.clutches = {side: NativeClutch(side, mode, rotation_mapping(mode, rotation_mode)) for side in ARMS}
         if ik_backend == 'fairino_qp':
             from vr_fairino_input import FairinoInput
-            self.cartesian = FairinoInput(self.clutches, self.native, interpolation_delay_ms)
+            self.cartesian = FairinoInput(self.clutches, self.native, interpolation_delay_ms, automatic=dxhand)
         else:
-            self.cartesian = CartesianInput(self.clutches, interpolation_delay_ms)
+            self.cartesian = CartesianInput(self.clutches, interpolation_delay_ms, automatic=dxhand)
         self.joysticks = JoystickControls(right_a_home=ik_backend == 'fairino_qp' and not freeze_buttons)
         self.home = load_home(resolve_home(home_preset))
         if ik_backend == 'fairino_qp':
@@ -121,7 +125,7 @@ class DemoEngine:
         self.home_motion = None
         self.sequence = 0
         self.paused = True
-        self.message = '模型已在起始位姿；等待 PICO，松开两侧 Grip 后重握'
+        self.message = '等待 PICO 自动对齐法兰' if dxhand else '模型已在起始位姿；等待 PICO，松开两侧 Grip 后重握'
         self.heading_yaw = None
         self.heading_release = False
         self.last_time = None
@@ -158,7 +162,11 @@ class DemoEngine:
             self.hold('模型演示已停止')
             self.stopped = True
         elif command == 'pause':
-            self.hold('模型暂停；松开两侧 Grip 后重握')
+            if self.dxhand:
+                self.manual_hold = not self.manual_hold
+                self.hold('模型暂停；再按恢复' if self.manual_hold else '准备重新对齐法兰')
+            else:
+                self.hold('模型暂停；松开两侧 Grip 后重握')
         elif command in ('slower', 'faster'):
             self.sensitivity = sensitivity_step(self.sensitivity, 1 if command == 'faster' else -1)
             self.hold(f'灵敏度 {self.sensitivity:g}；松开两侧 Grip 后重握')
@@ -179,9 +187,8 @@ class DemoEngine:
         else:
             raise ValueError('未知模型控制命令：'+str(command))
 
-    @staticmethod
-    def released(frame):
-        return all(frame[s]['grip'] <= .3 for s in ARMS)
+    def released(self, frame):
+        return self.dxhand or all(frame[s]['grip'] <= .3 for s in ARMS)
 
     def _apply(self, packet):
         if packet is None:
@@ -227,10 +234,10 @@ class DemoEngine:
                 self.heading_release = True
                 if self.home_pending or self.home_motion is not None:
                     raise ValueError('已中止模型 Home；松开摇杆后重新校准正前方')
-                alignment, self.heading_yaw = heading_alignment(frame, now)
+                alignment, self.heading_yaw = heading_alignment(frame, now, require_grip_release=not self.dxhand)
                 for clutch in self.clutches.values():
                     clutch.set_heading(alignment)
-                self.hold(f'模型正前方已校准 {self.heading_yaw:+.1f}°；松开摇杆后重握 Grip')
+                self.hold(f'模型正前方已校准 {self.heading_yaw:+.1f}°；松开摇杆后' + ('自动对齐' if self.dxhand else '重握 Grip'))
                 return self.snapshot(now, frame)
             if controls['sensitivity']:
                 self.command('faster' if controls['sensitivity'] > 0 else 'slower')
@@ -257,13 +264,16 @@ class DemoEngine:
                     self.home_pending = False
                 if self.home_motion is not None:
                     if self.home_motion.complete(hw, now):
-                        self.hold('模型 Home 已到位；松开 Grip 后重握')
+                        self.hold('模型 Home 已到位，重新对齐' if self.dxhand else '模型 Home 已到位；松开 Grip 后重握')
                     else:
                         self.sequence += 1
                         self._apply(self.home_motion.request(self.kin, hw, now, self.sequence, now))
-                        self.message = ('模型躯干正在回会话起始姿态；握任一 Grip 可中止'
+                        self.message = ('模型正在回 Home；再按 Home 可中止' if self.dxhand else
+                                        '模型躯干正在回会话起始姿态；握任一 Grip 可中止'
                                         if self.ik_backend == 'fairino_qp' and self.home_motion.returning_torso
                                         else '模型正在回 Home；握任一 Grip 可中止')
+                return self.snapshot(now, frame)
+            if self.manual_hold:
                 return self.snapshot(now, frame)
             if self.paused:
                 if self.released(frame) and (not self.heading_release or
@@ -271,7 +281,7 @@ class DemoEngine:
                      and frame['right'].get('joystick_available') and abs(frame['right'].get('axis_y', 1.)) <= .2)):
                     self.paused = False
                     self.heading_release = False
-                    self.message = '模型就绪；握住对应 Grip 移动'
+                    self.message = '模型就绪，自动对齐法兰' if self.dxhand else '模型就绪；握住对应 Grip 移动'
                 return self.snapshot(now, frame)
             goals = self.cartesian.goals(frame, hw, self.kin, self.hands, self.sensitivity,
                                          self.freeze_buttons, now)
@@ -321,7 +331,7 @@ class DemoEngine:
         phase = ('已停止' if self.stopped else '回 Home' if self.home_motion is not None else
                  '等待 Home' if self.home_pending else '暂停' if self.paused else '就绪')
         return dict(demo=True, hardware=self.hardware(), grippers=self.grippers.copy() if self.trigger else {},
-                    phase=phase, message=self.message, paused=self.paused, sensitivity=self.sensitivity,
+                    dxhand=self.dxhand, phase=phase, message=self.message, paused=self.paused, sensitivity=self.sensitivity,
                     mode=self.mode, ik_requested_backend=self.ik_backend,
                     ik_backend=('demo_joint_box_only' if self.ik_backend == 'native' and not self.guard.enabled
                                 else self.ik_backend),
@@ -390,7 +400,9 @@ def parser():
     result.add_argument('--home-preset', choices=tuple(HOME_PRESETS), default='default')
     result.add_argument('--freeze-buttons', action='store_true')
     result.add_argument('--body-lift', action='store_true')
-    result.add_argument('--grippers', action='store_true')
+    effector = result.add_mutually_exclusive_group()
+    effector.add_argument('--grippers', action='store_true')
+    effector.add_argument('--dxhand', action='store_true', help='自动跟随法兰，仅模型')
     result.add_argument('--disable-wrist-guard', '--no-wrist-guard', action='store_true')
     for side in ARMS:
         result.add_argument(f'--{side}-gripper-max-open-percent', type=float, default=100.)
@@ -420,7 +432,7 @@ def main(argv=None):
         tools = tool_config(args.tcp_tool, load_geometry(args.tool_config) if args.tcp_tool == 'taccap' else None)
         engine = DemoEngine(mode=args.mode, sensitivity=args.sensitivity, tools=tools,
                             home_preset=args.home_preset, freeze_buttons=args.freeze_buttons,
-                            body_lift=args.body_lift, grippers=args.grippers,
+                            body_lift=args.body_lift, grippers=args.grippers, dxhand=args.dxhand,
                             max_openings={s: getattr(args, s+'_gripper_max_open_percent')/100. for s in ARMS},
                             hand_mapping=args.hand_mapping, rotation_mode=args.rotation_mode,
                             interpolation_delay_ms=args.interpolation_delay_ms,
@@ -434,7 +446,8 @@ def main(argv=None):
         cadence = Deadline(args.command_hz, time.monotonic())
         last_display = 0.
         home_button = '右摇杆按压或右手柄 A 键' if args.ik_backend == 'fairino_qp' and not args.freeze_buttons else '右摇杆按压'
-        print(f'模型演示：握 Grip 遥操；{home_button}回 Home；左摇杆按压校准正前方。', flush=True)
+        engagement = '自动对齐法兰' if args.dxhand else '握 Grip 遥操'
+        print(f'模型演示：{engagement}；{home_button}回 Home；左摇杆按压校准正前方。', flush=True)
         while not engine.stopped:
             if commands and commands.closed.is_set():
                 engine.command('stop')

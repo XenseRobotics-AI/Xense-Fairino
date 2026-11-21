@@ -71,7 +71,7 @@ def decode_head(head, frame_stamp):
         return {'error': str(exc)}
 
 
-def heading_alignment(frame, now, *, require_chassis_neutral=False):
+def heading_alignment(frame, now, *, require_chassis_neutral=False, require_grip_release=True):
     """Return (tracking-to-heading inverse yaw, yaw degrees) after input gates.
 
     The caller owns robot readiness/stationarity and resets old motion targets.
@@ -93,7 +93,7 @@ def heading_alignment(frame, now, *, require_chassis_neutral=False):
         grip = _number(hand.get('grip'), f'{label}手柄 Grip 数据无效')
         if not 0 <= grip <= 1:
             raise ValueError(f'{label}手柄 Grip 数据无效')
-        if grip > .3:
+        if require_grip_release and grip > .3:
             raise ValueError('朝向校准前请松开左右 Grip')
     right = frame['right']
     if right.get('joystick_available') is not True:

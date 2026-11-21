@@ -178,6 +178,7 @@ class Clutch:
     def __init__(self, side, mode="first_person", rotation_mode=None):
         if side not in BASE_FROM_TELEOP:
             raise ValueError(f"未知机械臂：{side}")
+        self.automatic = False
         self.side = side
         if mode not in POSE_FRAMES:
             raise ValueError(f"未知遥操方向：{mode}")
@@ -220,11 +221,11 @@ class Clutch:
                freeze_position=False, freeze_rotation=False):
         position, rotation = mapped_pose(controller["pose"], self.side, self.mode,
                                          self.rotation_mode, self.heading)
-        if controller["grip"] <= .3:
+        if not self.automatic and controller["grip"] <= .3:
             self.reset()
             return None
         if not self.engaged:
-            if controller["grip"] <= .5 or not stationary:
+            if not self.automatic and (controller["grip"] <= .5 or not stationary):
                 return None
             self.engaged = True
             self.reference = (position.copy(), rotation.copy())

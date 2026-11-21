@@ -6,8 +6,8 @@ from vr_cartesian import CartesianInput
 
 
 class FairinoInput(CartesianInput):
-    def __init__(self, clutches, backend, delay_ms=12.):
-        super().__init__(clutches, delay_ms)
+    def __init__(self, clutches, backend, delay_ms=12., *, automatic=False):
+        super().__init__(clutches, delay_ms, automatic=automatic)
         self.backend = backend
 
     def reset(self):
@@ -15,7 +15,7 @@ class FairinoInput(CartesianInput):
         self.backend.reset()
 
     def goals(self, frame, hw, kin, hands, sensitivity, freeze_buttons, now):
-        q = np.asarray(hw['command_position'], dtype=float)
+        q = np.asarray(hw['position' if self.automatic else 'command_position'], dtype=float)
         backend = self.backend
 
         class FixedKinematics:
@@ -26,7 +26,7 @@ class FairinoInput(CartesianInput):
         # The client skips request() when both Grips are released. A short
         # release/regrip can also occur within a single batch of input frames.
         samples = frame.get('samples', [frame])
-        released = any(all(sample[hand]['grip'] <= .3 for hand in hands.values()) for sample in samples)
+        released = not self.automatic and any(all(sample[hand]['grip'] <= .3 for hand in hands.values()) for sample in samples)
         goals = super().goals(frame, hw, FixedKinematics(), hands, sensitivity, freeze_buttons, now)
         if released or not goals:
             self.backend.reset()

@@ -252,6 +252,45 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(probe_side(usb.path), 1)
         self.assertEqual([wire[5] for wire in usb.frames], [1])
 
+    def test_pico_client_to_service_pipe_and_usb_watchdog(self):
+        from types import SimpleNamespace
+        sys.path.insert(0, str(ROOT / 'scripts/pico4/fairino'))
+        from vr_dxhand import DxHandTeleop
+
+        usb = self.usb()
+        mode = Path(self.directory) / "manus"
+        mode.write_text("fresh")
+        client = DxHandTeleop(SimpleNamespace(tcp_tool='flange', dxhand_left=usb.path,
+                              dxhand_right=None, dxhand_left_calibration=None, dxhand_right_calibration=None))
+        # Keep both ends of the real local pipe. Replace only Manus and the USB device.
+        client.argv = [sys.executable, "-B", __file__, "serve", json.dumps({"left": usb.path}), str(mode), "0"]
+        with patch.dict(os.environ, XDG_RUNTIME_DIR=self.directory):
+            client.start()
+        self.addCleanup(client.finish)
+        def tick_until(predicate, active):
+            deadline = time.monotonic() + 6.
+            while time.monotonic() < deadline:
+                client.update({'received_monotonic': time.monotonic()}, {}, active)
+                if predicate():
+                    return
+                time.sleep(.015)
+            self.fail(f'未达到目标状态 {client.snapshot()}')
+        tick_until(lambda: len(usb.targets()) >= 5, True)
+        time.sleep(.30)  # No vr_client iterations: the status reader must never renew a heartbeat.
+        n = len(usb.targets())
+        time.sleep(.12)
+        self.assertEqual(n, len(usb.targets()))
+        self.assertFalse(client.snapshot()['heartbeat_fresh'])
+        tick_until(lambda: len(usb.targets()) > n, True)
+        client.update(None, {}, False)
+        tick_until(lambda: client.snapshot()['follow'] is False, False)
+        client.close()
+        self.assertTrue(client.finish())
+        self.assertIn(OFF, usb.frames)
+        hand = client.snapshot()['hands']['left']
+        self.assertTrue(hand['driver_off_sent'])
+        self.assertFalse(hand['disable_confirmed'])
+
     def test_hold_heartbeat_manus_and_resume(self):
         usb = self.usb()
         proc = self.ready(usb)
