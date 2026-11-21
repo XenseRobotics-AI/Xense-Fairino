@@ -572,7 +572,7 @@ class Workbench:
                 model_hardware = demo_state['hardware']
                 self.model.update(model_hardware, live_arms=demo_state['fresh'],
                     grippers=demo_state['grippers'], demo=True,
-                    demo_active=demo_state['active'],
+                    demo_active=demo_state['active'], flange_only=demo_state.get('flange_only', False),
                     wrist_collision=demo_state.get('wrist_collision', {}))
                 body_prefix = '身体（模型演示）'
             else:

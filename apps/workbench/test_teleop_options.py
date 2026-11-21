@@ -37,7 +37,7 @@ class TeleopOptionsTests(unittest.TestCase):
         self.launch = self.stack.enter_context(patch('apps.workbench.teleop.subprocess.Popen', return_value=process))
 
     def test_auxiliary_devices_are_explicit_and_default_launch_keeps_them_off(self):
-        self.assertFalse(self.panel.grippers.get_active())
+        self.assertEqual(self.panel.effector.get_active_id(), 'flange')
         self.assertFalse(self.panel.body_lift.get_active())
         self.assertFalse(self.panel.chassis.get_active())
         self.panel.start()
@@ -49,6 +49,54 @@ class TeleopOptionsTests(unittest.TestCase):
         self.assertEqual(argv[argv.index('--home-preset')+1], 'default')
         self.assertEqual(argv[argv.index('--ik-backend')+1], 'native')
         self.assertNotIn('--interpolation-hz', argv)
+
+    def test_dxhand_arguments_and_status_are_local_to_the_selected_hand(self):
+        self.panel.effector.set_active_id('dxhand')
+        self.panel.dx_calibrations['right'].set_text('/tmp/manus right.json')
+        self.panel.start()
+        argv = self.launch.call_args.args[0]
+        self.assertEqual(argv[argv.index('--tcp-tool')+1], 'flange')
+        self.assertIn('--dxhand', argv)
+        self.assertEqual(argv[argv.index('--dxhand-right')+1], 'auto')
+        self.assertEqual(argv[argv.index('--dxhand-right-calibration')+1], '/tmp/manus right.json')
+        self.assertNotIn('--dxhand-left', argv)
+        self.assertNotIn('--grippers', argv)
+        self.assertEqual(self.acquired, ['upper'])
+        self.assertFalse(self.panel.dx_panel.get_sensitive())
+        state = dict(event='stopped', hands={'right': dict(phase='closed', driver_off_sent=True,
+                                                           disable_confirmed=False)})
+        self.panel.events.put(('vr', 'WORKBENCH_DXHAND ' + json.dumps(state)))
+        self.panel.tick()
+        self.assertIn('右手 已退出 · 下使能广播已发送', self.panel.gripper_status.get_text())
+        self.assertIn('物理下使能需现场核验', self.panel.gripper_status.get_text())
+
+    def test_dual_hand_ports_auto_or_explicit_and_duplicates_rejected(self):
+        self.panel.effector.set_active_id('dxhand')
+        self.panel.dx_sides['left'].set_active(True)
+        self.panel.start()  # Both empty: each side auto-resolves in the hand service.
+        argv = self.launch.call_args.args[0]
+        for side in ('left', 'right'):
+            self.assertEqual(argv[argv.index('--dxhand-' + side)+1], 'auto')
+
+    def test_dual_hand_duplicate_explicit_port_rejected_before_any_lease(self):
+        self.panel.effector.set_active_id('dxhand')
+        self.panel.dx_sides['left'].set_active(True)
+        for side in ('left', 'right'):
+            self.panel.dx_ports[side].set_text('/dev/same')
+        self.panel.start()
+        self.launch.assert_not_called()
+        self.assertFalse(self.acquired)
+
+    def test_model_dxhand_only_launches_flange_simulation(self):
+        self.panel.runtime_target.set_active_id('model')
+        self.panel.effector.set_active_id('dxhand')
+        self.panel.start()
+        argv = self.launch.call_args.args[0]
+        self.assertIn('--dxhand', argv)
+        self.assertIn('vr_demo.py', Path(argv[2]).name)
+        self.assertNotIn('--dxhand-right', argv)
+        self.assertTrue(self.panel.model_snapshot()['flange_only'])
+        self.assertFalse(self.acquired)
 
     def test_ik_selection_reaches_main_client_and_locks_until_exit(self):
         self.assertEqual(self.panel.ik_backend.get_active_id(), 'native')
@@ -166,7 +214,7 @@ class TeleopOptionsTests(unittest.TestCase):
         self.panel.teleop_mode.set_active_id('first_person')
         self.panel.home_preset.set_active_id('right_mirrored')
         self.panel.home.set_active(False)
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.panel.body_lift.set_active(True)
         self.panel.gripper_limits['left'].set_value(60.)
         self.panel.start()
@@ -330,7 +378,7 @@ class TeleopOptionsTests(unittest.TestCase):
 
     def test_selected_home_and_independent_opening_limits_reach_shared_cli(self):
         self.panel.home_preset.set_active_id('right_mirrored')
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.panel.gripper_limits['left'].set_value(60.)
         self.panel.gripper_limits['right'].set_value(35.)
         self.panel.start()
@@ -439,7 +487,7 @@ class TeleopOptionsTests(unittest.TestCase):
                 self.assertNotIn('水平朝向', self.panel.heading_status.get_text())
 
     def test_checked_options_share_one_arm_process_and_acquire_gripper_owner(self):
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.panel.gripper_speed.set_value(.85)
         self.panel.body_lift.set_active(True)
         self.panel.gripper_serials['right'].set_text('EXPLICIT-SN')
@@ -470,7 +518,7 @@ class TeleopOptionsTests(unittest.TestCase):
         self.assertFalse(self.acquired)
 
     def test_gripper_conflict_does_not_start_robot_or_keep_upper_lock(self):
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.panel.acquire = lambda part, owner: part != 'gripper'
         self.panel.start()
         self.launch.assert_not_called()
@@ -504,12 +552,12 @@ class TeleopOptionsTests(unittest.TestCase):
         self.assertEqual(self.acquired, ['upper', 'base'])
         self.assertEqual(self.launch.call_count, 1)
         for widget in (self.panel.chassis, self.panel.chassis_linear, self.panel.chassis_angular,
-                       self.panel.body_lift, self.panel.home, self.panel.home_preset, self.panel.grippers):
+                       self.panel.body_lift, self.panel.home, self.panel.home_preset, self.panel.effector):
             self.assertFalse(widget.get_sensitive())
 
     def test_chassis_conflict_rolls_back_upper_and_gripper_without_starting(self):
         self.panel.chassis.set_active(True)
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.panel.acquire = lambda part, owner: part != 'base'
         self.panel.start()
         self.launch.assert_not_called()
@@ -532,7 +580,7 @@ class TeleopOptionsTests(unittest.TestCase):
 
     def test_launch_failure_releases_all_acquired_parts(self):
         self.panel.chassis.set_active(True)
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.launch.side_effect = OSError('test process launch failed')
         self.panel.start()
         self.assertEqual(self.acquired, ['upper', 'gripper', 'base'])
@@ -541,7 +589,7 @@ class TeleopOptionsTests(unittest.TestCase):
 
     def test_exit_releases_all_parts_once_and_blocks_restart_until_exit_event(self):
         self.panel.chassis.set_active(True)
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.panel.start()
         self.panel.process.poll = lambda: 0
         self.panel.start()
@@ -587,7 +635,7 @@ class TeleopOptionsTests(unittest.TestCase):
         data = load_geometry()
         for side in data['arms']:
             data['arms'][side]['confirmed'] = False
-        self.panel.tcp_tool.set_active_id('taccap')
+        self.panel.effector.set_active_id('taccap')
         with patch('apps.workbench.teleop.load_geometry', return_value=data):
             self.panel.start()
         self.launch.assert_not_called()
@@ -597,14 +645,13 @@ class TeleopOptionsTests(unittest.TestCase):
         data = load_geometry()
         for side in data['arms']:
             data['arms'][side]['confirmed'] = True
-        self.panel.tcp_tool.set_active_id('taccap')
-        self.assertTrue(self.panel.grippers.get_active())
+        self.panel.effector.set_active_id('taccap')
         with patch('apps.workbench.teleop.load_geometry', return_value=data):
             self.panel.start()
         argv = self.launch.call_args.args[0]
         self.assertEqual(argv[argv.index('--tcp-tool')+1], 'taccap')
         self.panel.tick()
-        self.assertFalse(self.panel.tcp_tool.get_sensitive())
+        self.assertFalse(self.panel.effector.get_sensitive())
         self.assertFalse(self.panel.tool_settings.get_sensitive())
         self.assertFalse(self.panel.gripper_speed.get_sensitive())
 

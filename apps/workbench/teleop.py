@@ -14,6 +14,7 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 from apps.gripper_control.gripper_core import TELEOP_SPEED, INSTALLATION_SERIALS
 from apps.fairino_tcp_probe.tool_frames import load_geometry, tool_config
+from scripts.pico4.fairino.vr_dxhand import validate_ports
 from scripts.pico4.fairino.home_presets import HOME_PRESETS
 from scripts.pico4.fairino.control_modes import MODE_LABELS, CHASSIS_DIRECTIONS
 from apps.fairino_upper_probe.wrist_guard_ui import GuardControls
@@ -96,11 +97,11 @@ class TeleopPanel(Gtk.Box):
             '联合限位 IK 在求解中约束腕部，TRON2 在求解后检查腕部及路径；实机两者均要求保护开启。')
         ik_row.pack_start(self.ik_backend, False, False, 0)
         settings.pack_start(ik_row, False, False, 0)
-        text = ('握 Grip 跟随，松开保持；Trigger 控制对应手臂的夹爪。\n'
+        text = ('法兰和 TacCap：握 Grip 跟随，松开保持；Trigger 控制 TacCap 开度。\n'
                 '按住 A/X 冻结旋转、B/Y 冻结位移；双击 X 降低、双击 Y 提高灵敏度。\n'
                 '左杆 XY 平移、右杆 X 旋转；右杆 Y 升降。右杆按下回 Home；空格或「暂停 / 保持」暂停。\n'
                 '左杆按下校准双臂正前方；正常转头不改变校准，底盘方向仍由所选遥操方式决定。\n'
-                '校准前松开两侧 Grip、两摇杆回中并松开右杆按键，确认双臂、身体和底盘停止；平视希望的正前方。\n'
+                '校准前法兰和 TacCap 需松开两侧 Grip；两摇杆回中并松开右杆按键，确认双臂、身体和底盘停止；平视希望的正前方。\n'
                 '底盘与升降需分别勾选；手臂控制由独立进程执行，下方显示实际频率。\n'
                 '先启动接收服务，在头显选择电脑 IP 并打开 Head / Controller / Send。')
         label = Gtk.Label(label=text, xalign=0)
@@ -129,20 +130,38 @@ class TeleopPanel(Gtk.Box):
         home_row.pack_start(Gtk.Label(label='自动回 Home 和右摇杆回 Home 均使用此选择'), False, False, 0)
         settings.pack_start(home_row, False, False, 0)
         tool_row = Gtk.Box(spacing=8)
-        tool_row.pack_start(Gtk.Label(label='遥操 TCP'), False, False, 0)
-        self.tcp_tool = Gtk.ComboBoxText()
-        self.tcp_tool.append('flange', '法兰中心')
-        self.tcp_tool.append('taccap', '带夹爪 · 固定指尖中心')
-        self.tcp_tool.set_active_id('flange')
-        tool_row.pack_start(self.tcp_tool, False, False, 0)
+        tool_row.pack_start(Gtk.Label(label='末端'), False, False, 0)
+        self.effector = Gtk.ComboBoxText()
+        self.effector.append('flange', '法兰中心')
+        self.effector.append('taccap', 'TacCap 夹爪 · 固定指尖中心')
+        self.effector.append('dxhand', '达显灵巧手 · 法兰中心')
+        self.effector.set_active_id('flange')
+        tool_row.pack_start(self.effector, False, False, 0)
         self.tool_settings = Gtk.Button(label='安装角度 / TCP 设置与预览')
         self.tool_settings.connect('clicked', self.configure_tools)
         tool_row.pack_start(self.tool_settings, False, False, 0)
         settings.pack_start(tool_row, False, False, 0)
-        self.grippers = Gtk.CheckButton(label='同时使能 TacCap 夹爪遥操 · Trigger 连续控制开度')
-        self.grippers.set_active(False)
-        settings.pack_start(self.grippers, False, False, 0)
-        self.tcp_tool.connect('changed', self.tool_changed)
+        self.dx_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.dx_sides, self.dx_ports, self.dx_calibrations = {}, {}, {}
+        for side, title in (('left', '左手'), ('right', '右手')):
+            row = Gtk.Box(spacing=6)
+            enabled = Gtk.CheckButton(label=title)
+            enabled.set_active(side == 'right')
+            port, calibration = Gtk.Entry(), Gtk.Entry()
+            port.set_placeholder_text('USB · 留空自动识别')
+            calibration.set_placeholder_text('Manus 校准文件（可选）')
+            for widget in (enabled, port, calibration):
+                row.pack_start(widget, False, False, 0)
+            self.dx_sides[side], self.dx_ports[side], self.dx_calibrations[side] = enabled, port, calibration
+            self.dx_panel.pack_start(row, False, False, 0)
+        note = Gtk.Label(label='USB 留空自动识别左右手（按固件手别并记住设备序列号）。手需上电自动回零后再启动；就绪后双臂与手指自动跟随。'
+                         '暂停后再按恢复。退出下使能时，手中物体可能掉落。', xalign=0)
+        note.set_line_wrap(True)
+        self.dx_panel.pack_start(note, False, False, 0)
+        settings.pack_start(self.dx_panel, False, False, 0)
+        self.dx_panel.show_all()
+        self.dx_panel.set_no_show_all(True)
+        self.effector.connect('changed', self.tool_changed)
         gripper_row = Gtk.Box(spacing=8)
         self.gripper_serials = {}
         for side, title in [('left', '左爪 SN'), ('right', '右爪 SN')]:
@@ -177,6 +196,10 @@ class TeleopPanel(Gtk.Box):
             '首次启动与暂停后先保持，松开 Trigger 再按压开始；Grip 仍用于手臂跟随。', xalign=0)
         gripper_help.set_line_wrap(True)
         settings.pack_start(gripper_help, False, False, 0)
+        self.taccap_rows = (gripper_row, speed_row, limits_row, gripper_help)
+        for row in self.taccap_rows:
+            row.show_all()
+            row.set_no_show_all(True)
         self.body_lift = Gtk.CheckButton(label='启用身体预设升降 · 右杆长推1秒：上到100% / 下到66.7% · 30°/s')
         self.body_lift.set_active(False)
         self.body_lift.set_tooltip_text('上位为标定100%，下位为66.7%（原50%向上提高剩余行程的1/3）。到位不重复运动；触发后回中继续到位。\n'
@@ -244,9 +267,12 @@ class TeleopPanel(Gtk.Box):
         self.log = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         scroll.add(self.log)
         self.pack_start(scroll, False, True, 0)
+        for enabled in self.dx_sides.values():
+            enabled.connect('toggled', lambda *_: self.update_options())
         self.ik_backend.connect('changed', self.ik_changed)
         self.runtime_target.connect('changed', self.target_changed)
         self.ik_changed()
+        self.tool_changed()
         self.target_changed()
         GLib.timeout_add(100, self.tick)
 
@@ -278,8 +304,6 @@ class TeleopPanel(Gtk.Box):
         self.stop_button.set_label('停止模型 Demo' if model else '停止遥操并下使能')
         self.home.set_label('模型从所选双臂 Home 开始（每次启动重置）' if model else
                             '启动后先回双臂 Home（会运动）；不勾选则保持当前姿态')
-        self.grippers.set_label('演示夹爪 · Trigger 连续控制模型开度' if model else
-                                '同时使能 TacCap 夹爪遥操 · Trigger 连续控制开度')
         if model:
             self.wrist_controls.set_tooltip_text(
                 '模型中可关闭左腕 J6/J7、右腕 J13/J14 的联合限位。\n'
@@ -297,7 +321,7 @@ class TeleopPanel(Gtk.Box):
         active = self.session_target == 'model' and self.process is not None and self.process.poll() is None
         fresh = bool(active and self.demo_state is not None and time.monotonic()-self.demo_received < .5)
         state = self.demo_state or {}
-        return {'hardware': state.get('hardware') if fresh else None,
+        return {'flange_only': self.effector.get_active_id() == 'dxhand', 'hardware': state.get('hardware') if fresh else None,
                 'grippers': state.get('grippers', {}) if fresh else {},
                 'wrist_collision': state.get('wrist_collision', {}),
                 'fresh': fresh, 'active': active, 'phase': state.get('phase', '等待模型 Demo 启动')}
@@ -309,8 +333,45 @@ class TeleopPanel(Gtk.Box):
             '。\n启动后需先结束遥操才能切换方式。') if value else '请选择遥操方式')
 
     def tool_changed(self, *_):
-        if self.tcp_tool.get_active_id() == 'taccap':
-            self.grippers.set_active(True)
+        dx = self.effector.get_active_id() == 'dxhand'
+        self.dx_panel.set_visible(dx)
+        for row in self.taccap_rows:
+            row.set_visible(self.effector.get_active_id() == 'taccap')
+        self.command_buttons[0].set_label('暂停 / 恢复' if dx else '暂停 / 保持')
+        self.gripper_status.set_text('达显手等待启动' if dx else '夹爪遥操未启用')
+        self.update_options()
+
+    def tcp_mode(self):
+        mode = self.effector.get_active_id()
+        return 'flange' if mode == 'dxhand' else mode
+
+    def dxhand_args(self):
+        argv, ports = ['--dxhand'], []
+        for side, enabled in self.dx_sides.items():
+            if enabled.get_active():
+                port = self.dx_ports[side].get_text().strip() or 'auto'
+                ports.append(port)
+                argv.extend(['--dxhand-'+side, port])
+                path = self.dx_calibrations[side].get_text().strip()
+                if path:
+                    argv.extend(['--dxhand-'+side+'-calibration', path])
+        validate_ports(ports)
+        return argv
+
+    def dxhand_status(self, state):
+        if state.get('event') == 'unconfirmed':
+            self.gripper_status.set_text('达显退出回执缺失 · 物理下使能需现场核验')
+            return
+        phases = {'connecting': '连接中', 'home_reset': '回零复位', 'homing': '回零中',
+                  'holding': '保持', 'tracking': '跟随', 'closed': '已退出'}
+        values = []
+        for side, h in state.get('hands', {}).items():
+            value = ('左手' if side == 'left' else '右手') + ' ' + phases.get(h['phase'], h['phase'])
+            if state.get('event') == 'stopped':
+                value += ' · 下使能广播' + ('已发送' if h['driver_off_sent'] else '未发送')
+            values.append(value)
+        self.gripper_status.set_text('达显：' + (' / '.join(values) or '等待反馈')
+                                     + (' · 物理下使能需现场核验' if state.get('event') == 'stopped' else ''))
 
     def native_ik_selected(self):
         return (self.session_ik_backend or self.ik_backend.get_active_id()) == 'native'
@@ -415,7 +476,9 @@ class TeleopPanel(Gtk.Box):
             if backend not in choices:
                 raise ValueError('请选择有效的 IK 解算器')
             self.update_wrist_option()
-            mode = self.tcp_tool.get_active_id()
+            mode = self.tcp_mode()
+            dxhand = self.effector.get_active_id() == 'dxhand'
+            dx_args = self.dxhand_args() if dxhand and not self.model_demo_selected() else []
             tool_config(mode, load_geometry() if mode == 'taccap' else None,
                         require_confirmed=not self.model_demo_selected())
         except (ValueError, OSError) as exc:
@@ -439,7 +502,7 @@ class TeleopPanel(Gtk.Box):
                 if base_credentials[1:] != credentials[1:]:
                     raise ValueError('集成底盘遥操使用顶部共用 SSH 用户和密码；底盘与上半身凭据必须一致')
             parts = ['upper']
-            if self.grippers.get_active():
+            if self.effector.get_active_id() == 'taccap':
                 parts.append('gripper')
             if self.chassis.get_active():
                 parts.append('base')
@@ -452,7 +515,7 @@ class TeleopPanel(Gtk.Box):
             argv.extend(['--mode', self.teleop_mode.get_active_id(), '--rotation-mode', 'auto',
                          '--hand-mapping', 'auto'])
             argv.extend(['--ik-backend', self.ik_backend.get_active_id()])
-            argv.extend(['--tcp-tool', self.tcp_tool.get_active_id()])
+            argv.extend(['--tcp-tool', mode, *dx_args])
             argv.extend(['--home-preset', self.home_preset.get_active_id()])
             if not self.wrist_controls.toggle.get_active():
                 argv.append('--no-wrist-guard')
@@ -460,7 +523,7 @@ class TeleopPanel(Gtk.Box):
                 argv.append('--no-held-speed-check')
             if not self.home.get_active():
                 argv.append('--no-auto-home')
-            if self.grippers.get_active():
+            if self.effector.get_active_id() == 'taccap':
                 argv.append('--grippers')
                 argv.extend(['--gripper-speed-rad-s', str(self.gripper_speed.get_value())])
                 for side in ('left', 'right'):
@@ -478,7 +541,7 @@ class TeleopPanel(Gtk.Box):
             self.session_target = 'robot'
             self.process.stdin.write(json.dumps({'password': password}) + '\n')
             self.process.stdin.flush()
-            self.status.set_text('等待双手柄新鲜数据及 Grip 释放…')
+            self.status.set_text('等待双手柄数据与达显手回零…' if dxhand else '等待双手柄新鲜数据及 Grip 释放…')
             self.heading_status.set_text('双臂正前方未校准 · 沿用原有追踪方向')
             self.chassis_status.set_text('等待底盘回正并使能；请保持摇杆回中' if self.chassis.get_active()
                                          else '底盘遥操未启用')
@@ -501,13 +564,15 @@ class TeleopPanel(Gtk.Box):
                 str(ROOT/'scripts/pico4/fairino/vr_demo.py'), '--gui-stdio',
                 '--ik-backend', self.ik_backend.get_active_id(),
                 '--mode', self.teleop_mode.get_active_id(), '--freeze-buttons',
-                '--tcp-tool', self.tcp_tool.get_active_id(),
+                '--tcp-tool', self.tcp_mode(),
                 '--home-preset', self.home_preset.get_active_id()]
         if not self.wrist_controls.toggle.get_active():
             argv.append('--disable-wrist-guard')
         if self.ik_backend.get_active_id() != 'fairino_qp' and self.body_lift.get_active():
             argv.append('--body-lift')
-        if self.grippers.get_active():
+        if self.effector.get_active_id() == 'dxhand':
+            argv.append('--dxhand')
+        if self.effector.get_active_id() == 'taccap':
             argv.append('--grippers')
             for side in ('left', 'right'):
                 argv.extend([f'--{side}-gripper-max-open-percent', str(self.gripper_limits[side].get_value())])
@@ -542,7 +607,7 @@ class TeleopPanel(Gtk.Box):
         editable = not running and self.session_target is None and not self.closed
         model = self.model_demo_selected()
         self.runtime_target.set_sensitive(editable and not self.demo)
-        for widget in (self.teleop_mode, self.ik_backend, self.home, self.home_preset, self.grippers, self.tcp_tool,
+        for widget in (self.teleop_mode, self.ik_backend, self.home, self.home_preset, self.effector,
                        self.tool_settings, self.body_lift, self.chassis, *self.gripper_serials.values()):
             widget.set_sensitive(editable)
         for widget in (self.home, self.chassis, *self.gripper_serials.values()):
@@ -551,10 +616,14 @@ class TeleopPanel(Gtk.Box):
         if whole_body:
             self.body_lift.set_active(False)
         self.body_lift.set_sensitive(editable and not whole_body)
+        self.dx_panel.set_sensitive(editable and not model)
+        for side, enabled in self.dx_sides.items():
+            for widget in (self.dx_ports[side], self.dx_calibrations[side]):
+                widget.set_sensitive(enabled.get_active())
         self.held_speed_check.set_sensitive(editable and not model)
         for widget in (self.gripper_speed, *self.gripper_limits.values()):
-            widget.set_sensitive(editable and self.grippers.get_active())
-        self.gripper_speed.set_sensitive(editable and self.grippers.get_active() and not model)
+            widget.set_sensitive(editable and self.effector.get_active_id() == 'taccap')
+        self.gripper_speed.set_sensitive(editable and self.effector.get_active_id() == 'taccap' and not model)
         for widget in (self.chassis_linear, self.chassis_angular):
             widget.set_sensitive(editable and self.chassis.get_active() and not model)
         self.start_button.set_sensitive(editable)
@@ -627,7 +696,7 @@ class TeleopPanel(Gtk.Box):
         self.heading_status.set_text(heading)
         self.gripper_status.set_text('模型夹爪：'+' · '.join(
             f'{label} {grippers[side]*100:.1f}%' for side, label in [('left', '左'), ('right', '右')]
-            if side in grippers) if grippers else '模型夹爪演示未启用')
+            if side in grippers) if grippers else '达显模型 · 仅显示法兰' if state.get('dxhand') else '模型夹爪演示未启用')
         if type(enabled) is bool:
             self.updating_wrist = True
             try:
@@ -668,6 +737,11 @@ class TeleopPanel(Gtk.Box):
                                              else '底盘遥操未启用')
                 if self.process:
                     self.process.stdin.close()
+            elif name == 'vr' and data.startswith('WORKBENCH_DXHAND '):
+                try:
+                    self.dxhand_status(json.loads(data[len('WORKBENCH_DXHAND '):]))
+                except (ValueError, KeyError, TypeError):
+                    self.append('达显退出回执格式异常；物理下使能需现场核验')
             elif name == 'vr' and data.startswith('WORKBENCH_GRIPPERS '):
                 try:
                     self.gripper_feedback = json.loads(data[len('WORKBENCH_GRIPPERS '):])
@@ -724,6 +798,8 @@ class TeleopPanel(Gtk.Box):
                             values.append(text)
                         self.gripper_status.set_text(grippers.get('message', '')+
                             f' · 速度 {grippers.get("speed_rad_s", 0.):g} rad/s\n'+' · '.join(values))
+                    elif state.get('dxhand') is not None:
+                        self.dxhand_status(state['dxhand'])
                     else:
                         self.gripper_status.set_text('夹爪遥操未启用')
                     chassis = state.get('chassis')

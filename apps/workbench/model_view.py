@@ -70,6 +70,7 @@ class ModelView(Gtk.Box):
         self.visuals = load_visuals()+load_tool_visuals(self.tool_geometry)
         self.positions = {}
         self.gripper_positions = {'left': 1., 'right': 1.}
+        self.flange_only = False
         self.gripper_fresh = set()
         self.fresh = False
         self.demo = False
@@ -137,6 +138,9 @@ class ModelView(Gtk.Box):
         self.area.queue_render()
 
     def update_tool_note(self):
+        if self.flange_only:
+            self.tool_note.set_text("达显灵巧手 · 法兰中心")
+            return
         values = []
         for side, title in [('left', '左爪'), ('right', '右爪')]:
             if self.tool_geometry['arms'][side]['installed']:
@@ -169,7 +173,7 @@ class ModelView(Gtk.Box):
         return visual.local @ jaw_transform(visual, self.gripper_positions.get(visual.side, 1.))
 
     def visible(self, visual):
-        return (not visual.tool_part or (self.show_grippers.get_active()
+        return (not visual.tool_part or (not self.flange_only and self.show_grippers.get_active()
                 and self.tool_geometry['arms'][visual.side]['installed']))
 
     def reset_camera(self, *_):
@@ -342,7 +346,8 @@ class ModelView(Gtk.Box):
         return True
 
     def update(self, hardware, live_arms=True, grippers=None, *, demo=False, demo_active=False,
-               wrist_collision=None):
+               wrist_collision=None, flange_only=False):
+        self.flange_only = flange_only
         if self.demo != demo:
             # Neither source may inherit the other source's pose or be labelled as its feedback.
             self.positions = {}

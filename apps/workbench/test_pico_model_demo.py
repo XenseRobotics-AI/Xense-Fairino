@@ -61,7 +61,7 @@ class ModelDemoPanelTests(unittest.TestCase):
 
     def test_demo_launch_is_local_and_never_asks_for_or_transmits_credentials(self):
         self.demo()
-        self.panel.grippers.set_active(True)
+        self.panel.effector.set_active_id('taccap')
         self.panel.body_lift.set_active(True)
         self.panel.teleop_mode.set_active_id('first_person')
         self.panel.gripper_limits['left'].set_value(70.)
@@ -260,7 +260,7 @@ class ModelDemoPanelTests(unittest.TestCase):
             geometry['arms'][side].update(installed=True, confirmed=False, roll_deg=angle)
         with patch('apps.workbench.teleop.load_geometry', return_value=geometry):
             self.demo()
-            self.panel.tcp_tool.set_active_id('taccap')
+            self.panel.effector.set_active_id('taccap')
             for backend in ('native', 'vendor'):
                 with self.subTest(backend=backend):
                     self.panel.ik_backend.set_active_id(backend)
@@ -290,7 +290,7 @@ class ModelDemoPanelTests(unittest.TestCase):
         geometry['arms']['left'].update(confirmed=False, roll_deg=math.nan)
         with patch('apps.workbench.teleop.load_geometry', return_value=geometry):
             self.demo()
-            self.panel.tcp_tool.set_active_id('taccap')
+            self.panel.effector.set_active_id('taccap')
             self.panel.start()
         self.launch.assert_not_called()
         self.credentials.assert_not_called()
