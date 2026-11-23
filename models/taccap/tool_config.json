@@ -10,13 +10,13 @@
   "arms": {
     "left": {
       "installed": true,
-      "roll_deg": 180.0,
-      "confirmed": true
+      "roll_deg": 90.0,
+      "confirmed": false
     },
     "right": {
       "installed": true,
-      "roll_deg": -180.0,
-      "confirmed": true
+      "roll_deg": -90.0,
+      "confirmed": false
     }
   }
 }
