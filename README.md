@@ -9,6 +9,7 @@ bash setup.sh console             # 首次安装桌面绘图依赖
 bash run.sh console               # 打开时不连接、不使能
 bash run.sh console --demo        # 不连接机器人的界面演示
 bash run.sh teleop --demo         # PICO 手柄控制台模型演示
+GTK_THEME=Adwaita                 # 修复Gruvbox主题的显示问题
 ```
 
 PICO 页新增「运行目标 → 控制台模型（Demo）」。启动 PICO 接收服务后，头显开启 Head / Controller / Send，点击「启动模型 Demo」即可控制右侧模型；无需机器人或 SSH 密码。默认面对面映射、灵敏度 0.25，双臂浅绿色。Demo 可以关闭腕部联合限位：模型允许进入联合限位定义的干涉区，相应腕心变红；退出干涉区恢复绿色。红色依据腕部限位模型，并非整机网格碰撞检测。使用说明见 [SLAM 与 PICO 模型演示](docs/SLAM与PICO模型演示.md)。
